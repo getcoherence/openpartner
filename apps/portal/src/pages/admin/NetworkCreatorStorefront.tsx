@@ -33,7 +33,7 @@ export function NetworkCreatorStorefrontPage() {
 
   if (error instanceof ApiError && error.status === 404) {
     return (
-      <Page title="Creator not found" actions={back}>
+      <Page title="Creator not found" back={back}>
         <EmptyState
           title={`No creator @${handle}`}
           hint="They may have changed their handle, or their profile isn’t public right now."
@@ -44,7 +44,7 @@ export function NetworkCreatorStorefrontPage() {
   }
   if (isLoading || !data) {
     return (
-      <Page title={handle ? `@${handle}` : 'Creator'} actions={back}>
+      <Page title={handle ? `@${handle}` : 'Creator'} back={back}>
         {isLoading ? <Card>Loading…</Card> : <ErrorBanner error={error} />}
       </Page>
     );
@@ -53,19 +53,19 @@ export function NetworkCreatorStorefrontPage() {
   return (
     <Page
       title={data.name}
-      subtitle={data.bookingsOpen ? 'Book a package as a tracked deal, paid once you approve the post.' : undefined}
-      actions={
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
-          {back}
+      back={back}
+      subtitle={
+        <>
+          {data.bookingsOpen && 'Book a package as a tracked deal, paid once you approve the post. '}
           <a
             href={publicStorefrontUrl(data.handle)}
             target="_blank"
             rel="noopener noreferrer"
-            style={{ color: theme.accentText, fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 4, textDecoration: 'none' }}
+            style={{ color: theme.accentText, display: 'inline-flex', alignItems: 'center', gap: 4, textDecoration: 'none' }}
           >
             Public page <ExternalLink size={12} />
           </a>
-        </div>
+        </>
       }
     >
       <div style={{ maxWidth: 760 }}>

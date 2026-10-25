@@ -7,11 +7,14 @@ import { useIsMobile } from './lib/useMediaQuery.js';
 export function Page({
   title,
   subtitle,
+  back,
   actions,
   children,
 }: {
   title: string;
-  subtitle?: string;
+  subtitle?: ReactNode;
+  /** A link back to the parent page, shown above the title. */
+  back?: ReactNode;
   actions?: ReactNode;
   children: ReactNode;
 }) {
@@ -31,6 +34,7 @@ export function Page({
         }}
       >
         <div>
+          {back && <div style={{ fontSize: 13, marginBottom: 8 }}>{back}</div>}
           <h1 style={{ margin: 0, fontSize: isMobile ? 21 : 24, fontWeight: 600, letterSpacing: '-0.01em' }}>{title}</h1>
           {subtitle && (
             <div style={{ color: theme.textMuted, fontSize: 14, marginTop: 4 }}>{subtitle}</div>
