@@ -17,11 +17,14 @@ import { theme } from '../../theme.js';
 import { creatorApi } from './creator-api.js';
 import { creatorErrorCode, usePayments } from './CreatorPayments.js';
 import { PACKAGE_CURRENCIES, type OwnPackage } from './storefront-shared.js';
+import { useConversationLive, type LiveTicket } from './conversation-live.js';
 import {
   BookingStatusPill,
   Composer,
   Face,
+  PresenceBadge,
   Thread,
+  TypingNote,
   UnreadDot,
   formatMinor,
   formatWholeAmount,
@@ -190,15 +193,22 @@ export function CreatorThreadPage() {
   const [olderHasMore, setOlderHasMore] = useState<boolean | null>(null);
   const [offering, setOffering] = useState(false);
 
-  const thread = useQuery({
-    queryKey: ['creator-thread', id],
-    queryFn: () => creatorApi<CreatorThread>(`/creators/me/conversations/${encodeURIComponent(id)}`),
-    refetchInterval: 10_000,
-  });
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: ['creator-thread', id] });
     void qc.invalidateQueries({ queryKey: ['creator-conversations'] });
   };
+  // Live: the brand's presence and typing, and new messages at once.
+  const live = useConversationLive(
+    id,
+    'creator',
+    () => creatorApi<LiveTicket>(`/creators/me/conversations/${encodeURIComponent(id)}/realtime`, { method: 'POST', body: {} }),
+    refresh,
+  );
+  const thread = useQuery({
+    queryKey: ['creator-thread', id],
+    queryFn: () => creatorApi<CreatorThread>(`/creators/me/conversations/${encodeURIComponent(id)}`),
+    refetchInterval: live.connected ? 60_000 : 10_000,
+  });
   const send = useMutation({
     mutationFn: (body: string) => creatorApi(`/creators/me/conversations/${encodeURIComponent(id)}/messages`, { method: 'POST', body: { body } }),
     onSuccess: refresh,
@@ -250,8 +260,9 @@ export function CreatorThreadPage() {
         </div>
       }
     >
-      <div style={{ marginBottom: 10 }}>
+      <div style={{ marginBottom: 10, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <Link to="/creator/messages" style={{ fontSize: 13, color: theme.accentText }}>← All messages</Link>
+        <PresenceBadge online={live.otherOnline} />
       </div>
       {payments.data && !ready && (
         <div style={{ fontSize: 13, color: theme.warn, background: theme.warnSoft, borderRadius: theme.radiusSm, padding: '10px 12px', marginBottom: 12 }}>
@@ -272,13 +283,15 @@ export function CreatorThreadPage() {
             return b ? <CreatorBookingCard booking={b} brand={brand} brandName={names.brand} canAccept={ready} onChanged={refresh} /> : null;
           }}
         />
-        <div style={{ marginTop: 16, borderTop: `1px solid ${theme.borderSubtle}`, paddingTop: 14 }}>
+        <TypingNote name={live.typing} />
+        <div style={{ marginTop: 8, borderTop: `1px solid ${theme.borderSubtle}`, paddingTop: 14 }}>
           <ErrorBanner error={send.error ? errText(send.error) : block.error} />
           <Composer
             onSend={(body) => send.mutateAsync(body)}
             pending={send.isPending}
             disabledReason={!t.conversation.brandActive ? 'This brand isn’t on the Network any more.' : null}
             placeholder={`Message ${t.conversation.brand?.name ?? 'the brand'}`}
+            onTyping={live.setTyping}
           />
         </div>
       </Card>

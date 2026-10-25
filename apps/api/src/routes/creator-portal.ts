@@ -27,6 +27,7 @@
 
 import { createHmac } from 'node:crypto';
 import express, { Router, type Request, type Response } from 'express';
+import { realtimeSocketUrl } from '../network-client.js';
 
 export const creatorPortalRouter = Router();
 
@@ -137,13 +138,17 @@ const ALLOWED_PREFIX: Array<{ prefix: string; methods: Set<string> }> = [
   // .../:id/accept|decline|withdraw|deliver|refund, DELETE .../:id).
   { prefix: '/creators/me/packages/', methods: new Set(['PATCH', 'DELETE']) },
   { prefix: '/creators/me/bookings/', methods: new Set(['POST', 'DELETE']) },
-  // A conversation: read it (GET .../:id), write, send an offer, block
-  // (POST .../:id/messages|offers|block|unblock).
+  // A conversation: read it (GET .../:id), write, send an offer, block, or
+  // get a ticket for its live socket (POST .../:id/messages|offers|block|
+  // unblock|realtime).
   { prefix: '/creators/me/conversations/', methods: new Set(['GET', 'POST']) },
   // Invitation deeplink resolver (no auth) + consume (creator auth).
   // GET /invitations/:token, POST /invitations/:token/consume
   { prefix: '/invitations/', methods: new Set(['GET', 'POST']) },
 ];
+
+/** POST /creators/me/conversations/:id/realtime → { ticket, expiresAt } (+ url, added here). */
+const REALTIME_TICKET_PATH = /^\/creators\/me\/conversations\/[^/]+\/realtime$/;
 
 function isAllowed(method: string, subpath: string): boolean {
   if (ALLOWED_EXACT.has(subpath)) return true;
@@ -249,6 +254,13 @@ creatorPortalRouter.all(/^\/creator-api(\/.*)?$/, async (req: Request, res: Resp
         status: upstream.status,
         body: body.length > 500 ? `${body.slice(0, 500)}…(truncated)` : body,
       });
+    }
+
+    // A live-socket ticket (the Network's realtime.ts): add where to open the
+    // socket, which the portal can't know (it's the Network's own origin).
+    if (upstream.ok && REALTIME_TICKET_PATH.test(subpath) && upstreamCt.includes('application/json')) {
+      const ticket = JSON.parse(body) as Record<string, unknown>;
+      return res.status(upstream.status).json({ ...ticket, url: realtimeSocketUrl(networkUrl) });
     }
 
     res.status(upstream.status);

@@ -104,6 +104,7 @@ beforeAll(async () => {
         if (path === '/vendors/me/bookings/claim') return json(201, { booking: { id: 'bkr_1' }, conversationId: 'cnv_claimed' });
         if (path === '/vendors/me/conversations' && req.method === 'POST') return json(201, { conversationId: 'cnv_new', message: {} });
         if (/^\/vendors\/me\/conversations\/[^/]+\/messages$/.test(path)) return json(201, { message: {} });
+        if (/^\/vendors\/me\/conversations\/[^/]+\/realtime$/.test(path)) return json(200, { ticket: 'tkt_v', expiresAt: '2026-10-25T21:00:00.000Z' });
         if (/^\/vendors\/me\/bookings\/[^/]+\/checkout$/.test(path)) return json(200, { url: 'https://checkout.stripe.test/cs_1' });
         if (path === '/vendors/me/bookings' && req.method === 'POST') return json(201, { booking: { id: 'bkr_2' }, conversationId: 'cnv_new' });
         json(404, { error: 'not_found' });
@@ -315,6 +316,11 @@ describe.skipIf(skipIntegration)('brand proxies', () => {
     const pay = await request(app).post(`/t/${b.slug}/admin/network/bookings/bkr_1/checkout`).set('Cookie', b.cookie).send({ returnPath: '/admin/network/messages/cnv_1' });
     expect(pay.body).toEqual({ url: 'https://checkout.stripe.test/cs_1' });
     expect(last(/\/checkout$/)!.body).toEqual({ returnPath: '/admin/network/messages/cnv_1', feeRateBps: 1000 });
+
+    // Watching the thread live: a ticket under the admin's name, and the socket on this brand's Network.
+    const live = await request(app).post(`/t/${b.slug}/admin/network/conversations/cnv_1/realtime`).set('Cookie', b.cookie).send({ authorName: 'Someone else' });
+    expect(live.body).toEqual({ ticket: 'tkt_v', expiresAt: '2026-10-25T21:00:00.000Z', url: `${networkUrl.replace(/^http/, 'ws')}/realtime` });
+    expect(last(/\/realtime$/)!.body).toEqual({ authorName: 'Owen Owner' });
   });
 
   it('an approved brand starts conversations and books; tracking needs a plan', async () => {

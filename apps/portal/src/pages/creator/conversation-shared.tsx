@@ -270,12 +270,15 @@ export function Composer({
   pending,
   disabledReason,
   placeholder = 'Write a message',
+  onTyping,
 }: {
   onSend: (body: string) => Promise<unknown>;
   pending: boolean;
   /** Shown instead of the box when this side can't write. */
   disabledReason?: string | null;
   placeholder?: string;
+  /** Told as this side types and stops (the live socket, conversation-live.ts). */
+  onTyping?: (typing: boolean) => void;
 }) {
   const [body, setBody] = useState('');
   if (disabledReason) {
@@ -284,6 +287,7 @@ export function Composer({
   const text = body.trim();
   async function send() {
     if (!text || pending) return;
+    onTyping?.(false);
     await onSend(text);
     setBody('');
   }
@@ -295,7 +299,11 @@ export function Composer({
         maxLength={MESSAGE_MAX}
         placeholder={placeholder}
         aria-label="Message"
-        onChange={(e) => setBody(e.target.value)}
+        onChange={(e) => {
+          setBody(e.target.value);
+          onTyping?.(e.target.value.trim().length > 0);
+        }}
+        onBlur={() => onTyping?.(false)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
@@ -309,6 +317,31 @@ export function Composer({
         </Button>
         <span style={{ fontSize: 12, color: theme.textDim }}>Keep payments on OpenPartner: only bookings paid here are covered.</span>
       </div>
+    </div>
+  );
+}
+
+/** "● Online" while the other side has the thread open; nothing until the
+ *  live socket knows. */
+export function PresenceBadge({ online }: { online: boolean | null }) {
+  if (online == null) return null;
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: online ? theme.success : theme.textDim }}>
+      <span
+        aria-hidden
+        style={{ width: 7, height: 7, borderRadius: '50%', background: online ? theme.success : theme.borderSubtle, display: 'inline-block' }}
+      />
+      {online ? 'Online' : 'Offline'}
+    </span>
+  );
+}
+
+/** "Grace at Acme is typing…" under the thread. Keeps its line so the
+ *  composer doesn't jump. */
+export function TypingNote({ name }: { name: string | null }) {
+  return (
+    <div aria-live="polite" style={{ minHeight: 18, fontSize: 12, color: theme.textMuted, fontStyle: 'italic', marginTop: 8 }}>
+      {name != null ? `${name || 'They'} ${name ? 'is' : 'are'} typing…` : ''}
     </div>
   );
 }

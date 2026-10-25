@@ -1066,6 +1066,16 @@ settingsRouter.post('/admin/network/conversations/:id/messages', requireAuth, re
   ),
 );
 
+// A ticket for the thread's live socket, and where to open it (the
+// Network's realtime.ts). The signed-in admin's name is what the creator
+// sees while they type.
+settingsRouter.post('/admin/network/conversations/:id/realtime', requireAuth, requireAdmin, async (req, res) =>
+  proxy(req, res, async (db, tenantId) => {
+    const { authorName } = await actingAdmin(req);
+    return networkProxy.conversationRealtime(db, tenantId, req.params.id!, authorName ? { authorName } : {});
+  }),
+);
+
 // ---------- Network billing proxy ----------
 // Self-hosted vendors subscribe to Network access ($29/mo + 3% metered)
 // from this admin surface. Hosted vendors get bundled with their main

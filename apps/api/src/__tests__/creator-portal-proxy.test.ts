@@ -46,6 +46,10 @@ beforeAll(async () => {
           });
           return res.end(JSON.stringify({ exportedAt: '2026-10-19T00:00:00.000Z', creator: { id: 'cr_1' } }));
         }
+        if (req.url?.endsWith('/realtime')) {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ ticket: 'tkt_1', expiresAt: '2026-10-25T21:00:00.000Z' }));
+        }
         if (req.url?.endsWith('/verify')) {
           res.writeHead(409, { 'content-type': 'application/json' });
           return res.end(JSON.stringify({ error: 'code_not_found', detail: 'Not in the description yet.' }));
@@ -100,6 +104,22 @@ describe('creator-api proxy: platform verification', () => {
     const res = await request(app).post('/creator-api/vendors/me/discover/creators').send({});
     expect(res.status).toBe(404);
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe('creator-api proxy: live conversations', () => {
+  it('forwards a socket ticket request and adds where to open the socket', async () => {
+    const res = await request(app)
+      .post('/creator-api/creators/me/conversations/cnv_1/realtime')
+      .set('Cookie', 'op_network_creator_session=abc')
+      .send({});
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      ticket: 'tkt_1',
+      expiresAt: '2026-10-25T21:00:00.000Z',
+      url: `${process.env.NETWORK_URL!.replace(/^http/, 'ws')}/realtime`,
+    });
+    expect(calls).toEqual([{ method: 'POST', path: '/creators/me/conversations/cnv_1/realtime', cookie: 'op_network_creator_session=abc' }]);
   });
 });
 

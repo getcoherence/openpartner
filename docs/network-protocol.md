@@ -282,6 +282,7 @@ POST /vendors/me/conversations                    { creatorId, body, authorName?
                                                   → 201 { conversationId, message }
 GET  /vendors/me/conversations/:id?before=<msgId> → 200 { conversation, messages[], hasMore, bookings[] }
 POST /vendors/me/conversations/:id/messages       { body, authorName?, authorEmail? } → 201 { message }
+POST /vendors/me/conversations/:id/realtime       { authorName? } → 200 { ticket, expiresAt }   (live socket, below)
 
 POST /vendors/me/bookings
   { "creatorId": "crt_…", "packageId": "cpk_…" | null, "brief": "20–2000 chars",
@@ -351,6 +352,30 @@ federates the partnership the same way an approved application does:
 name and email in its partner records. The creator is told before
 accepting a tracked request, and a later `track` posts a `tracked` event in
 the thread.
+
+**Live threads.** An open thread watches a WebSocket on the Network, at
+`<networkUrl>/realtime` (`wss://network.openpartner.dev/api/realtime`). It
+opens with a one-minute ticket from `POST /vendors/me/conversations/:id/realtime`
+(through `POST /admin/network/conversations/:id/realtime` here, which sends
+the signed-in admin's name), or from the creator's
+`POST /creators/me/conversations/:id/realtime` (through `/creator-api`). Both
+of this repo's proxies add `url`, the socket address built from the Network
+URL they call.
+
+```
+wss://<network>/realtime
+  Sec-WebSocket-Protocol: openpartner-live, ticket.<ticket>   (never in the URL)
+  server → { type: 'hello', side, presence: { creator, vendor } }
+           { type: 'presence', presence }  { type: 'typing', side, name, typing }
+           { type: 'message', id, kind }   (refetch the thread)
+  client → { type: 'typing', typing: true | false }
+```
+
+A message for a side with the thread open is emailed only if that side
+hasn't read the thread 45 seconds later. Sockets are limited per actor and
+re-checked every 20 seconds, so a brand that's blocked is muted and one
+that's suspended is closed. The portal keeps polling, every 60 seconds while
+the socket is up and every 10 otherwise.
 
 **Who receives the brand's mail.** The Network asks the brand's instance,
 with the federation key, before every conversation or booking email to the
