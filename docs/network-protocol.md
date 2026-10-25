@@ -299,6 +299,8 @@ POST /vendors/me/bookings/:id/track               { offeringId } — make it a t
 POST /vendors/me/bookings/:id/approve             delivered → completed
 POST /vendors/me/bookings/:id/recheck             re-run the delivery checks
 POST /vendors/me/bookings/:id/retry-payout        410 gone
+
+GET  /vendors/me/export                           → 200 { exportedAt, vendorId, tables, creators }
 ```
 
 - **`amount`** is whole currency units: the creator's price. It's
@@ -370,6 +372,49 @@ and claims the request. An address that has a brand signs in and lands on
 Booking and read `GET /partners/:id/timeseries` and
 `GET /partners/:id/breakdowns` for clicks since delivery on tracked
 bookings.
+
+**The brand's export.** These conversations and bookings live only on the
+Network, so `GET /vendors/me/export` hands them back for the brand's
+workspace export (`GET /export.json`, which writes them as `network`; see
+[data-portability.md](data-portability.md#the-network-section)). It is the
+brand's side of the creator's `GET /creators/me/export`. This repo calls it
+whenever it holds the vendor token, also while the brand has the Network
+switched off (`evenIfDisabled` in `network-client.ts`, the one call that
+does). A suspended vendor can still call it; a cancelled one has no token.
+
+```json
+{
+  "exportedAt": "2026-10-25T09:00:00.000Z",
+  "vendorId": "ven_…",
+  "tables": {
+    "Conversation": [ … ],
+    "ConversationMessage": [ … ],
+    "BookingRequest": [ … ]
+  },
+  "creators": [ { "id": "crt_…", "name": "Ada Lovelace", "handle": "ada", "avatarUrl": "https://…" } ]
+}
+```
+
+- **Rows** are the Network's raw rows (`select *`), oldest first: every
+  `Conversation` with this vendor, every `ConversationMessage` in them,
+  and every `BookingRequest` with `vendorId` = this vendor, including the
+  payment columns (`amountMinor`, `feeMinor`, `feeRateBps`,
+  `checkoutSessionId`, `paymentIntentId`, `chargeId`, `applicationFeeId`,
+  `paidAt`, `refundedMinor`, `feeRefundedMinor`, `refundedAt`,
+  `disputedAt`) and the phase 1–2 columns on older rows.
+- **Left out, because they aren't the brand's:** the creator's email and
+  every other private `Creator` field (`creators` carries only the public
+  face the brand's views show); `BookingRequest.confirmTokenHash` and
+  `ipHash`; `BookingRequest.stripeAccountId` and `checkoutSessionKeys`
+  (the creator's Stripe account); `Conversation.creatorReadAt` and
+  `creatorNotifiedAt` (the creator's activity); and requests still
+  `unconfirmed`.
+- **The brand's own addresses stay in:** `Conversation.vendorNotifyEmail`
+  and `BookingRequest.contactEmail` are where the brand asked to be
+  reached.
+
+The Network's test classifies every column of the three tables as exported
+or withheld, so a new column fails it until someone decides which.
 
 ## Endpoints (Vendor-side, called by Network)
 
