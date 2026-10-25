@@ -79,9 +79,10 @@ const PLAN_REQUIRED: GatedRoute[] = [
   // Paying a bonus moves money, and on a hosted plan the platform fee bills
   // it, so it needs a plan as onboarding does.
   { method: 'POST', test: (p) => p === '/bonuses' },
-  // Storefront bookings: booking leads to a new partner, approving pays one.
-  { method: 'POST', test: (p) => p === '/admin/network/bookings' },
-  { method: 'POST', test: (p) => /^\/admin\/network\/bookings\/[^/]+\/(approve|retry-payout)$/.test(p) },
+  // Storefront bookings carry their own fee, paid at Checkout, so booking
+  // needs no plan; tracking one adds the creator as a partner, which does.
+  // (A booking that names an offering is checked in its route, settings.ts.)
+  { method: 'POST', test: (p) => /^\/admin\/network\/bookings\/[^/]+\/track$/.test(p) },
 ];
 
 // Program-expansion routes: soft-gated only AFTER the trial expires without a

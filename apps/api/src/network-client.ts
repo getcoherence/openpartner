@@ -29,6 +29,7 @@ import type { Knex } from 'knex';
 import { TABLES, type AudienceSize, type NetworkOutboxRow } from '@openpartner/db';
 import { decryptSecret, encryptSecret } from './crypto.js';
 import { getWhiteLabelState } from './white-label.js';
+import { bookingFeeBpsFor } from './booking-fee.js';
 import { CLIENT_IP_HEADER, signClientIp } from './routes/creator-portal.js';
 
 const CONFIG_KEY = 'network_membership';
@@ -574,11 +575,13 @@ async function callNetwork<T>(
   path: string,
   body?: unknown,
   /** `rawContentType`: send a Buffer body as-is with this content-type
-   *  (image uploads) instead of JSON. */
-  opts?: { actingVendorPartnerId?: string; rawContentType?: string },
+   *  (image uploads) instead of JSON. `evenIfDisabled`: call with the stored
+   *  token when the membership is switched off, for reading back what the
+   *  Network already holds (the export); nothing that acts on the Network. */
+  opts?: { actingVendorPartnerId?: string; rawContentType?: string; evenIfDisabled?: boolean },
 ): Promise<T> {
   const m = await getNetworkMembership(db, tenantId);
-  if (!m || !m.enabled || !m.vendorTokenCiphertext) {
+  if (!m || (!m.enabled && !opts?.evenIfDisabled) || !m.vendorTokenCiphertext) {
     throw new NetworkProxyError(503, 'network_not_configured');
   }
   // Fall back to process.env.NETWORK_URL when the membership row has
@@ -649,6 +652,16 @@ export class NetworkProxyError extends Error {
   }
 }
 
+/** GET /vendors/me/export (docs/network-protocol.md): Network rows keyed by
+ *  table name, minus what is the creator's, and the creators they name as
+ *  their public face. */
+export interface NetworkVendorExport {
+  exportedAt: string;
+  vendorId: string;
+  tables: Record<string, Array<Record<string, unknown>>>;
+  creators: Array<{ id: string; name: string | null; handle: string | null; avatarUrl: string | null }>;
+}
+
 // Thin wrappers — they're a 1:1 with Network endpoints. Kept here so
 // the route handlers stay declarative.
 export const networkProxy = {
@@ -687,9 +700,10 @@ export const networkProxy = {
       `/vendors/me/discover/creators${querystring ? `?${querystring}` : ''}`,
     ),
 
-  /** Tracked storefront bookings: book a creator's package for an agreed
-   *  amount, then approve the delivered work, which the Network pays as a
-   *  bonus through this instance's POST /bonuses. */
+  /** Storefront bookings (Network docs/creator-storefront.md §8): request a
+   *  creator's package, pay upfront through Checkout on the creator's own
+   *  Stripe account once they agree a price, approve the delivered work.
+   *  Each one lives in the (creator, brand) conversation below. */
   listBookings: (db: Knex, tenantId: string, status?: string) =>
     callNetwork<{ bookings: unknown[] }>(
       db,
@@ -698,9 +712,38 @@ export const networkProxy = {
       `/vendors/me/bookings${status ? `?status=${encodeURIComponent(status)}` : ''}`,
     ),
   createBooking: (db: Knex, tenantId: string, body: unknown) =>
-    callNetwork<{ booking: unknown }>(db, tenantId, 'POST', '/vendors/me/bookings', body),
-  bookingAction: (db: Knex, tenantId: string, id: string, action: 'cancel' | 'approve' | 'retry-payout' | 'recheck') =>
-    callNetwork<{ booking: unknown }>(db, tenantId, 'POST', `/vendors/me/bookings/${encodeURIComponent(id)}/${action}`),
+    callNetwork<{ booking: unknown; conversationId: string }>(db, tenantId, 'POST', '/vendors/me/bookings', body),
+  bookingAction: (
+    db: Knex,
+    tenantId: string,
+    id: string,
+    action: 'cancel' | 'approve' | 'recheck' | 'checkout' | 'sync' | 'track',
+    body?: unknown,
+  ) => callNetwork<{ booking?: unknown; url?: string }>(db, tenantId, 'POST', `/vendors/me/bookings/${encodeURIComponent(id)}/${action}`, body ?? {}),
+  /** Continue a public storefront request as this brand (§8.4). */
+  claimBooking: (db: Knex, tenantId: string, body: unknown) =>
+    callNetwork<{ booking: unknown; conversationId: string }>(db, tenantId, 'POST', '/vendors/me/bookings/claim', body),
+
+  /** Conversations with creators (§8.1). */
+  listConversations: (db: Knex, tenantId: string) =>
+    callNetwork<{ conversations: unknown[]; unreadTotal: number }>(db, tenantId, 'GET', '/vendors/me/conversations'),
+  startConversation: (db: Knex, tenantId: string, body: unknown) =>
+    callNetwork<{ conversationId: string; message: unknown }>(db, tenantId, 'POST', '/vendors/me/conversations', body),
+  getConversation: (db: Knex, tenantId: string, id: string, before?: string) =>
+    callNetwork<unknown>(
+      db,
+      tenantId,
+      'GET',
+      `/vendors/me/conversations/${encodeURIComponent(id)}${before ? `?before=${encodeURIComponent(before)}` : ''}`,
+    ),
+  postConversationMessage: (db: Knex, tenantId: string, id: string, body: unknown) =>
+    callNetwork<{ message: unknown }>(db, tenantId, 'POST', `/vendors/me/conversations/${encodeURIComponent(id)}/messages`, body),
+  /** All of the above the Network holds for this brand: its conversations,
+   *  their messages, and its bookings with their payment records, for the
+   *  workspace export (export.ts exportNetwork). Also while the membership
+   *  is switched off: the records are still there, and still the brand's. */
+  exportVendorData: (db: Knex, tenantId: string) =>
+    callNetwork<NetworkVendorExport>(db, tenantId, 'GET', '/vendors/me/export', undefined, { evenIfDisabled: true }),
 
   /** Invite a creator to apply to one of this vendor's offerings.
    *  Network mints an OfferingInvitation + emails the creator a
@@ -803,6 +846,39 @@ async function callNetworkAdmin<T = void>(
     throw new NetworkAdminError(`network admin call failed (${res.status}): ${text.slice(0, 300)}`, res.status, code);
   }
   return (text ? JSON.parse(text) : undefined) as T;
+}
+
+/** The public storefront request behind an emailed link (Network
+ *  docs/creator-storefront.md §8.4), including the address it was sent to.
+ *  Admin key: only this server reads it, for the booking-claim landing
+ *  page and to create a brand for that address. */
+export interface BookingClaimPreview {
+  creator: { id: string; name: string; handle: string | null; avatarUrl: string | null };
+  packageTitle: string | null;
+  contactName: string;
+  contactEmail: string;
+  company: string | null;
+  website: string | null;
+  brief: string;
+  budgetNote: string | null;
+  expiresAt: string;
+}
+
+export async function previewBookingClaim(networkUrl: string, token: string): Promise<BookingClaimPreview> {
+  return callNetworkAdmin<BookingClaimPreview>(networkUrl, 'POST', '/bookings/preview', { token });
+}
+
+/** Ops console: the booking fee self-hosted brands pay (hosted brands pay
+ *  their plan's rate, bookingFeeBpsFor). */
+export async function getNetworkBookingFee(networkUrl: string): Promise<{ settings: { defaultBps: number }; maxBps: number; defaultBps: number }> {
+  return callNetworkAdmin(networkUrl, 'GET', '/admin/booking-fee');
+}
+
+export async function setNetworkBookingFee(
+  networkUrl: string,
+  body: { defaultBps: number; updatedByEmail?: string },
+): Promise<{ settings: { defaultBps: number } }> {
+  return callNetworkAdmin(networkUrl, 'PUT', '/admin/booking-fee', body);
 }
 
 /** The platform-level Network origin. Creator moderation is cross-tenant, so
@@ -1496,6 +1572,15 @@ export async function sendHeartbeat(db: Knex, tenantId: string): Promise<Heartbe
     console.warn('[network-client] tenant logoUrl read failed; skipping logo propagation', err);
   }
 
+  // The booking fee rate the brand's plan gives it (booking-fee.ts), so the
+  // Network can show it before the brand pays. Best-effort, like the logo.
+  let bookingFeeBps: number | null = null;
+  try {
+    bookingFeeBps = await bookingFeeBpsFor(db, tenantId);
+  } catch (err) {
+    console.warn('[network-client] booking fee rate read failed; skipping it', err);
+  }
+
   const url = `${m.networkUrl.replace(/\/$/, '')}/vendors/me/heartbeat`;
   try {
     const res = await fetch(url, {
@@ -1509,6 +1594,7 @@ export async function sendHeartbeat(db: Knex, tenantId: string): Promise<Heartbe
         partnerCount,
         ...(lastEventAt ? { lastEventAt } : {}),
         logoUrl,
+        ...(bookingFeeBps != null ? { bookingFeeBps } : {}),
       }),
       signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),
     });

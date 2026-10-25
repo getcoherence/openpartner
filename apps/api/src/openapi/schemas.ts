@@ -1517,11 +1517,39 @@ export const NetworkMembership = z
 
 // ---------- Export ----------
 
+const ExportRows = z.array(z.record(z.string(), z.unknown()));
+
+export const ExportNetworkSection = z
+  .object({
+    status: z.enum(['included', 'skipped', 'not_connected']).openapi({
+      description:
+        '`included`: the rows below came from the Network (also while the brand has the Network switched off). `skipped`: the call failed, so this file has none of it (see `reason`, and `httpStatus` when the Network answered). `not_connected`: the brand never finished connecting to the Network, so there is nothing to read.',
+    }),
+    reason: z.string().optional().openapi({
+      description:
+        'Why it was skipped: `network_unreachable`, `network_error` (with `httpStatus`), `invalid_response`, `network_url_unresolvable` or `vendor_token_undecryptable`.',
+    }),
+    httpStatus: z.number().int().optional(),
+    exportedAt: ts.optional(),
+    tables: z.record(z.string(), ExportRows).optional().openapi({
+      description:
+        "Network rows by table: `Conversation`, `ConversationMessage` and `BookingRequest` (with its payment columns), minus what is the creator's. See docs/network-protocol.md.",
+    }),
+    creators: ExportRows.optional().openapi({
+      description: 'The creators those rows name: `id`, `name`, `handle`, `avatarUrl`. Never their email.',
+    }),
+  })
+  .openapi('ExportNetworkSection', {
+    description:
+      'What the OpenPartner Network holds for the brand: its storefront conversations, their messages, and its bookings with their payments. A record: `POST /import` does not restore it.',
+  });
+
 export const ExportBundle = z
   .object({
     exportedAt: ts,
     schemaVersion: z.number().int(),
-    tables: z.record(z.string(), z.array(z.record(z.string(), z.unknown()))),
+    tables: z.record(z.string(), ExportRows),
+    network: ExportNetworkSection,
   })
   .openapi('ExportBundle', { description: 'The whole tenant, re-importable by a self-hosted instance (`POST /import`).' });
 

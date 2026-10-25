@@ -58,7 +58,7 @@ Each operation says which of these it accepts. Scopes:
 
 ${scopeTable(operations)}
 
-\`partners:read\` also unlocks \`GET /brand-resources\` (brand logo, colours and shareable assets), which this reference doesn't cover yet. The OpenPartner Network federation key holds ${NETWORK_FEDERATION_SCOPES.map((s) => `\`${s}\``).join(', ')}.
+\`partners:read\` also unlocks \`GET /brand-resources\` (brand logo, colours and shareable assets), which this reference doesn't cover yet, and \`POST /network/notify-recipients\`, which the OpenPartner Network uses to check that an address is still one of your active admins before it emails your brand. The OpenPartner Network federation key holds ${NETWORK_FEDERATION_SCOPES.map((s) => `\`${s}\``).join(', ')}.
 
 **Scoped reads that don't exist yet:** \`GET /partners/{id}/funnel\`, \`/coupons\` and \`/commission-snapshot\` accept no scope. Read them with an admin key from your server, or use \`/timeseries\` (which has \`partners:read\`) for funnel-like counts.
 

@@ -15,9 +15,14 @@ that overstates itself is worse than one with a documented hole.
 {
   "exportedAt": "2026-08-09T12:00:00.000Z",
   "schemaVersion": 11,
-  "tables": { "Partner": [ … ], "Program": [ … ], … }
+  "tables": { "Partner": [ … ], "Program": [ … ], … },
+  "network": { "status": "included", "tables": { "Conversation": [ … ], … }, … }
 }
 ```
+
+`network` is what the OpenPartner Network holds for the brand (see
+[The Network section](#the-network-section)): a record that travels with
+the file, not part of the restore.
 
 Rows are raw DB rows — the same shape `select *` returns, no reshaping,
 no derived fields. Anything derived (attribution, commissions) is present
@@ -174,6 +179,63 @@ table rather than assuming `id`. `Config` (primary key `tenantId, key`) and
 `ConversionPostbackToken` (at most one live token per tenant, a partial
 unique index) skip on any unique collision too, so a setting or live token
 the destination already has is kept and the bundle's copy is skipped.
+
+### The Network section
+
+A brand on the OpenPartner Network talks to creators and books them there
+(storefront conversations, bookings paid upfront through Checkout). Those
+rows live on the Network, in no local table, so `GET /export.json` reads
+them from the Network's `GET /vendors/me/export`
+([network-protocol.md](network-protocol.md#storefront-bookings-and-conversations-vendorsmebookings-vendorsmeconversations))
+while it builds the file, and writes them as `network`:
+
+```json
+"network": {
+  "status": "included",
+  "exportedAt": "2026-10-25T09:00:00.000Z",
+  "tables": {
+    "Conversation": [ … ],
+    "ConversationMessage": [ … ],
+    "BookingRequest": [ … ]
+  },
+  "creators": [ { "id": "crt_…", "name": "Ada Lovelace", "handle": "ada", "avatarUrl": "https://…" } ]
+}
+```
+
+- `tables` holds the Network's raw rows: every conversation the brand has
+  with a creator, every message in them, and every booking the brand made
+  or claimed, with its payment record: price and booking fee in Stripe's
+  integer form, the fee rate, the Checkout Session, PaymentIntent, charge
+  and application-fee ids, and what was paid, refunded or disputed and
+  when. `creators` names the creators those rows point at, by their public
+  face.
+- What isn't the brand's stays on the Network: the creator's email and
+  other private fields, the creator's Stripe account id, when the creator
+  read a thread or was emailed about it, a booking's confirmation-token
+  hash and the requester's IP hash, and public requests nobody confirmed.
+  network-protocol.md has the full list.
+- **`status`** is `included`, `not_connected` (the brand never finished
+  connecting, so it holds no Network token and there is nothing to read),
+  or `skipped`. A brand that switched the Network off is still read: its
+  conversations and bookings are still there, and still its. A Network outage
+  never fails the export: the local tables come back as always, and
+  `network` says `skipped` with a `reason`: `network_unreachable`,
+  `network_error` (with the Network's `httpStatus`), `invalid_response`,
+  `network_url_unresolvable` or `vendor_token_undecryptable`. Download it
+  again once the Network is back.
+- **Not restored.** `POST /import` ignores the section, and neither the
+  SQL dump nor the per-table downloads carry it: the rows are the
+  Network's, and a self-hosted instance has nowhere to put them. They are
+  the brand's record of its correspondence and payments.
+- **Export before you delete the workspace.** Deleting it ends the
+  brand's Network membership straight away, and once the workspace is
+  gone the Network removes its conversations too. **Download workspace
+  data** in the Danger zone downloads this same file.
+
+The section came without a version bump. It sits outside `tables`, which
+is what `SCHEMA_VERSION` describes, and `POST /import` drops it whatever
+the version: an older instance imports a newer bundle as before, and a
+bundle from before the section simply has none.
 
 ### Credentials
 

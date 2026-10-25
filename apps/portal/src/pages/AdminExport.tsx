@@ -64,7 +64,9 @@ export function AdminExport() {
               <code>POST /import</code>; the SQL dump restores directly with{' '}
               <code>psql -v tenant_id=&lt;destination tenant id&gt; -f openpartner-export.sql</code>. Webhook
               signing secrets and the postback token are never included: restored webhooks get new secrets and
-              start paused, and the postback token needs rotating.
+              start paused, and the postback token needs rotating. On the OpenPartner Network, the JSON also
+              carries your conversations with creators and your storefront bookings and payments, fetched from
+              the Network as it downloads; they are your record and aren&rsquo;t restored by an import.
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
