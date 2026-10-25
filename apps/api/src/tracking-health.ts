@@ -38,6 +38,12 @@
  *                coupon's partner while the customer also had an in-window
  *                link click from another partner who could have earned it
  *                and got nothing.
+ *   codes        per partner credited through a code, the customers credited
+ *                in the window and how many of them came through the
+ *                partner's code with no link click of the partner's behind
+ *                it. A code that's nearly all clickless may have spread past
+ *                the partner's audience (coupon sites, extensions); for a
+ *                podcast it's normal.
  *   stripe       distinct Stripe events the catch-up job recovered after
  *                the webhook missed them (metadata.recoveredBy), when it runs.
  *   issues       input OpenPartner dropped (tracking-issues.ts).
@@ -57,6 +63,9 @@ const CLICK_AFTER_EVENT_GRACE = "interval '5 minutes'";
 
 /** Browser rows shown; the rest fold into one "other" row. */
 const MAX_BROWSER_ROWS = 12;
+
+/** Partners listed in `codes`, most clickless customers first. */
+const MAX_CODE_ROWS = 20;
 
 export interface FunnelCounts {
   clicks: number;
@@ -79,6 +88,16 @@ export interface UnattributedRow {
   value: Array<{ currency: string; amount: number }>;
 }
 
+export interface CodeShareRow {
+  partnerId: string;
+  partnerName: string;
+  /** Distinct customers credited to the partner in the window. */
+  customers: number;
+  /** Of those, customers credited through the partner's code with no link
+   *  click of the partner's before it. */
+  codeOnly: number;
+}
+
 export interface TrackingHealth {
   window: { days: number; since: string; programId: string | null };
   funnel: FunnelCounts & { flagged: number; bots: number };
@@ -88,6 +107,7 @@ export interface TrackingHealth {
   byBrowser: BrowserFunnel[];
   unattributed: { events: number; byReason: UnattributedRow[] };
   coupons: { overrodeLink: number };
+  codes: CodeShareRow[];
   stripe: { recovered: number };
   issues: TrackingIssueSummary[];
   signals: {
@@ -116,6 +136,7 @@ export async function trackingHealth(
   const clickRows = await clicksByUserAgent(db, tenantId, since, programId);
   const unattributed = await unattributedConversions(db, tenantId, since);
   const coupons = await couponOverrides(db, tenantId, since, programId);
+  const codes = await codeShare(db, tenantId, since, programId);
   const recovered = await stripeRecovered(db, tenantId, since);
   const issues = await trackingIssuesSince(db, tenantId, since);
   const signals = await lastSignals(db, tenantId);
@@ -169,6 +190,7 @@ export async function trackingHealth(
     byBrowser,
     unattributed,
     coupons: { overrodeLink: coupons },
+    codes,
     stripe: { recovered },
     issues,
     signals,
@@ -371,6 +393,81 @@ async function couponOverrides(db: Knex, tenantId: string, since: Date, programI
     ],
   );
   return rows[0]?.n ?? 0;
+}
+
+/**
+ * Per partner credited through a code in the window: the customers credited
+ * to them, and how many came through the partner's code (every touch the
+ * partner holds on the conversion is a coupon redemption's synthetic click)
+ * with no link click of the partner's, not flagged, before that conversion.
+ * A conversion's rows under its first-computed model only, the live one
+ * (priorConversions in attribution.ts), so a re-run under another model
+ * doesn't blur it. Customers, not conversions, so one clickless customer's
+ * renewals count once. Only partners with a code-credited conversion are
+ * listed.
+ */
+async function codeShare(db: Knex, tenantId: string, since: Date, programId: string | null): Promise<CodeShareRow[]> {
+  const corrective = [...CORRECTIVE_EVENT_TYPES];
+  const programFilter = programId ? 'and a."programId" = ?' : '';
+  const { rows } = await db.raw<{ rows: CodeShareRow[] }>(
+    `with credited as (
+       select a."partnerId", e."userId", e.ts,
+              bool_and(c."linkId" is null and c."landingUrl" like 'coupon://%') as "viaCode"
+         from ?? a
+         join ?? e on e.id = a."eventId" and e."tenantId" = a."tenantId"
+         join ?? c on c.id = a."clickId" and c."tenantId" = a."tenantId"
+        where a."tenantId" = ? and e.ts >= ?
+          and e.type not in (${corrective.map(() => '?').join(', ')})
+          and a.model = (
+            select a0.model from ?? a0
+             where a0."eventId" = a."eventId" and a0."tenantId" = a."tenantId"
+             order by a0."computedAt", a0.id
+             limit 1
+          )
+          ${programFilter}
+        group by a."partnerId", e.id, e."userId", e.ts
+     ),
+     code_only as (
+       select distinct cr."partnerId", cr."userId"
+         from credited cr
+        where cr."viaCode"
+          and not exists (
+            select 1
+              from ?? i
+              join ?? lc on lc.id = i."clickId" and lc."tenantId" = i."tenantId"
+             where i."tenantId" = ? and i."userId" = cr."userId"
+               and lc."partnerId" = cr."partnerId"
+               and lc."linkId" is not null and lc."fraudFlag" is null
+               and lc.ts <= cr.ts + ${CLICK_AFTER_EVENT_GRACE}
+          )
+     )
+     select cr."partnerId", p.name as "partnerName",
+            count(distinct cr."userId")::int as customers,
+            count(distinct co."userId")::int as "codeOnly"
+       from credited cr
+       join ?? p on p.id = cr."partnerId" and p."tenantId" = ?
+       left join code_only co on co."partnerId" = cr."partnerId" and co."userId" = cr."userId"
+      group by cr."partnerId", p.name
+     having bool_or(cr."viaCode")
+      order by count(distinct co."userId") desc, p.name
+      limit ${MAX_CODE_ROWS}`,
+    [
+      TABLES.Attribution,
+      TABLES.Event,
+      TABLES.Click,
+      tenantId,
+      since,
+      ...corrective,
+      TABLES.Attribution,
+      ...(programId ? [programId] : []),
+      TABLES.Identity,
+      TABLES.Click,
+      tenantId,
+      TABLES.Partner,
+      tenantId,
+    ],
+  );
+  return rows;
 }
 
 /** Stripe events the catch-up recorded after the webhook missed them:

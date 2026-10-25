@@ -3,8 +3,12 @@
  * payments next to what OpenPartner recorded and credited.
  *
  *   - each paid invoice and one-time Checkout payment in the window is
- *     credited, recorded, missed (not recorded despite a partner signal) or
- *     unreferred, with totals per currency (zero-decimal ones too)
+ *     credited, recorded, missed (not recorded despite a partner signal
+ *     that would have credited), notCreditable (a signal that wouldn't
+ *     have: outside the window, a deactivated code, only excluded clicks)
+ *     or unreferred, with totals per currency (zero-decimal ones too)
+ *   - a renewal carried by an earlier credited conversion is missed even
+ *     with the click past its window, unless the program lets renewals go
  *   - the signals: a customer linked to a click (by cus_ id or the brand's
  *     openpartner_user_id), the program's click in client_reference_id, a
  *     partner's promotion code
@@ -208,12 +212,13 @@ describe.skipIf(skipIntegration)('reconcileStripe', () => {
       status: 'complete',
       expand: ['data.customer', 'data.total_details.breakdown'],
     });
-    expect(r.counts).toEqual({ payments: 11, credited: 2, recorded: 1, missed: 4, unreferred: 4 });
+    expect(r.counts).toEqual({ payments: 11, credited: 2, recorded: 1, missed: 4, notCreditable: 0, unreferred: 4 });
+    expect(r.notCreditableReasons).toEqual({ outside_window: 0, inactive_code: 0, excluded: 0 });
     // The default currency (USD) first, then by code.
     expect(r.totals).toEqual([
-      { currency: 'USD', stripe: 232, recorded: 69, credited: 49, missed: 55, unreferred: 108 },
-      { currency: 'EUR', stripe: 47, recorded: 25, credited: 25, missed: 15, unreferred: 7 },
-      { currency: 'JPY', stripe: 5000, recorded: 0, credited: 0, missed: 0, unreferred: 5000 },
+      { currency: 'USD', stripe: 232, recorded: 69, credited: 49, missed: 55, notCreditable: 0, unreferred: 108 },
+      { currency: 'EUR', stripe: 47, recorded: 25, credited: 25, missed: 15, notCreditable: 0, unreferred: 7 },
+      { currency: 'JPY', stripe: 5000, recorded: 0, credited: 0, missed: 0, notCreditable: 0, unreferred: 5000 },
     ]);
     expect(r.missed.map((m) => [m.id, m.signals])).toEqual([
       ['cs_click', ['partner_click']],
@@ -270,7 +275,7 @@ describe.skipIf(skipIntegration)('reconcileStripe', () => {
       [],
     );
     const r = await reconcileStripe(db, T, client, { days: 30, livemode: true, now: NOW });
-    expect(r.counts).toEqual({ payments: 3, credited: 0, recorded: 1, missed: 0, unreferred: 2 });
+    expect(r.counts).toEqual({ payments: 3, credited: 0, recorded: 1, missed: 0, notCreditable: 0, unreferred: 2 });
     expect(r.missed).toEqual([]);
   });
 
@@ -293,13 +298,104 @@ describe.skipIf(skipIntegration)('reconcileStripe', () => {
       [session('cs_made_invoice', 3, 4000, { invoice: 'in_from_checkout', client_reference_id: seeded.clickId })],
     );
     const r = await reconcileStripe(db, T, client, { days: 30, livemode: true, now: NOW });
-    expect(r.counts).toEqual({ payments: 3, credited: 0, recorded: 0, missed: 3, unreferred: 0 });
+    expect(r.counts).toEqual({ payments: 3, credited: 0, recorded: 0, missed: 3, notCreditable: 0, unreferred: 0 });
     expect(Object.fromEntries(r.missed.map((m) => [m.id, m.signals]))).toEqual({
       in_from_checkout: ['partner_click'],
       in_line_item: ['partner_code'],
       in_line_item_source: ['partner_code'],
     });
-    expect(r.totals).toEqual([{ currency: 'USD', stripe: 91, recorded: 0, credited: 0, missed: 91, unreferred: 0 }]);
+    expect(r.totals).toEqual([{ currency: 'USD', stripe: 91, recorded: 0, credited: 0, missed: 91, notCreditable: 0, unreferred: 0 }]);
+  });
+
+  it("splits a partner signal that wouldn't have credited anyone from a miss, and says why", async () => {
+    const seeded = await seedProgram();
+    // A second program with a 7-day window, for clicks past it.
+    const shortProgram = ulid();
+    await db(TABLES.Program).insert({
+      id: shortProgram,
+      tenantId: T,
+      name: 'Short window',
+      attributionModel: 'last_click',
+      attributionWindowDays: 7,
+      commissionRule: { type: 'percent', value: 20 },
+      destinationUrl: 'https://brand.example/',
+    });
+    const noRenewals = ulid();
+    await db(TABLES.Program).insert({
+      id: noRenewals,
+      tenantId: T,
+      name: 'Renewals go',
+      attributionModel: 'last_click',
+      attributionWindowDays: 7,
+      renewalsStayWithPartner: false,
+      commissionRule: { type: 'percent', value: 20 },
+      destinationUrl: 'https://brand.example/',
+    });
+    const click = async (userId: string, programId: string, daysAgo: number, fields: Record<string, unknown> = {}) => {
+      const id = ulid();
+      await db(TABLES.Click).insert({
+        id,
+        tenantId: T,
+        linkId: null,
+        partnerId: seeded.partnerId,
+        programId,
+        landingUrl: 'https://brand.example/',
+        ts: new Date(NOW.getTime() - daysAgo * DAY),
+        ...fields,
+      });
+      await db(TABLES.Identity).insert({ id: ulid(), tenantId: T, clickId: id, userId });
+      return id;
+    };
+    // A click 20 days before a payment, in a program with a 7-day window.
+    await click('cus_in_old', shortProgram, 23);
+    // A flagged click inside the window.
+    await click('cus_in_flagged', seeded.programId, 5, { fraudFlag: 'manual' });
+    // An old click, but the customer's first payment was credited to it:
+    // a renewal keeps that partner, unless the program lets renewals go.
+    for (const [userId, programId] of [['cus_in_renewal', shortProgram], ['cus_in_renewal_off', noRenewals]] as const) {
+      const old = await click(userId, programId, 40);
+      const first = ulid();
+      await db(TABLES.Event).insert({ id: first, tenantId: T, userId, type: 'invoice_paid', value: '30.00', currency: 'USD', ts: new Date(NOW.getTime() - 38 * DAY) });
+      await db(TABLES.Attribution).insert({ id: ulid(), tenantId: T, eventId: first, partnerId: seeded.partnerId, programId, clickId: old, model: 'last_click', weight: '1.0000' });
+    }
+    // Codes: a revoked partner's, one deactivated before the payment, one after.
+    const revoked = ulid();
+    await db(TABLES.Partner).insert({ id: revoked, tenantId: T, name: 'Gone', email: `g-${revoked}@example.com`, revokedAt: new Date(NOW.getTime() - 30 * DAY) });
+    await db(TABLES.Coupon).insert([
+      { id: `cpn_${ulid()}`, tenantId: T, partnerId: revoked, programId: seeded.programId, code: 'GONE10', stripePromotionCodeId: 'promo_revoked' },
+      { id: `cpn_${ulid()}`, tenantId: T, partnerId: seeded.partnerId, programId: seeded.programId, code: 'OLD10', stripePromotionCodeId: 'promo_old', deactivatedAt: new Date(NOW.getTime() - 10 * DAY) },
+      { id: `cpn_${ulid()}`, tenantId: T, partnerId: seeded.partnerId, programId: seeded.programId, code: 'LATE10', stripePromotionCodeId: 'promo_late', deactivatedAt: new Date(NOW.getTime() - DAY) },
+    ]);
+    const promo = (id: string) => ({ discounts: [{ id: `di_${id}`, promotion_code: id }] });
+    // The partner's own code, used by a customer who clicked that partner
+    // 40 days ago: the redemption reuses the old click, so it's past the window.
+    await click('cus_in_code_reuses_old', shortProgram, 40);
+    // An invoice created before the click and paid after it.
+    await click('cus_in_paid_later', seeded.programId, 5);
+    // A click linked to the cus_ id, but the pipeline keys this customer on
+    // the brand's own id, which has none.
+    await click('cus_meta', seeded.programId, 5);
+
+    const { client } = fakeStripe(
+      [
+        invoice('in_old', 3, 1000),
+        invoice('in_flagged', 3, 1100),
+        invoice('in_renewal', 3, 1200),
+        invoice('in_renewal_off', 3, 1300),
+        invoice('in_revoked_code', 3, 1400, promo('promo_revoked')),
+        invoice('in_old_code', 3, 1500, promo('promo_old')),
+        invoice('in_late_code', 3, 1600, promo('promo_late')),
+        invoice('in_code_reuses_old', 3, 1700, promo('promo_partner')),
+        invoice('in_paid_later', 10, 1800, { status_transitions: { paid_at: sec(3) } }),
+        invoice('in_metadata_user', 3, 1900, { customer: { id: 'cus_meta', metadata: { openpartner_user_id: 'user_meta' } } }),
+      ],
+      [],
+    );
+    const r = await reconcileStripe(db, T, client, { days: 30, livemode: true, now: NOW });
+    expect(r.counts).toEqual({ payments: 10, credited: 0, recorded: 0, missed: 3, notCreditable: 6, unreferred: 1 });
+    expect(r.notCreditableReasons).toEqual({ outside_window: 3, inactive_code: 1, excluded: 2 });
+    expect(r.missed.map((m) => m.id).sort()).toEqual(['in_late_code', 'in_paid_later', 'in_renewal']);
+    expect(r.totals).toEqual([{ currency: 'USD', stripe: 145, recorded: 0, credited: 0, missed: 46, notCreditable: 80, unreferred: 19 }]);
   });
 
   it('pages through Stripe, and clamps the window to 90 days', async () => {

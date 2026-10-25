@@ -46,6 +46,7 @@ export interface TrackingHealthReport {
     byReason: Array<{ reason: UnattributedReason; events: number; value: Array<{ currency: string; amount: number }> }>;
   };
   coupons: { overrodeLink: number };
+  codes: Array<{ partnerId: string; partnerName: string; customers: number; codeOnly: number }>;
   stripe: { recovered: number };
   issues: Array<{ kind: IssueKind; count: number; days: number; sampleRef: string | null; lastSeenAt: string }>;
   signals: {
@@ -59,6 +60,14 @@ export interface TrackingHealthReport {
 
 type PartnerSignal = 'linked_customer' | 'partner_click' | 'partner_code';
 
+type NotCreditableReason = 'outside_window' | 'inactive_code' | 'excluded';
+
+const NOT_CREDITABLE: Record<NotCreditableReason, string> = {
+  outside_window: 'outside the window',
+  inactive_code: 'with a code deactivated before the payment',
+  excluded: 'with only flagged clicks or revoked partners',
+};
+
 /** GET /admin/tracking-health/stripe (apps/api/src/stripe-reconciliation.ts). */
 export type StripeReconciliationReport =
   | {
@@ -67,8 +76,17 @@ export type StripeReconciliationReport =
       computedAt: string;
       livemode: boolean;
       truncated: boolean;
-      counts: { payments: number; credited: number; recorded: number; missed: number; unreferred: number };
-      totals: Array<{ currency: string; stripe: number; recorded: number; credited: number; missed: number; unreferred: number }>;
+      counts: { payments: number; credited: number; recorded: number; missed: number; notCreditable: number; unreferred: number };
+      notCreditableReasons: Record<NotCreditableReason, number>;
+      totals: Array<{
+        currency: string;
+        stripe: number;
+        recorded: number;
+        credited: number;
+        missed: number;
+        notCreditable: number;
+        unreferred: number;
+      }>;
       missed: Array<{
         kind: 'invoice' | 'checkout';
         id: string;
@@ -153,6 +171,19 @@ function rate(part: number, whole: number): number | null {
 function values(list: Array<{ currency: string; amount: number }>): string {
   if (list.length === 0) return '—';
   return list.map((v) => money(v.amount, v.currency)).join(' + ');
+}
+
+/** " (2 outside the window, 1 with a code deactivated before the payment)", or nothing. */
+function notCreditableWhy(reasons: Record<NotCreditableReason, number>): string {
+  const parts = (Object.keys(NOT_CREDITABLE) as NotCreditableReason[])
+    .filter((k) => reasons[k] > 0)
+    .map((k) => `${reasons[k].toLocaleString()} ${NOT_CREDITABLE[k]}`);
+  return parts.length ? ` (${parts.join(', ')})` : '';
+}
+
+/** A code whose customers almost never clicked the partner's own link. */
+function clickless(row: { customers: number; codeOnly: number }): boolean {
+  return row.codeOnly >= 5 && row.codeOnly / row.customers >= 0.8;
 }
 
 function Muted({ children }: { children: ReactNode }) {
@@ -378,6 +409,40 @@ export function AdminTrackingHealth() {
             />
           </div>
 
+          {data.codes.length > 0 && (
+            <>
+              <SectionHeading>Partner codes</SectionHeading>
+              <Table
+                columns={[
+                  'Partner',
+                  { label: 'Customers credited', align: 'right' },
+                  { label: 'Code, no click of theirs', align: 'right' },
+                  { label: 'Share', align: 'right' },
+                ]}
+                rows={data.codes.map((c) => [
+                  c.partnerName,
+                  c.customers.toLocaleString(),
+                  c.codeOnly.toLocaleString(),
+                  <span
+                    key="s"
+                    style={clickless(c) ? { color: theme.warn, fontWeight: 600 } : undefined}
+                    title={clickless(c) ? 'Almost every customer came through the code alone.' : undefined}
+                  >
+                    {pct(c.codeOnly, c.customers)}
+                  </span>,
+                ])}
+              />
+              <div style={{ marginTop: 8 }}>
+                <Muted>
+                  Customers credited through a partner&rsquo;s code who never clicked that partner&rsquo;s link first. A
+                  code that brings almost nobody through the partner&rsquo;s own link may have spread beyond their
+                  audience, to coupon sites or browser extensions. For a podcast or video read, where people type the
+                  code they heard, it&rsquo;s normal.
+                </Muted>
+              </div>
+            </>
+          )}
+
           <SectionHeading>Last received</SectionHeading>
           <Card>
             <div
@@ -403,9 +468,9 @@ export function AdminTrackingHealth() {
 
           <div style={{ marginTop: 20 }}>
             <Muted>
-              What this can&rsquo;t see: a sale that left no trace at all, such as a partner&rsquo;s visitor who blocked
-              the script, declined cookies and paid without an account. Those can&rsquo;t be counted anywhere. What it
-              does show is every point where a trace started and then stopped.
+              What this can&rsquo;t see: a sale that left no trace at all, with no click kept in the browser or by your
+              server, no linked account and no partner code. Those can&rsquo;t be credited anywhere. What it does show
+              are the common places where a trace starts and then stops.
             </Muted>
           </div>
         </>
@@ -482,7 +547,8 @@ function StripeReconciliationSection({ days }: { days: number }) {
               { label: 'In Stripe', align: 'right' },
               { label: 'Recorded', align: 'right' },
               { label: 'Credited to partners', align: 'right' },
-              { label: 'Missed', align: 'right' },
+              { label: 'Missed sales', align: 'right' },
+              { label: 'Not creditable', align: 'right' },
               { label: 'No partner signal', align: 'right' },
             ]}
             rows={r.totals.map((t) => [
@@ -493,6 +559,7 @@ function StripeReconciliationSection({ days }: { days: number }) {
               <span key="m" style={t.missed > 0 ? { color: theme.warn, fontWeight: 600 } : undefined}>
                 {money(t.missed, t.currency)}
               </span>,
+              money(t.notCreditable, t.currency),
               money(t.unreferred, t.currency),
             ])}
             empty="No paid invoices or Checkout payments in Stripe in this window."
@@ -501,8 +568,10 @@ function StripeReconciliationSection({ days }: { days: number }) {
             <Muted>
               {r.counts.payments.toLocaleString()} paid invoices and one-time Checkout payments created in the window:{' '}
               {r.counts.credited.toLocaleString()} credited to a partner, {r.counts.recorded.toLocaleString()} recorded
-              without credit, {r.counts.missed.toLocaleString()} missed, {r.counts.unreferred.toLocaleString()} with no
-              partner signal. Gross, before refunds. Payments taken outside invoices and Checkout aren&rsquo;t read from
+              without credit, {r.counts.missed.toLocaleString()} missed,{' '}
+              {r.counts.notCreditable.toLocaleString()} with a partner signal that wouldn&rsquo;t have earned credit
+              {notCreditableWhy(r.notCreditableReasons)}, {r.counts.unreferred.toLocaleString()} with no partner signal.
+              Missed means a partner would have been credited had it been recorded. Gross, before refunds. Payments taken outside invoices and Checkout aren&rsquo;t read from
               Stripe; report those with the conversions API.
               {r.truncated && ' Only the most recent 2,000 of each kind were read.'} Read from Stripe{' '}
               {formatDate(r.computedAt, { relative: true })}.
@@ -513,8 +582,8 @@ function StripeReconciliationSection({ days }: { days: number }) {
               <Card style={{ marginTop: 12, borderColor: theme.warn }}>
                 <Muted>
                   <strong style={{ color: theme.text }}>
-                    {r.counts.missed.toLocaleString()} {r.counts.missed === 1 ? 'payment carries' : 'payments carry'} a
-                    partner signal, but OpenPartner recorded nothing for {r.counts.missed === 1 ? 'it' : 'them'}.
+                    {r.counts.missed.toLocaleString()} {r.counts.missed === 1 ? 'payment' : 'payments'} would have
+                    credited a partner, but OpenPartner recorded nothing for {r.counts.missed === 1 ? 'it' : 'them'}.
                   </strong>{' '}
                   Usually a webhook that never arrived, or a payment OpenPartner couldn&rsquo;t map. Open it in
                   Stripe to see why.
