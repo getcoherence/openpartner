@@ -39,6 +39,7 @@ import { partnerAuthRouter } from './routes/partner-auth.js';
 import { adminOverviewRouter } from './routes/admin-overview.js';
 import { funnelRouter } from './routes/funnel.js';
 import { trackingHealthRouter } from './routes/tracking-health.js';
+import { journeyRouter } from './routes/journey.js';
 import { referralsRouter } from './routes/referrals.js';
 import { recruitsRouter } from './routes/recruits.js';
 import { settingsRouter } from './routes/settings.js';
@@ -304,6 +305,7 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   app.use(funnelRouter);
   app.use(trackingHealthRouter);
   app.use(referralsRouter);
+  app.use(journeyRouter);
   app.use(recruitsRouter);
   app.use(fraudReviewRouter);
   app.use(webhooksRouter);

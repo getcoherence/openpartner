@@ -138,7 +138,7 @@ function listQueryBase(db: Knex, tenantId: string) {
     .select(db.raw(`${EFFECTIVE_HOLDBACK_SQL} as "_holdbackDays"`))
     .select('cp.id as _campaignId')
     .select('cp.name as _campaignName')
-    .select('p.name as _partnerName', 'e.type as _eventType')
+    .select('p.name as _partnerName', 'e.type as _eventType', 'e.id as _eventId')
     .select(
       'b.source as _bonusSource',
       'b.note as _bonusNote',
@@ -165,6 +165,8 @@ interface DecoratedCommission extends CommissionRow {
   /** The attributed event's type (`trial_started`, `invoice_paid`, a
    *  custom type…); null on a bonus's commission. */
   eventType: string | null;
+  /** The attributed event; null on a bonus's commission. */
+  eventId: string | null;
   /** The bonus behind a `bonus` commission; null otherwise. */
   bonus: { id: string; source: string; note: string | null; bountyId: string | null; bountyName: string | null } | null;
   /** A recruiter commission's recruit and share; null otherwise. Its
@@ -180,6 +182,7 @@ interface DecoratedCommission extends CommissionRow {
 function decorateMaturity(row: CommissionRow & {
   _partnerName: string | null;
   _eventType: string | null;
+  _eventId: string | null;
   _holdbackDays: number | null;
   _campaignId: string | null;
   _campaignName: string | null;
@@ -193,6 +196,7 @@ function decorateMaturity(row: CommissionRow & {
   const {
     _partnerName,
     _eventType,
+    _eventId,
     _holdbackDays,
     _campaignId,
     _campaignName,
@@ -220,6 +224,7 @@ function decorateMaturity(row: CommissionRow & {
     matureAt,
     source: c.bonusId ? 'bonus' : 'attribution',
     eventType: c.bonusId ? null : _eventType,
+    eventId: c.bonusId ? null : _eventId,
     bonus: c.bonusId
       ? { id: c.bonusId, source: _bonusSource ?? 'manual', note: _bonusNote, bountyId: _bonusBountyId, bountyName: _bonusBountyName }
       : null,
