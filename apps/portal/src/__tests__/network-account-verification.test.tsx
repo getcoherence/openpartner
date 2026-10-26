@@ -124,6 +124,29 @@ async function platformRow(page: ReturnType<typeof render>, label: string) {
   return page.getByText(label).parentElement!;
 }
 
+describe('profile editor: platforms', () => {
+  it('shows the platforms listed, and adds another from one picker row', async () => {
+    platforms = [row('youtube')];
+    const page = renderWith(<CreatorMyProfilePage />, 'creator-my-profile');
+    const picker = (await waitFor(() => page.getByLabelText('Platform to add'))) as HTMLSelectElement;
+    // A row per listed platform only; the rest are in the picker.
+    expect(page.getByLabelText('YouTube followers')).toBeTruthy();
+    expect(page.queryByLabelText('TikTok followers')).toBeTruthy(); // the add row, on its first choice
+    expect(page.queryByLabelText('Bluesky followers')).toBeNull();
+    const options = [...picker.options].map((o) => o.value);
+    expect(options).not.toContain('youtube');
+    expect(options).toEqual(expect.arrayContaining(['newsletter', 'bluesky', 'threads', 'facebook', 'pinterest', 'reddit', 'discord', 'snapchat']));
+
+    fireEvent.change(picker, { target: { value: 'bluesky' } });
+    const add = page.getByLabelText('Platform to add').parentElement!;
+    expect((add.querySelector('input') as HTMLInputElement).placeholder).toBe('you.bsky.social');
+    fireEvent.change(add.querySelector('input')!, { target: { value: 'pat.dev' } });
+    fireEvent.click(within(add).getByRole('button', { name: 'Add' }));
+    await waitFor(() => expect(calls.some((c) => c.method === 'PUT')).toBe(true));
+    expect(calls.find((c) => c.method === 'PUT')).toMatchObject({ url: expect.stringMatching(/\/platforms\/bluesky$/), body: { handle: 'pat.dev', followerCount: null } });
+  });
+});
+
 describe('profile editor: verify buttons and badges', () => {
   it('offers Verify on unverified YouTube and website rows only', async () => {
     platforms = [row('youtube'), row('website', { handle: 'pat.dev' }), row('tiktok')];

@@ -67,7 +67,24 @@ export interface NetworkProfile {
 /** Minimum bio length the Network's discovery bar requires. */
 const MIN_BIO_LENGTH = 40;
 
-export type Platform = 'tiktok' | 'instagram' | 'youtube' | 'twitter' | 'linkedin' | 'substack' | 'twitch' | 'podcast' | 'website';
+export type Platform =
+  | 'tiktok'
+  | 'instagram'
+  | 'youtube'
+  | 'twitter'
+  | 'threads'
+  | 'bluesky'
+  | 'linkedin'
+  | 'facebook'
+  | 'pinterest'
+  | 'snapchat'
+  | 'substack'
+  | 'newsletter'
+  | 'podcast'
+  | 'twitch'
+  | 'reddit'
+  | 'discord'
+  | 'website';
 
 export interface PlatformRow {
   id: string;
@@ -115,10 +132,18 @@ export const PLATFORMS: { kind: Platform; label: string; placeholder: string }[]
   { kind: 'instagram', label: 'Instagram', placeholder: 'your-handle' },
   { kind: 'youtube', label: 'YouTube', placeholder: 'your-handle' },
   { kind: 'twitter', label: 'X / Twitter', placeholder: 'your-handle' },
+  { kind: 'threads', label: 'Threads', placeholder: 'your-handle' },
+  { kind: 'bluesky', label: 'Bluesky', placeholder: 'you.bsky.social' },
   { kind: 'linkedin', label: 'LinkedIn', placeholder: 'your-handle' },
+  { kind: 'facebook', label: 'Facebook', placeholder: 'your-page' },
+  { kind: 'pinterest', label: 'Pinterest', placeholder: 'your-handle' },
+  { kind: 'snapchat', label: 'Snapchat', placeholder: 'your-username' },
   { kind: 'substack', label: 'Substack', placeholder: 'subdomain' },
-  { kind: 'twitch', label: 'Twitch', placeholder: 'your-handle' },
+  { kind: 'newsletter', label: 'Newsletter', placeholder: 'yourname.beehiiv.com' },
   { kind: 'podcast', label: 'Podcast', placeholder: 'https://feeds…' },
+  { kind: 'twitch', label: 'Twitch', placeholder: 'your-handle' },
+  { kind: 'reddit', label: 'Reddit', placeholder: 'r/community or u/username' },
+  { kind: 'discord', label: 'Discord', placeholder: 'https://discord.gg/…' },
   { kind: 'website', label: 'Website', placeholder: 'https://…' },
 ];
 
@@ -702,6 +727,14 @@ export function PlatformsCard({ adapter }: { adapter: NetworkProfileAdapter }) {
     queryFn: () => adapter.listPlatforms(),
     retry: false,
   });
+  const rows = list.data?.platforms ?? [];
+  const added = PLATFORMS.filter((p) => rows.some((r) => r.platform === p.kind));
+  const remaining = PLATFORMS.filter((p) => !rows.some((r) => r.platform === p.kind));
+  const onChanged = () => {
+    void qc.invalidateQueries({ queryKey: adapter.platformsKey });
+    // Platforms count toward the discovery checklist.
+    void qc.invalidateQueries({ queryKey: adapter.profileKey });
+  };
 
   return (
     <Card>
@@ -716,27 +749,55 @@ export function PlatformsCard({ adapter }: { adapter: NetworkProfileAdapter }) {
         <p style={{ color: theme.textMuted, fontSize: 13 }}>Loading…</p>
       ) : (
         <div style={{ display: 'grid', gap: 10 }}>
-          {PLATFORMS.map((p) => {
-            const existing = list.data?.platforms.find((r) => r.platform === p.kind);
-            return (
-              <PlatformRowEditor
-                key={p.kind}
-                adapter={adapter}
-                platform={p.kind}
-                label={p.label}
-                placeholder={p.placeholder}
-                existing={existing}
-                onChanged={() => {
-                  void qc.invalidateQueries({ queryKey: adapter.platformsKey });
-                  // Platforms count toward the discovery checklist.
-                  void qc.invalidateQueries({ queryKey: adapter.profileKey });
-                }}
-              />
-            );
-          })}
+          {added.map((p) => (
+            <PlatformRowEditor
+              key={p.kind}
+              adapter={adapter}
+              platform={p.kind}
+              label={p.label}
+              placeholder={p.placeholder}
+              existing={rows.find((r) => r.platform === p.kind)}
+              onChanged={onChanged}
+            />
+          ))}
+          {remaining.length > 0 && <AddPlatformRow adapter={adapter} remaining={remaining} onChanged={onChanged} />}
         </div>
       )}
     </Card>
+  );
+}
+
+/** One row for a platform not listed yet: pick it, then the same fields.
+ *  Once added, the platform moves up into a row of its own. */
+function AddPlatformRow({
+  adapter,
+  remaining,
+  onChanged,
+}: {
+  adapter: NetworkProfileAdapter;
+  remaining: typeof PLATFORMS;
+  onChanged: () => void;
+}) {
+  const [kind, setKind] = useState<Platform>(remaining[0]!.kind);
+  const current = remaining.find((p) => p.kind === kind) ?? remaining[0]!;
+  return (
+    <PlatformRowEditor
+      key={current.kind}
+      adapter={adapter}
+      platform={current.kind}
+      label={current.label}
+      placeholder={current.placeholder}
+      onChanged={onChanged}
+      picker={
+        <Select aria-label="Platform to add" value={current.kind} onChange={(e) => setKind(e.target.value as Platform)}>
+          {remaining.map((p) => (
+            <option key={p.kind} value={p.kind}>
+              {p.label}
+            </option>
+          ))}
+        </Select>
+      }
+    />
   );
 }
 
@@ -747,6 +808,7 @@ function PlatformRowEditor({
   placeholder,
   existing,
   onChanged,
+  picker,
 }: {
   adapter: NetworkProfileAdapter;
   platform: Platform;
@@ -754,6 +816,8 @@ function PlatformRowEditor({
   placeholder: string;
   existing?: PlatformRow;
   onChanged: () => void;
+  /** In place of the label: the add row's platform picker. */
+  picker?: ReactNode;
 }) {
   const [handle, setHandle] = useState(existing?.handle ?? '');
   const [followerCount, setFollowerCount] = useState<number | ''>(existing?.followerCount ?? '');
@@ -787,8 +851,8 @@ function PlatformRowEditor({
   const canVerify = !!existing && !existing.verified && VERIFIABLE.has(platform) && !!adapter.startVerification && !!adapter.checkVerification;
 
   return (
-    <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '110px 1fr 140px auto', gap: 8, alignItems: 'center' }}>
-      <div style={{ fontSize: 13, color: theme.text }}>{label}</div>
+    <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '140px 1fr 140px auto', gap: 8, alignItems: 'center' }}>
+      {picker ?? <div style={{ fontSize: 13, color: theme.text }}>{label}</div>}
       <Input value={handle} onChange={(e) => setHandle(e.target.value)} placeholder={placeholder} style={{ fontFamily: theme.fontMono, fontSize: 13 }} />
       <Input
         type="number"
