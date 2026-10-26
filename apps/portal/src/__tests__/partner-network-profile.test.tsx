@@ -89,8 +89,10 @@ describe('partner Network profile page', () => {
     expect(page.getByLabelText('Audience size')).toBeTruthy();
     expect(page.getByText('Portfolio')).toBeTruthy();
     expect(page.getByText('Platforms')).toBeTruthy();
-    await waitFor(() => expect(page.getByText('YouTube')).toBeTruthy());
-    expect(page.getAllByRole('button', { name: 'Add' }).length).toBe(9);
+    // No platforms yet: one row to add one, every platform in its picker.
+    await waitFor(() => expect(page.getByLabelText('Platform to add')).toBeTruthy());
+    expect(page.getByRole('option', { name: 'YouTube' })).toBeTruthy();
+    expect(page.getAllByRole('button', { name: 'Add' }).length).toBe(1);
     expect(calls.some((c) => c.method === 'GET' && c.url === '/api/network/me/platforms')).toBe(true);
   });
 
@@ -104,8 +106,11 @@ describe('partner Network profile page', () => {
     expect(patch.url).toBe('/api/network/me/profile');
     expect(patch.body).toMatchObject({ categories: ['design'], audienceSize: '10k_50k', handle: 'pat' });
 
-    await waitFor(() => expect(page.getByText('YouTube')).toBeTruthy());
-    const youtube = page.getByText('YouTube').parentElement!;
+    // No platforms yet: one row, with a picker for the platform to add.
+    const picker = await waitFor(() => page.getByLabelText('Platform to add'));
+    expect(page.queryByLabelText('YouTube followers')).toBeNull();
+    fireEvent.change(picker, { target: { value: 'youtube' } });
+    const youtube = page.getByLabelText('Platform to add').parentElement!;
     fireEvent.change(youtube.querySelector('input')!, { target: { value: 'pat' } });
     fireEvent.click(youtube.querySelector('button')!);
     await waitFor(() => expect(calls.some((c) => c.method === 'PUT')).toBe(true));

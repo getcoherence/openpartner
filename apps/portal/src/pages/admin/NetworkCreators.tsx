@@ -15,6 +15,7 @@ import { api, ApiError } from '../../api.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Textarea } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
 import { VerifiedBadge } from '../../lib/VerifiedBadge.js';
+import { PLATFORMS as CREATOR_PLATFORMS } from '../../lib/NetworkProfileEditor.js';
 import { TenantLink } from '../../tenant-link.js';
 import { BookCreatorDialog } from './BookCreatorDialog.js';
 
@@ -55,17 +56,7 @@ const CATEGORIES = [
   'entertainment', 'news', 'sports',
 ];
 
-const PLATFORMS = [
-  { value: 'tiktok', label: 'TikTok' },
-  { value: 'instagram', label: 'Instagram' },
-  { value: 'youtube', label: 'YouTube' },
-  { value: 'twitter', label: 'X / Twitter' },
-  { value: 'linkedin', label: 'LinkedIn' },
-  { value: 'substack', label: 'Substack' },
-  { value: 'twitch', label: 'Twitch' },
-  { value: 'podcast', label: 'Podcast' },
-  { value: 'website', label: 'Website' },
-];
+const PLATFORMS = CREATOR_PLATFORMS.map((p) => ({ value: p.kind, label: p.label }));
 
 type SortKey = 'revenue' | 'followers' | 'newest' | 'name';
 
