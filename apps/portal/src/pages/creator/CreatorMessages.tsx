@@ -104,7 +104,7 @@ interface CreatorThread {
 }
 
 const ERRORS: Record<string, string> = {
-  payments_not_ready: 'Your Stripe account can’t take payments yet. Finish setting it up under Storefront → Packages.',
+  payments_not_ready: 'Your Stripe account can’t take payments yet. Finish setting it up under Storefront → Setup.',
   amount_required: 'Name your price to accept this request.',
   amount_too_large: 'That amount is too large to charge in one payment.',
   already_answered: 'This request has already been answered.',
