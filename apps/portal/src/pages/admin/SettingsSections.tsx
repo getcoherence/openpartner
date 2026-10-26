@@ -77,14 +77,14 @@ export function SettingsSections({ sections }: { sections: SettingsSection[] }) 
     window.addEventListener('resize', update);
     window.addEventListener('wheel', endJump, { passive: true });
     window.addEventListener('touchstart', endJump, { passive: true });
-    const ro = new ResizeObserver(update);
-    if (contentRef.current) ro.observe(contentRef.current);
+    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update);
+    if (ro && contentRef.current) ro.observe(contentRef.current);
     return () => {
       window.removeEventListener('scroll', update, { capture: true });
       window.removeEventListener('resize', update);
       window.removeEventListener('wheel', endJump);
       window.removeEventListener('touchstart', endJump);
-      ro.disconnect();
+      ro?.disconnect();
     };
   }, [ids, offset]);
 
@@ -97,10 +97,10 @@ export function SettingsSections({ sections }: { sections: SettingsSection[] }) 
     const id = hash.replace(/^#/, '');
     if (!id || doneHash.current === hash) return;
     if (!sectionsRef.current.some((s) => s.id === id)) return;
-    const ro = new ResizeObserver(() => jump(id, 'auto'));
+    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => jump(id, 'auto'));
     const inputs = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const;
     const stop = () => {
-      ro.disconnect();
+      ro?.disconnect();
       clearTimeout(timer);
       for (const type of inputs) window.removeEventListener(type, finish);
     };
@@ -110,7 +110,7 @@ export function SettingsSections({ sections }: { sections: SettingsSection[] }) 
     };
     const timer = setTimeout(finish, 10_000);
     for (const type of inputs) window.addEventListener(type, finish, { passive: true });
-    if (contentRef.current) ro.observe(contentRef.current);
+    if (ro && contentRef.current) ro.observe(contentRef.current);
     jump(id, 'auto');
     return stop;
   }, [location.hash, ids]);

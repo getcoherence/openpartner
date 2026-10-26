@@ -49,17 +49,6 @@ beforeEach(() => {
     return json(401, { error: 'unauthorized' });
   }) as typeof fetch;
   Element.prototype.scrollIntoView = vi.fn();
-  // jsdom has no ResizeObserver. Same constructor as the real one, which
-  // the code under test passes a callback.
-  globalThis.ResizeObserver = class {
-    callback: ResizeObserverCallback;
-    constructor(callback: ResizeObserverCallback) {
-      this.callback = callback;
-    }
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  } as unknown as typeof ResizeObserver;
 });
 
 afterEach(() => {
