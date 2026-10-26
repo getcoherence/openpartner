@@ -69,6 +69,9 @@ const RESTRICTED_GRANTS: Array<{ table: string; grant: string }> = [
   // The brand Stripe events attribution processed; the catch-up prunes it
   // on the privileged pool (stripe-event-catchup.ts).
   { table: 'StripeEventLog', grant: 'select, insert' },
+  // The alert job opens, refreshes and closes flag episodes in place
+  // (tracking-alerts.ts); only the tenant purge deletes one.
+  { table: 'TrackingAlert', grant: 'select, insert, update' },
 ];
 
 async function main(): Promise<void> {

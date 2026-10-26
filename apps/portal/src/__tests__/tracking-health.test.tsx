@@ -6,21 +6,32 @@
  * conversions that credited nobody by why, and the input OpenPartner
  * dropped, with what to fix. Stripe revenue splits missed sales from
  * signals that couldn't have credited, and partner codes whose customers
- * almost never clicked the partner's link are highlighted.
+ * almost never clicked the partner's link are highlighted. Flags (a browser
+ * or partner changed against its own past) come first, in plain words,
+ * with the checkbox that emails new ones.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   AdminTrackingHealth,
   type StripeReconciliationReport,
+  type TrackingFlagsReport,
   type TrackingHealthReport,
 } from '../pages/admin/TrackingHealth.js';
 
 let report: TrackingHealthReport;
 let stripe: StripeReconciliationReport;
+let flags: TrackingFlagsReport;
+let alerts: { email: boolean };
+let saved: unknown[] = [];
 let requested: string[] = [];
+
+function flagsReport(list: TrackingFlagsReport['flags'] = []): TrackingFlagsReport {
+  const w = { baselineSince: '2026-09-20T00:00:00.000Z', recentSince: '2026-10-18T00:00:00.000Z', until: '2026-10-25T00:00:00.000Z' };
+  return { computedAt: '2026-10-26T00:00:00.000Z', windows: { linkage: w, sales: w }, flags: list };
+}
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -97,13 +108,25 @@ function stripeReport(): StripeReconciliationReport {
 beforeEach(() => {
   report = baseReport();
   stripe = stripeReport();
+  flags = flagsReport();
+  alerts = { email: true };
+  saved = [];
   requested = [];
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost');
     requested.push(url.pathname + url.search);
     if (url.pathname === '/api/programs') return json(200, { programs: [{ id: 'p1', name: 'Main' }] });
     if (url.pathname === '/api/admin/tracking-health') return json(200, report);
     if (url.pathname === '/api/admin/tracking-health/stripe') return json(200, stripe);
+    if (url.pathname === '/api/admin/tracking-health/flags') return json(200, flags);
+    if (url.pathname === '/api/config/tracking-alerts') {
+      if (init?.method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { email: boolean };
+        saved.push(body);
+        alerts = { email: body.email };
+      }
+      return json(200, alerts);
+    }
     return json(404, { error: 'not_found' });
   }) as typeof fetch;
 });
@@ -192,5 +215,61 @@ describe('Admin → Tracking health', () => {
     expect(await screen.findByText('Every conversion in this window credited a partner.')).toBeTruthy();
     expect(screen.getByText('Nothing dropped in this window.')).toBeTruthy();
     expect(screen.queryByText('Partner codes')).toBeNull();
+    expect(await screen.findByText(/Nothing unusual\. Each browser/)).toBeTruthy();
+  });
+
+  it('puts flags first, each in plain words with what usually causes it', async () => {
+    flags = flagsReport([
+      {
+        kind: 'linkage_drop',
+        subject: 'Mobile Safari|mobile|landed',
+        browser: 'Mobile Safari',
+        device: 'mobile',
+        metric: 'landed',
+        recent: { clicks: 150, hits: 30, rate: 0.2 },
+        baseline: { clicks: 310, hits: 240, rate: 0.7742 },
+      },
+      {
+        kind: 'fast_sales',
+        subject: 'pa1',
+        partnerId: 'pa1',
+        partnerName: 'Deal Hunters',
+        reason: 'mostly_instant',
+        recent: { sales: 6, medianSeconds: 20, fastShare: 0.8333 },
+        baseline: null,
+      },
+      {
+        kind: 'fast_sales',
+        subject: 'pa3',
+        partnerId: 'pa3',
+        partnerName: 'Shifted',
+        reason: 'collapsed',
+        recent: { sales: 6, medianSeconds: 120, fastShare: 0 },
+        baseline: { sales: 12, medianSeconds: 1800, fastShare: 0 },
+      },
+    ]);
+    renderPage();
+    expect(
+      await screen.findByText(
+        'Mobile Safari (mobile): 20% of clicks reached a page running the script within a day, down from 77%',
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText(/a new cookie banner or consent setup/)).toBeTruthy();
+    expect(screen.getByText('Deal Hunters: 5 of 6 sales in the last two weeks came within a minute of the click')).toBeTruthy();
+    expect(
+      screen.getByText('Shifted: half of their sales now come within 2 minutes of the click, against 30 minutes before'),
+    ).toBeTruthy();
+    expect(screen.getByText(/6 in the last two weeks against 12 in the three months before/)).toBeTruthy();
+    expect(screen.queryByText(/Nothing unusual/)).toBeNull();
+    expect(requested).toContain('/api/admin/tracking-health/flags');
+  });
+
+  it('turns the alert email off from the flags heading', async () => {
+    renderPage();
+    const box = (await screen.findByLabelText('Email admins about new flags')) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    fireEvent.click(box);
+    await waitFor(() => expect(saved).toEqual([{ email: false }]));
+    await waitFor(() => expect((screen.getByLabelText('Email admins about new flags') as HTMLInputElement).checked).toBe(false));
   });
 });

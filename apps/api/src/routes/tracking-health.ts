@@ -17,6 +17,12 @@
  * (tenant, window) in this process. `available: false` with a reason when
  * there's no Stripe of the brand's to read.
  *
+ * GET /admin/tracking-health/flags — each browser and partner against its
+ * own recent past (tracking-flags.ts). Fixed windows, account-wide.
+ *
+ * GET|POST /config/tracking-alerts — `{ email }`: whether new flags are
+ * emailed to the admins (tracking-alerts.ts). On by default.
+ *
  * Admins only (a session or an admin API key): it reads every partner's
  * traffic.
  */
@@ -27,6 +33,8 @@ import { TABLES } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { TRACKING_HEALTH_MAX_DAYS, trackingHealth } from '../tracking-health.js';
+import { computeTrackingFlags } from '../tracking-flags.js';
+import { readTrackingAlertSettings, saveTrackingAlertSettings } from '../tracking-alerts.js';
 import {
   RECONCILE_MAX_DAYS,
   brandStripeAccess,
@@ -51,6 +59,28 @@ trackingHealthRouter.get('/admin/tracking-health', requireAuth, requireAdmin, as
     if (!program) return res.status(404).json({ error: 'program_not_found' });
   }
   res.json(await trackingHealth(db, tenantId, { days, programId }));
+});
+
+trackingHealthRouter.get('/admin/tracking-health/flags', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  res.json(await computeTrackingFlags(db, tenantId));
+});
+
+export const trackingAlertSettingsSchema = z.object({
+  email: z.boolean().optional(),
+});
+
+trackingHealthRouter.get('/config/tracking-alerts', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  res.json(await readTrackingAlertSettings(db, tenantId));
+});
+
+/** Omitted fields keep their value. */
+trackingHealthRouter.post('/config/tracking-alerts', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const body = trackingAlertSettingsSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  res.json(await saveTrackingAlertSettings(db, tenantId, body.data));
 });
 
 const reconcileQuerySchema = z.object({

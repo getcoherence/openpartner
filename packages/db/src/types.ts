@@ -940,6 +940,24 @@ export interface TrackingIssueRow {
   lastSeenAt: Date;
 }
 
+/** A Tracking health flag (apps/api/src/tracking-flags.ts). */
+export type TrackingFlagKind = 'linkage_drop' | 'fast_sales';
+
+/** One episode of a flag the alert job has seen, so it emails each once
+ *  (apps/api/src/tracking-alerts.ts). Not exported. */
+export interface TrackingAlertRow {
+  id: string;
+  tenantId: string;
+  kind: TrackingFlagKind;
+  /** `<browser>|<device>|<metric>` for a linkage drop; the partner id for fast sales. */
+  subject: string;
+  openedAt: Date;
+  lastSeenAt: Date;
+  notifiedAt: Date | null;
+  resolvedAt: Date | null;
+  detail: Record<string, unknown>;
+}
+
 export interface IdentityRow {
   id: string;
   tenantId: string;

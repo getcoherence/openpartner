@@ -680,6 +680,8 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     // And which stages partners see on their referrals.
     const referralStages = { stages: [{ eventType: 'demo_booked', label: 'Demo booked' }], showCustomerLabels: true };
     await db(TABLES.Config).insert({ tenantId: TENANT, key: 'partner_referrals', value: referralStages, updatedAt: new Date() });
+    // And whether new Tracking health flags are emailed.
+    await db(TABLES.Config).insert({ tenantId: TENANT, key: 'tracking_alerts', value: { email: false }, updatedAt: new Date() });
 
     const bundle = await exportAll(db, TENANT);
     const keys = (bundle[TABLES.Config] as Array<{ key: string }>).map((r) => r.key).sort();
@@ -699,6 +701,7 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect((await db(TABLES.Config).where({ key: 'payout_statements' }).first()).value).toMatchObject({ legalName: 'Volza Technologies Pvt Ltd', numberPrefix: 'VZ-' });
     expect((await db(TABLES.Config).where({ key: 'paypal_payouts' }).first()).value).toEqual({ sendUnsupportedAs: 'USD' });
     expect((await db(TABLES.Config).where({ key: 'partner_referrals' }).first()).value).toEqual(referralStages);
+    expect((await db(TABLES.Config).where({ key: 'tracking_alerts' }).first()).value).toEqual({ email: false });
     expect(report.skipped[TABLES.Config]).toBe(1);
     expect(await db(TABLES.Config).where({ key: 'network_membership' })).toHaveLength(0);
     expect((await db(TABLES.Config).where({ key: 'partner_signup' }).first()).value).toEqual({

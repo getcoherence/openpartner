@@ -382,16 +382,17 @@ Only these keys are exported, and only these are imported:
 | `payout_statements` | what payout statements print: legal name, address, footer, statement-number prefix, and the tax-lines placeholder (docs/payout-statements.md) |
 | `paypal_payouts` | whether Pay with PayPal sends INR balances in USD (`sendUnsupportedAs`), [paypal-payouts.md](paypal-payouts.md#balances-paypal-cant-send-inr) |
 | `partner_referrals` | which event types partners see as referral stages, with their labels and order, and whether partners see customer labels ([referral timeline](referral-timeline.md)) |
+| `tracking_alerts` | whether new Tracking health flags are emailed to the admins (`email`), [tracking-health.md](tracking-health.md#email) |
 
-`onboarding`, `payout_statements`, `paypal_payouts` and `partner_referrals`
-were added in Oct 2026 without a version bump. Each is a new key in a table
-the bundle already carries, not a new table or column. An instance from
-before it skips the key on import (Config import takes only the keys it
-knows): the restored brand sees the Network step on its Getting started
-card again, prints statements under its brand name until it enters its
-statement settings again, reads the PayPal setting as off, and its partners
+`onboarding`, `payout_statements`, `paypal_payouts`, `partner_referrals` and
+`tracking_alerts` were added in Oct 2026 without a version bump. Each is a
+new key in a table the bundle already carries, not a new table or column. An
+instance from before it skips the key on import (Config import takes only the
+keys it knows): the restored brand sees the Network step on its Getting
+started card again, prints statements under its brand name until it enters
+its statement settings again, reads the PayPal setting as off, its partners
 see the default referral stages with no customer labels (less than before,
-never more).
+never more), and an instance that predates the alert email sends none.
 
 Payout statements themselves aren't exported: each is built from the
 `Payout`, `Commission`, `Bonus` and `CommissionAdjustment` rows the bundle
@@ -659,7 +660,7 @@ logs — not customer data):
 `PlatformSessionBundle`, `PlatformAdmin`, `PlatformAdminSession`,
 `PlatformAuditLog`, `SignupBlocklist`, `WebhookDelivery`, `NetworkOutbox`,
 `StripeWebhookInbox`, `LocationDeclaration`, `SanctionsScreening`,
-`PartnerSigninLinkLog`, `TrackingIssue`, `StripeEventLog`.
+`PartnerSigninLinkLog`, `TrackingIssue`, `TrackingAlert`, `StripeEventLog`.
 
 `TrackingIssue` counts, per day, the input this deployment had to drop: a
 click id that `identify()`, a conversion or the landing beacon named but the
@@ -667,6 +668,12 @@ tenant doesn't have, a Checkout Session `client_reference_id` that isn't a
 click, a coupon code nobody holds (Admin → Tracking health). Like
 `WebhookDelivery` it is a log of what reached one deployment, nothing
 re-derives from it, and a restored instance starts counting afresh.
+
+`TrackingAlert` records which Tracking health flags this deployment has
+already emailed, so each is emailed once ([tracking-health.md](tracking-health.md#email)).
+The flags themselves are derived from the exported clicks, landings,
+identities, events and attributions, so a restored instance shows the same
+flags; its first alert run emails the open ones once.
 
 `StripeEventLog` lists the brand Stripe events this deployment's attribution
 pipeline processed, so the Stripe catch-up ([stripe-app.md](stripe-app.md#missed-events--the-catch-up))

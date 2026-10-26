@@ -124,6 +124,11 @@ export const PORTABLE_CONFIG_KEYS = [
   // instance that predates it skips the key, and partners see the default
   // stages and no labels, which shows them less, never more.
   'partner_referrals',
+  // Whether new Tracking health flags are emailed to the admins
+  // (tracking-alerts.ts). A key, so no version bump: an instance that
+  // predates it skips the key and has no alert email at all; one that
+  // knows it but restores an older bundle reads it as on, the default.
+  'tracking_alerts',
 ] as const;
 
 /**

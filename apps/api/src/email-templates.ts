@@ -327,6 +327,30 @@ export function campaignEndingPartnerEmail(
   return { subject, text, html: wrap(text, programUrl, 'View program') };
 }
 
+/** Brand admin: Tracking health raised new flags (tracking-alerts.ts).
+ *  `lines` are describeFlag's sentences, one per new flag. */
+export function trackingFlagsEmail(brandName: string | null, lines: string[], pageUrl: string): EmailTemplate {
+  const subject =
+    lines.length === 1 ? 'Tracking health flagged a change' : `Tracking health flagged ${lines.length} changes`;
+  const text = [
+    `Hi${brandName ? ` from ${brandName}` : ''},`,
+    ``,
+    `Tracking health compares each browser and each partner with its own`,
+    `recent past. ${lines.length === 1 ? 'This changed' : 'These changed'} enough to look at:`,
+    ``,
+    ...lines.map((l) => `- ${l}`),
+    ``,
+    `The numbers, and what usually causes each, are on the Tracking health`,
+    `page:`,
+    ``,
+    pageUrl,
+    ``,
+    `You get one email when a flag first appears, not one a day while it`,
+    `stays. Turn these emails off on the same page.`,
+  ].join('\n');
+  return { subject, text, html: wrap(text, pageUrl, 'Open Tracking health') };
+}
+
 // ---------------------------------------------------------------------------
 // Performance bounties (performance-bounties.ts) — partner-facing. `goal` is
 // renderBountySummary's sentence, never free text; `description` is the

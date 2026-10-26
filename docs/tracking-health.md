@@ -9,6 +9,82 @@ the page loads (`GET /admin/tracking-health`, admin only).
 
 Pick a window (7, 30 or 90 days) and, optionally, one program.
 
+## Flags
+
+The rest of the page describes one window. Flags compare each browser and
+each partner with its own recent past, which a single window can't show
+(`GET /admin/tracking-health/flags`). They use fixed windows and cover the
+whole account, whatever window or program is picked. Like the rest of the
+page, they are recomputed from the raw records on every load. Every
+threshold below is in one place in the code (`FLAG_THRESHOLDS` in
+`apps/api/src/tracking-flags.ts`).
+
+### A browser's clicks stopped landing, or being linked
+
+Per browser and device (the rows under **By browser**), two rates:
+
+- **landed**: the click reached a page running the script within a day;
+- **linked**: the click was linked to a customer within a day (`identify()`,
+  a Stripe checkout, a conversion call).
+
+Clicks one to eight days old are compared with clicks 8 to 36 days old. Both
+windows stop a day short of now, and both rates count only what happened
+within a day of the click. Without that, this morning's clicks would count as
+misses before they'd had a chance to land or be linked, and the recent week
+would always look worse than the month before it.
+
+A rate is flagged when all of these hold:
+
+| | |
+|---|---|
+| Clicks | at least 100 recent and 200 baseline, after fraud flags and bots |
+| Baseline | at least 20 landings (or links), so its rate means something |
+| Size of the fall | the recent rate is at most 60% of the baseline rate |
+| Not chance | a one-sided two-proportion z-score of 3 or more |
+
+A fall in **landed** usually follows a change on your site: a new cookie
+banner or consent setup, a redirect that drops `?cref=`, or a page that lost
+the script tag. A fall in **linked** with landings intact points at what
+happens between the visit and the signup: `identify()` called later, a new
+signup flow, or storage the browser now clears sooner.
+
+### A partner's sales follow their click within seconds
+
+A browser extension or a coupon site that clicks the partner's link at
+checkout takes the credit without bringing the customer, and its clicks land
+seconds before the sale. Real buyers rarely pay that fast.
+
+The sample is each customer's first sale credited through a click of the
+partner's link: a conversion with a value, so a signup a minute after the
+click (which is ordinary) isn't one. Renewals inherit the first sale's click
+and would read as months, so they're left out. A coupon redemption's
+synthetic click is stamped at checkout and would read as zero, so that's left
+out too. Sales in the last 14 days are compared with the 90 days before.
+
+With at least 5 recent sales, the partner is flagged when either:
+
+| Reason | Means |
+|---|---|
+| Mostly instant | 60% or more of the recent sales came within 60 seconds of the click. No history needed. |
+| Collapsed | with at least 10 baseline sales, the recent median is a tenth of the baseline median or less, and under 5 minutes. 30 minutes down to 10 seconds is flagged; 2 days down to 3 hours isn't. |
+
+Look at where the partner's clicks come from before approving their
+commissions.
+
+### Email
+
+New flags are emailed to every activated admin once a day (the
+`tracking-alerts` job, 06:40 UTC). Each flag is emailed once when it first
+appears, not every day it stays. A flag nobody has seen for three days
+closes; if it comes back after that, it's emailed again, unless it was
+emailed in the last seven days. The job needs the scheduler
+(`OPENPARTNER_ENABLE_SCHEDULER=1` on a self-host).
+
+It's on by default. **Email admins about new flags** beside the flags turns
+it off (`POST /config/tracking-alerts` `{ "email": false }`). The setting
+travels with an export; what was emailed when doesn't (see
+[data portability](data-portability.md)).
+
 ## Partner link clicks
 
 The window's clicks on partner links, after fraud flags and bots are taken
