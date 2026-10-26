@@ -157,5 +157,11 @@ function approveErrorMessage(err: unknown): string {
   if (err.message.includes('creator_not_available')) {
     return "This creator isn't available for partnerships on the Network any more, so the request can't be approved. You can reject it.";
   }
+  if (err.message.includes('partner_revoked')) {
+    return 'You revoked this creator as a partner. Reinstate them under Partners to approve them for this program.';
+  }
+  if (err.message.includes('partner_exists_on_brand')) {
+    return 'This creator is already your partner, and this workspace can’t add a program to an existing partner yet. Update OpenPartner to approve them for it.';
+  }
   return err.message;
 }

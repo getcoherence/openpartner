@@ -115,6 +115,8 @@ Creates a partner and grants it programs.
 
 **\`country\`** (optional, ISO 3166-1 alpha-2) is where the partner is based. OpenPartner Cloud doesn't serve some countries: a blocked one answers \`422 country_not_supported\`, and \`"UA"\` needs \`outsideOccupiedRegions: true\` (\`422 occupied_region_confirmation_required\` otherwise). An accepted country is recorded, and if it is blocked later, the partner's Stripe payouts are held. Self-hosted installs ignore it.
 
+An email that's already a partner answers \`409 email_taken\`. The one exception is the OpenPartner Network's own registered key approving a creator who is already your partner: it grants them the new program instead, answering \`200\` with the existing partner and \`existing: true\` (\`409 partner_revoked\` for a partner you revoked).
+
 **OpenPartner Network:** this call shares nothing with the OpenPartner Network. A partner's name and email reach it only if the partner opts in themselves, while the tenant offers the Network (\`autoEnroll\` on, \`GET /config/network\`): they're asked on the join page, once on first portal sign-in, and in a portal setting. \`metadata\` is never sent. To keep customer-referral partners from being asked, turn offering off: \`POST /config/network {"autoEnroll": false}\`.
 
 On OpenPartner Cloud the brand needs an active plan (\`402 plan_required\`) and an approved account (\`403 brand_pending_review\`).`,
@@ -125,7 +127,7 @@ On OpenPartner Cloud the brand needs an active plan (\`402 plan_required\`) and 
       400: ['unknown_campaign_ids', 'invite_requires_portal_access', 'recruiter_not_found', 'recruiter_revoked'],
       402: ['plan_required'],
       403: ['brand_pending_review'],
-      409: ['email_taken'],
+      409: ['email_taken', 'partner_revoked'],
       422: ['country_not_supported', 'occupied_region_confirmation_required'],
     },
   });

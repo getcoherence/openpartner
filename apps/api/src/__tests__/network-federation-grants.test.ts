@@ -26,6 +26,9 @@ process.env.PORTAL_URL = 'http://localhost:5673';
 
 const { db } = await import('../db.js');
 const { createApp } = await import('../app.js');
+const { createApiKeyRow } = await import('../auth.js');
+const { saveNetworkMembership } = await import('../network-client.js');
+const { NETWORK_FEDERATION_SCOPES } = await import('../routes/api-keys.js');
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 const app = createApp({ enableLogger: false });
@@ -43,10 +46,12 @@ const TABLES_TO_CLEAN = [
   TABLES.Coupon,
   TABLES.PartnerProgram,
   TABLES.PartnerCommission,
+  TABLES.PartnerNetworkConsent,
   TABLES.Payout,
   TABLES.Program,
   TABLES.Partner,
   TABLES.Config,
+  TABLES.ApiKey,
 ];
 
 let offeringProgramId: string;
@@ -167,5 +172,87 @@ describe.skipIf(skipIntegration)('POST /partners — Network federation program 
     const grants = await grantsFor(res.body.id);
     expect(grants.map((g) => g.programId).sort()).toEqual([offeringProgramId, otherProgramId].sort());
     expect(grants.every((g) => g.source === 'admin')).toBe(true);
+  });
+});
+
+describe.skipIf(skipIntegration)('POST /partners — a Network approval for someone already a partner', () => {
+  /** The key this brand registered with the Network: only it counts as
+   *  the Network (isNetworkFederationCall). */
+  async function networkKey(): Promise<string> {
+    const key = await createApiKeyRow(db, { tenantId: DEFAULT_TENANT_ID, scopes: [...NETWORK_FEDERATION_SCOPES], label: 'network_federation' });
+    await saveNetworkMembership(db, DEFAULT_TENANT_ID, { enabled: true, networkUrl: 'https://network.example.test', scopedKeyId: key.id });
+    return key.plaintext;
+  }
+
+  async function commissionFor(partnerId: string, programId: string) {
+    return db(TABLES.PartnerCommission).where({ tenantId: DEFAULT_TENANT_ID, partnerId, programId }).first();
+  }
+
+  it('grants the new program to the partner the Network approved before, with its terms', async () => {
+    const key = await networkKey();
+    const first = await request(app).post('/partners').set('Authorization', `Bearer ${key}`).send(networkApproveBody({ programIds: [offeringProgramId] }));
+    expect(first.status).toBe(201);
+
+    // Approved for a second program: the same partner, not a 409.
+    const second = await request(app)
+      .post('/partners')
+      .set('Authorization', `Bearer ${key}`)
+      .send({ ...networkApproveBody({ programIds: [otherProgramId] }), commissionSnapshot: { commissionType: 'percent', commissionValue: 35, recurring: false } });
+    expect(second.status).toBe(200);
+    expect(second.body).toMatchObject({ id: first.body.id, existing: true });
+    expect(await db(TABLES.Partner).where({ email: 'ada@creator.test' })).toHaveLength(1);
+
+    const grants = await grantsFor(first.body.id);
+    expect(grants.map((g) => g.programId).sort()).toEqual([offeringProgramId, otherProgramId].sort());
+    expect(grants.every((g) => g.source === 'offering')).toBe(true);
+    expect(await commissionFor(first.body.id, otherProgramId)).toMatchObject({ commissionType: 'percent', source: 'approval' });
+    expect(Number((await commissionFor(first.body.id, otherProgramId)).commissionValue)).toBe(35);
+    // The first program's terms are untouched.
+    expect(Number((await commissionFor(first.body.id, offeringProgramId)).commissionValue)).toBe(20);
+  });
+
+  it("keeps the terms a brand already set, and a partner's own no to the Network", async () => {
+    const key = await networkKey();
+    const own = await request(app)
+      .post('/partners')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ email: 'ada@creator.test', name: 'Ada', sendInvite: false, programIds: [offeringProgramId] });
+    expect(own.status).toBe(201);
+    await request(app)
+      .put(`/partners/${own.body.id}/programs/${otherProgramId}/commission`)
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ commissionType: 'percent', commissionValue: 50 });
+    await db(TABLES.PartnerNetworkConsent).insert({ partnerId: own.body.id, tenantId: DEFAULT_TENANT_ID, status: 'declined', declinedAt: new Date(), updatedAt: new Date() });
+
+    const linked = await request(app).post('/partners').set('Authorization', `Bearer ${key}`).send(networkApproveBody({ programIds: [otherProgramId] }));
+    expect(linked.status).toBe(200);
+    expect(linked.body).toMatchObject({ id: own.body.id, existing: true });
+    expect((await grantsFor(own.body.id)).map((g) => g.programId).sort()).toEqual([offeringProgramId, otherProgramId].sort());
+    const terms = await commissionFor(own.body.id, otherProgramId);
+    expect(Number(terms.commissionValue)).toBe(50);
+    expect(terms.source).toBe('amendment');
+    expect((await db(TABLES.PartnerNetworkConsent).where({ partnerId: own.body.id }).first()).status).toBe('declined');
+  });
+
+  it('records consent for a partner who never decided', async () => {
+    const key = await networkKey();
+    const own = await request(app).post('/partners').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ email: 'ada@creator.test', name: 'Ada', sendInvite: false });
+    await request(app).post('/partners').set('Authorization', `Bearer ${key}`).send(networkApproveBody({ programIds: [otherProgramId] }));
+    expect(await db(TABLES.PartnerNetworkConsent).where({ partnerId: own.body.id }).first()).toMatchObject({ status: 'granted', source: 'network_offering' });
+  });
+
+  it('still refuses a duplicate address from anyone but the Network, and a partner the brand revoked', async () => {
+    const key = await networkKey();
+    const first = await request(app).post('/partners').set('Authorization', `Bearer ${key}`).send(networkApproveBody({ programIds: [offeringProgramId] }));
+    const again = await request(app).post('/partners').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ email: 'ada@creator.test', name: 'Ada', sendInvite: false });
+    expect(again).toMatchObject({ status: 409, body: { error: 'email_taken' } });
+    // Network metadata on someone else's key isn't the Network.
+    const posing = await request(app).post('/partners').set('Authorization', `Bearer ${ADMIN_KEY}`).send(networkApproveBody({ programIds: [otherProgramId] }));
+    expect(posing.body.error).toBe('email_taken');
+
+    await db(TABLES.Partner).where({ id: first.body.id }).update({ revokedAt: new Date() });
+    const revoked = await request(app).post('/partners').set('Authorization', `Bearer ${key}`).send(networkApproveBody({ programIds: [otherProgramId] }));
+    expect(revoked).toMatchObject({ status: 409, body: { error: 'partner_revoked' } });
+    expect((await grantsFor(first.body.id)).map((g) => g.programId)).toEqual([offeringProgramId]);
   });
 });

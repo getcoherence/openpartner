@@ -121,6 +121,8 @@ const ERRORS: Record<string, string> = {
   rate_limited: 'You’re sending messages very quickly. Wait a little and try again.',
   creator_unavailable: 'Your account can’t do this right now.',
   partnership_ended: 'Your earlier partnership with this brand on that program ended, so this request can’t make you their partner again. Ask the brand to re-invite you.',
+  partner_revoked: 'This brand has ended your partnership with it, so this tracked request can’t go ahead. Ask the brand about it in the conversation.',
+  partner_exists_on_brand: 'You’re already this brand’s partner, and its OpenPartner can’t add this program to that yet. Ask the brand to update OpenPartner, or to send the request untracked.',
 };
 
 function errText(err: unknown): unknown {
