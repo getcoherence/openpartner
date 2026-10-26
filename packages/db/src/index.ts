@@ -54,6 +54,7 @@ export type { AudienceSize, PartnerApplication } from './partner-application.js'
 export { COUNTRY_CODES, OCCUPIED_REGION_COUNTRY, isCountryCode } from './countries.js';
 export type { CountryCode } from './countries.js';
 export { NEXT_PATH_MAX_LENGTH, safeNextPath, safePortalPath } from './next-path.js';
+export { TENANT_TABLES, RESTRICTED_GRANTS, grantAppRole } from './app-role-grants.js';
 
 export interface DbConfig {
   connectionString: string;

@@ -20,59 +20,7 @@
 import 'dotenv/config';
 import knex from 'knex';
 import config from '../knexfile.js';
-
-// Tables that the app role needs DML on. Mirrors the list inside the
-// app_role migration; kept in sync manually because both grow as new
-// tenanted tables land. (Coupon + NetworkOutbox got their own
-// conditional grants in their own migrations — those are also redone
-// here so a freshly-provisioned role lands fully wired.)
-const TENANT_TABLES = [
-  'Tenant',
-  'Partner',
-  'Campaign',
-  'PartnerCampaign',
-  'Link',
-  'Click',
-  'Identity',
-  'Event',
-  'Attribution',
-  'Commission',
-  'Payout',
-  'ApiKey',
-  'Config',
-  'Admin',
-  'MagicLinkToken',
-  'Session',
-  'PlatformSession',
-  'WebhookEndpoint',
-  'WebhookDelivery',
-  'PlatformAdmin',
-  'NetworkOutbox',
-  'Coupon',
-  'PartnerCommission',
-];
-
-// Tables where the app role gets LESS than full DML. OperatorRecoveryRequest
-// is append-only from the app's side: the API inserts and lists, every
-// update runs on the privileged pool, and withholding UPDATE/DELETE here is
-// what makes the audit trail tamper-resistant to tenant-scoped code.
-const RESTRICTED_GRANTS: Array<{ table: string; grant: string }> = [
-  { table: 'OperatorRecoveryRequest', grant: 'select, insert' },
-  // Same reason: the record of every partner sign-in link a brand minted
-  // (routes/partner-signin-link.ts).
-  { table: 'PartnerSigninLinkLog', grant: 'select, insert' },
-  // The click-landing log is raw like Click: appended, never edited.
-  // TrackingIssue's counters are bumped in place (tracking-issues.ts), but
-  // no request deletes one.
-  { table: 'ClickLanding', grant: 'select, insert' },
-  { table: 'TrackingIssue', grant: 'select, insert, update' },
-  // The brand Stripe events attribution processed; the catch-up prunes it
-  // on the privileged pool (stripe-event-catchup.ts).
-  { table: 'StripeEventLog', grant: 'select, insert' },
-  // The alert job opens, refreshes and closes flag episodes in place
-  // (tracking-alerts.ts); only the tenant purge deletes one.
-  { table: 'TrackingAlert', grant: 'select, insert, update' },
-];
+import { grantAppRole } from '../src/app-role-grants.js';
 
 async function main(): Promise<void> {
   const password = process.env.OPENPARTNER_APP_DB_PASSWORD;
@@ -107,42 +55,8 @@ async function main(): Promise<void> {
       console.log('[ensure-app-role] synced openpartner_app password');
     }
 
-    // connect + schema usage
-    const dbName = (await db.raw('select current_database() as n')).rows[0].n as string;
-    await db.raw(`grant connect on database "${dbName}" to openpartner_app`);
-    await db.raw('grant usage on schema public to openpartner_app');
-
-    // DML on tenanted tables. Skip silently if a table doesn't exist yet
-    // — keeps boot-time reconciliation safe on a freshly-migrated DB
-    // where one of these tables hasn't shipped yet (e.g. running an old
-    // image against a schema older than this script's table list).
-    for (const tbl of TENANT_TABLES) {
-      const tableExists = (await db.raw(
-        `select 1 from information_schema.tables where table_schema = 'public' and table_name = ?`,
-        [tbl],
-      )) as { rows: unknown[] };
-      if (tableExists.rows.length === 0) continue;
-      await db.raw(`grant select, insert, update, delete on "${tbl}" to openpartner_app`);
-    }
-    for (const { table, grant } of RESTRICTED_GRANTS) {
-      const tableExists = (await db.raw(
-        `select 1 from information_schema.tables where table_schema = 'public' and table_name = ?`,
-        [table],
-      )) as { rows: unknown[] };
-      if (tableExists.rows.length === 0) continue;
-      // Revoke first so a role provisioned before the grant narrowed
-      // doesn't keep the wider privileges forever — in ONE transaction,
-      // so a boot killed between the two statements cannot strand the
-      // role with no privileges at all (round 12): GRANT/REVOKE are
-      // transactional in Postgres, and live instances see either the old
-      // grants or the new ones, never the gap.
-      await db.transaction(async (trx) => {
-        await trx.raw(`revoke all privileges on "${table}" from openpartner_app`);
-        await trx.raw(`grant ${grant} on "${table}" to openpartner_app`);
-      });
-    }
-
-    await db.raw('grant usage on all sequences in schema public to openpartner_app');
+    // connect, schema usage, table and sequence grants (src/app-role-grants.ts)
+    await grantAppRole(db);
   } finally {
     await db.destroy();
   }
