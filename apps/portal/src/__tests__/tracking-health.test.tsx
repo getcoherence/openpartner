@@ -235,7 +235,7 @@ describe('Admin → Tracking health', () => {
         partnerId: 'pa1',
         partnerName: 'Deal Hunters',
         reason: 'mostly_instant',
-        recent: { sales: 6, medianSeconds: 20, fastShare: 0.8333 },
+        recent: { sales: 6, medianSeconds: 20, fast: 5, fastShare: 0.8333 },
         baseline: null,
       },
       {
@@ -244,8 +244,8 @@ describe('Admin → Tracking health', () => {
         partnerId: 'pa3',
         partnerName: 'Shifted',
         reason: 'collapsed',
-        recent: { sales: 6, medianSeconds: 120, fastShare: 0 },
-        baseline: { sales: 12, medianSeconds: 1800, fastShare: 0 },
+        recent: { sales: 6, medianSeconds: 120, fast: 0, fastShare: 0 },
+        baseline: { sales: 12, medianSeconds: 1800, fast: 0, fastShare: 0 },
       },
     ]);
     renderPage();

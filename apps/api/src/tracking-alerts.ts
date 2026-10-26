@@ -13,8 +13,10 @@
  *   - an open episode not seen for RESOLVE_AFTER_DAYS closes, so a flag
  *     that comes back after that is news again.
  * One email per brand per run lists every new flag, to each activated,
- * unrevoked admin. A send that fails closes the episodes it opened without
- * marking them sent, so the next run opens and emails them again.
+ * unrevoked admin, each sent on its own. When none of them could be sent,
+ * the run closes the episodes it opened without marking them sent, so the
+ * next run opens and emails them again. When some were, the admins whose
+ * send failed aren't retried (the flags stay on the page).
  *
  * Runs per active tenant in a tenant-scoped transaction (scheduler.ts,
  * daily), in every deployment mode: the flags read the brand's own raw
@@ -64,7 +66,16 @@ export async function saveTrackingAlertSettings(
 
 export type TrackingAlertSweep =
   | { skipped: 'disabled' | 'no_admins' }
-  | { flags: number; opened: number; notified: number; resolved: number; emailed: boolean; sendError?: string };
+  | {
+      flags: number;
+      opened: number;
+      notified: number;
+      resolved: number;
+      emailed: boolean;
+      /** Admins whose send failed this run, with the last error. */
+      failedRecipients?: number;
+      sendError?: string;
+    };
 
 export async function sweepTenantTrackingAlerts(
   db: Knex,
@@ -120,16 +131,19 @@ export async function sweepTenantTrackingAlerts(
     .update({ resolvedAt: now });
 
   let emailed = false;
+  let failedRecipients = 0;
   let sendError: string | undefined;
   if (fresh.length > 0) {
-    try {
-      const tenant = await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first('slug', 'customDomain');
-      const tmpl = trackingFlagsEmail(
-        await resolveBrandName(db, tenantId),
-        fresh.map((f) => describeFlag(f.flag)),
-        `${getPortalBaseUrl(tenant)}/admin/tracking-health`,
-      );
-      for (const admin of admins) {
+    const tenant = await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first('slug', 'customDomain');
+    const tmpl = trackingFlagsEmail(
+      await resolveBrandName(db, tenantId),
+      fresh.map((f) => describeFlag(f.flag)),
+      `${getPortalBaseUrl(tenant)}/admin/tracking-health`,
+    );
+    // Each admin on their own: one address that bounces mustn't keep the
+    // others from hearing.
+    for (const admin of admins) {
+      try {
         await getMailer().send(
           { db, tenantId },
           {
@@ -138,17 +152,21 @@ export async function sweepTenantTrackingAlerts(
             text: tmpl.text,
             html: tmpl.html,
             tag: 'tracking_flags',
-            metadata: { flags: fresh.map((f) => `${f.flag.kind}:${f.flag.subject}`) },
+            // Postmark takes short string values only.
+            metadata: { purpose: 'tracking_flags', flagCount: String(fresh.length) },
           },
         );
+        emailed = true;
+      } catch (err) {
+        failedRecipients += 1;
+        sendError = err instanceof Error ? err.message : String(err);
+        console.error('[tracking-alerts] send failed', { tenantId, error: sendError });
       }
-      emailed = true;
-    } catch (err) {
-      // Close these episodes unsent: the next run reopens and emails them.
-      // An admin earlier in the list may get that email twice, which beats
-      // the rest never getting it.
-      sendError = err instanceof Error ? err.message : String(err);
-      console.error('[tracking-alerts] send failed', { tenantId, error: sendError });
+    }
+    // Nobody got it: close these episodes unsent, so the next run reopens
+    // and emails them. When some admins did, the rest aren't retried, so
+    // those who got it don't get it twice; the flags stay on the page.
+    if (!emailed) {
       await db(TABLES.TrackingAlert)
         .where({ tenantId })
         .whereIn(
@@ -165,6 +183,6 @@ export async function sweepTenantTrackingAlerts(
     notified: emailed ? fresh.length : 0,
     resolved,
     emailed,
-    ...(sendError ? { sendError } : {}),
+    ...(failedRecipients ? { failedRecipients, sendError } : {}),
   };
 }

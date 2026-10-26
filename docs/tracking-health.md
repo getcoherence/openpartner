@@ -54,12 +54,15 @@ A browser extension or a coupon site that clicks the partner's link at
 checkout takes the credit without bringing the customer, and its clicks land
 seconds before the sale. Real buyers rarely pay that fast.
 
-The sample is each customer's first sale credited through a click of the
-partner's link: a conversion with a value, so a signup a minute after the
-click (which is ordinary) isn't one. Renewals inherit the first sale's click
-and would read as months, so they're left out. A coupon redemption's
-synthetic click is stamped at checkout and would read as zero, so that's left
-out too. Sales in the last 14 days are compared with the 90 days before.
+The sample is the first sale credited through each click of the partner's
+link: a conversion with a value, so a signup a minute after the click (which
+is ordinary) isn't one. A repeat purchase through a new click counts. A
+renewal that stays with the partner is credited through its first sale's
+click and would read as months, so it's left out. In a program that lets
+renewals go, a renewal credited through a newer click is that click's first
+sale and counts. A coupon redemption's synthetic click is stamped at checkout
+and would read as zero, so that's left out too. Sales in the last 14 days are
+compared with the 90 days before.
 
 With at least 5 recent sales, the partner is flagged when either:
 

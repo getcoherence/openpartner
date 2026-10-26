@@ -63,12 +63,13 @@ const DEAL_BAR: FastSalesFlag = {
   partnerId: 'pa_dealbar',
   partnerName: 'Deal Bar',
   reason: 'mostly_instant',
-  recent: { sales: 6, medianSeconds: 20, fastShare: 0.8333 },
+  recent: { sales: 6, medianSeconds: 20, fast: 5, fastShare: 0.8333 },
   baseline: null,
 };
 
 let sent: Message[] = [];
-let failSends = false;
+/** Every send fails, or only these recipients'. */
+let failSends: boolean | Set<string> = false;
 const adminIds: string[] = [];
 
 async function cleanup() {
@@ -100,7 +101,7 @@ const episodes = () =>
 beforeAll(async () => {
   __setMailerForTests({
     send: async (_ctx, msg) => {
-      if (failSends) throw new Error('smtp down');
+      if (failSends === true || (failSends instanceof Set && failSends.has(msg.to))) throw new Error('smtp down');
       sent.push(msg);
     },
   });
@@ -191,16 +192,40 @@ describe.skipIf(skipIntegration)('sweepTenantTrackingAlerts', () => {
     ]);
   });
 
-  it('closes the new episodes unsent when the email fails, and the next run sends it', async () => {
+  it('closes the new episodes unsent when no admin could be emailed, and the next run sends it', async () => {
     flag(DEAL_BAR);
     failSends = true;
     const failed = await sweepTenantTrackingAlerts(db, T, { now: D0 });
-    expect(failed).toEqual({ flags: 1, opened: 1, notified: 0, resolved: 0, emailed: false, sendError: 'smtp down' });
+    expect(failed).toEqual({
+      flags: 1,
+      opened: 1,
+      notified: 0,
+      resolved: 0,
+      emailed: false,
+      failedRecipients: 2,
+      sendError: 'smtp down',
+    });
     expect((await episodes()).map((r) => [r.notifiedAt, r.resolvedAt?.toISOString()])).toEqual([[null, D0.toISOString()]]);
 
     failSends = false;
     expect(await sweepTenantTrackingAlerts(db, T, { now: day(1) })).toMatchObject({ opened: 1, notified: 1, emailed: true });
     expect(sent.map((m) => m.to).sort()).toEqual(['ops@brand.test', 'owner@brand.test']);
+  });
+
+  it("one admin's bounce doesn't keep the others from hearing, and nobody hears twice", async () => {
+    flag(DEAL_BAR);
+    failSends = new Set(['owner@brand.test']);
+    expect(await sweepTenantTrackingAlerts(db, T, { now: D0 })).toMatchObject({
+      notified: 1,
+      emailed: true,
+      failedRecipients: 1,
+    });
+    expect(sent.map((m) => m.to)).toEqual(['ops@brand.test']);
+
+    failSends = false;
+    sent = [];
+    expect(await sweepTenantTrackingAlerts(db, T, { now: day(1) })).toMatchObject({ opened: 0, emailed: false });
+    expect(sent).toEqual([]);
   });
 
   it('does nothing when the brand turned the email off, or has no admin to tell', async () => {

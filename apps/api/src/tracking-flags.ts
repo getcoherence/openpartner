@@ -27,11 +27,15 @@
  *                 seconds. A browser extension or a coupon site that clicks
  *                 the link at checkout takes the credit without bringing
  *                 the customer, and its clicks land just before the sale.
- *                 A sale here is the first one credited through a click of
- *                 the partner's link. Renewals inherit the first sale's
- *                 click and would read as months, and a coupon redemption's
- *                 synthetic click is stamped at checkout, so it reads as
- *                 zero by construction: both are left out. Sales only (an
+ *                 A sale here is the first one credited through each click
+ *                 of the partner's link, so a repeat purchase through a new
+ *                 click counts. A renewal that stays with the partner is
+ *                 credited through its first sale's click (priorConversions
+ *                 in attribution.ts) and would read as months, and a coupon
+ *                 redemption's synthetic click is stamped at checkout, so it
+ *                 reads as zero by construction: both are left out. (In a
+ *                 program that lets renewals go, a renewal credited through
+ *                 a newer click is that click's first sale.) Sales only (an
  *                 event with a value), since a signup a minute after the
  *                 click is ordinary.
  *                   recent    sales in the last 14 days
@@ -107,7 +111,9 @@ export interface LinkageDropFlag {
 export interface SalesTiming {
   sales: number;
   medianSeconds: number;
-  /** Share of sales within FLAG_THRESHOLDS.sales.fastSeconds of the click. */
+  /** Sales within FLAG_THRESHOLDS.sales.fastSeconds of the click. */
+  fast: number;
+  /** fast / sales, rounded for display; thresholds use the exact counts. */
   fastShare: number;
 }
 
@@ -280,7 +286,7 @@ function timing(seconds: number[]): SalesTiming {
   const mid = Math.floor(sorted.length / 2);
   const median = sorted.length % 2 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
   const fast = sorted.filter((s) => s <= FLAG_THRESHOLDS.sales.fastSeconds).length;
-  return { sales: sorted.length, medianSeconds: Math.round(median), fastShare: round4(fast / sorted.length) };
+  return { sales: sorted.length, medianSeconds: Math.round(median), fast, fastShare: round4(fast / sorted.length) };
 }
 
 async function fastSales(db: Knex, tenantId: string, baselineSince: Date, recentSince: Date, until: Date): Promise<FastSalesFlag[]> {
@@ -317,6 +323,12 @@ async function fastSales(db: Knex, tenantId: string, baselineSince: Date, recent
         where a2."tenantId" = ? and e2.ts < ?
           and e2.value > 0 and e2.type ${notCorrective}
           and a2."clickId" in (select "clickId" from horizon)
+          and a2.model = (
+            select a0.model from ?? a0
+             where a0."eventId" = a2."eventId" and a0."tenantId" = a2."tenantId"
+             order by a0."computedAt", a0.id
+             limit 1
+          )
      ),
      ranked as (
        select h.*, row_number() over (partition by h."clickId" order by h."eventTs", h."eventId") as rn
@@ -343,11 +355,13 @@ async function fastSales(db: Knex, tenantId: string, baselineSince: Date, recent
       until,
       ...corrective,
       TABLES.Attribution,
+      // prior
       TABLES.Attribution,
       TABLES.Event,
       tenantId,
       baselineSince,
       ...corrective,
+      TABLES.Attribution,
       recentSince,
       TABLES.Partner,
       tenantId,
@@ -370,7 +384,7 @@ async function fastSales(db: Knex, tenantId: string, baselineSince: Date, recent
       baseline !== null &&
       recent.medianSeconds <= baseline.medianSeconds * S.maxMedianRatio &&
       recent.medianSeconds <= S.maxCollapsedMedianSeconds;
-    const instant = recent.fastShare >= S.instantShare;
+    const instant = recent.fast >= S.instantShare * recent.sales;
     if (!collapsed && !instant) continue;
     flags.push({
       kind: 'fast_sales',
@@ -413,6 +427,5 @@ export function describeFlag(flag: TrackingFlag): string {
   if (flag.reason === 'collapsed' && flag.baseline) {
     return `${flag.partnerName}: half of their ${r.sales} sales in the last two weeks came within ${formatDuration(r.medianSeconds)} of their click, against ${formatDuration(flag.baseline.medianSeconds)} over the three months before.`;
   }
-  const fast = Math.round(r.fastShare * r.sales);
-  return `${flag.partnerName}: ${fast} of their ${r.sales} sales in the last two weeks came within a minute of their click.`;
+  return `${flag.partnerName}: ${r.fast} of their ${r.sales} sales in the last two weeks came within a minute of their click.`;
 }

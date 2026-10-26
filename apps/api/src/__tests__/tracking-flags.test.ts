@@ -266,7 +266,7 @@ describe.skipIf(skipIntegration)('fast_sales', () => {
         partnerId: instant.id,
         partnerName: 'Deal Bar',
         reason: 'mostly_instant',
-        recent: { sales: 6, medianSeconds: 20, fastShare: 0.8333 },
+        recent: { sales: 6, medianSeconds: 20, fast: 5, fastShare: 0.8333 },
         baseline: null,
       },
     ]);
@@ -290,8 +290,8 @@ describe.skipIf(skipIntegration)('fast_sales', () => {
         partnerId: shifted.id,
         partnerName: 'Shifted',
         reason: 'collapsed',
-        recent: { sales: 6, medianSeconds: 120, fastShare: 0 },
-        baseline: { sales: 12, medianSeconds: 1800, fastShare: 0 },
+        recent: { sales: 6, medianSeconds: 120, fast: 0, fastShare: 0 },
+        baseline: { sales: 12, medianSeconds: 1800, fast: 0, fastShare: 0 },
       },
     ]);
     expect(describeFlag(flags[0]!)).toBe(
@@ -329,11 +329,39 @@ describe.skipIf(skipIntegration)('fast_sales', () => {
         kind: 'fast_sales',
         partnerName: 'Renewing',
         reason: 'mostly_instant',
-        recent: { sales: 5, medianSeconds: 10, fastShare: 1 },
+        recent: { sales: 5, medianSeconds: 10, fast: 5, fastShare: 1 },
         baseline: null,
       }),
     ]);
     expect((flags[0] as FastSalesFlag).partnerId).toBe(renewing.id);
+  });
+
+  it("doesn't let a re-run under another model hide a click's first live sale", async () => {
+    const shadowed = await partner('Shadowed');
+    const clicks: string[] = [];
+    for (let i = 0; i < 5; i++) clicks.push((await sale(shadowed, { clickDaysAgo: 2 + i, afterSeconds: 15 })).clickId);
+    // An old sale whose live (first-computed) model credited another
+    // partner's click; a later linear re-run also credited one of
+    // Shadowed's clicks. That shadow row isn't a sale through the click.
+    const other = await partner('Other');
+    const old = await sale(other, { clickDaysAgo: 150, afterSeconds: 3600 });
+    const [oldEvent] = await db(TABLES.Attribution).where({ tenantId: T, clickId: old.clickId }).pluck('eventId');
+    await db(TABLES.Attribution).insert({
+      id: ulid(),
+      tenantId: T,
+      eventId: oldEvent,
+      clickId: clicks[0],
+      partnerId: shadowed.id,
+      programId,
+      model: 'linear',
+      weight: '0.5000',
+      computedAt: new Date(),
+    });
+
+    const { flags } = await computeTrackingFlags(db, T, { now: NOW });
+    expect(flags).toEqual([
+      expect.objectContaining({ partnerName: 'Shadowed', recent: { sales: 5, medianSeconds: 15, fast: 5, fastShare: 1 } }),
+    ]);
   });
 });
 

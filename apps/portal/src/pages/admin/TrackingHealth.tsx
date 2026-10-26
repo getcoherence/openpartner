@@ -113,6 +113,8 @@ interface LinkageRate {
 interface SalesTiming {
   sales: number;
   medianSeconds: number;
+  /** Sales within a minute of the click. */
+  fast: number;
   fastShare: number;
 }
 
@@ -558,10 +560,10 @@ function flagText(flag: TrackingFlag): { headline: string; detail: string } {
   const headline =
     flag.reason === 'collapsed' && flag.baseline
       ? `${flag.partnerName}: half of their sales now come within ${duration(r.medianSeconds)} of the click, against ${duration(flag.baseline.medianSeconds)} before`
-      : `${flag.partnerName}: ${Math.round(r.fastShare * r.sales)} of ${r.sales} sales in the last two weeks came within a minute of the click`;
+      : `${flag.partnerName}: ${r.fast} of ${r.sales} sales in the last two weeks came within a minute of the click`;
   const sample = flag.baseline
-    ? `Each customer's first sale through the partner's link: ${r.sales} in the last two weeks against ${flag.baseline.sales} in the three months before.`
-    : `Each customer's first sale through the partner's link, in the last two weeks.`;
+    ? `The first sale through each of the partner's link clicks: ${r.sales} in the last two weeks against ${flag.baseline.sales} in the three months before.`
+    : `The first sale through each of the partner's link clicks, in the last two weeks.`;
   return {
     headline,
     detail: `${sample} Real buyers rarely pay that fast. A browser extension or a coupon site that clicks the link at checkout takes the credit without bringing the customer. Look at where their clicks come from before you approve their commissions.`,
