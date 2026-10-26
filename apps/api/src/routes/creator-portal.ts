@@ -28,6 +28,7 @@
 import { createHmac } from 'node:crypto';
 import express, { Router, type Request, type Response } from 'express';
 import { realtimeSocketUrl } from '../network-client.js';
+import { CONVERSATION_IMAGE_MAX_BYTES, CONVERSATION_IMAGE_TYPES } from '../conversation-images.js';
 
 export const creatorPortalRouter = Router();
 
@@ -48,13 +49,35 @@ export function signClientIp(ip: string, key: string, nowMs = Date.now()): strin
 // Image-upload bodies arrive as raw binary, not JSON. The global
 // express.json() middleware ignores image content-types, so without this
 // raw parser req.body would be {} and the proxy would forward an empty
-// payload to the Network. Cap matches the Network-side limit.
-creatorPortalRouter.use(
-  express.raw({
-    type: ['image/jpeg', 'image/png', 'image/webp'],
-    limit: 2 * 1024 * 1024,
-  }),
-);
+// payload to the Network. Caps match the Network-side limits: 2 MB for
+// profile images, 5 MB (and GIFs too) for images sent in a conversation,
+// whose too-big answer is JSON for the composer to show. Only on
+// /creator-api: this router sits in front of the app's other routes, which
+// parse their own uploads with their own limits.
+const profileImageBody = express.raw({
+  type: ['image/jpeg', 'image/png', 'image/webp'],
+  limit: 2 * 1024 * 1024,
+});
+const conversationImageBody = express.raw({ type: CONVERSATION_IMAGE_TYPES, limit: CONVERSATION_IMAGE_MAX_BYTES });
+const ATTACHMENT_UPLOAD_PATH = /^\/creator-api\/creators\/me\/conversations\/[^/]+\/attachments$/;
+creatorPortalRouter.use((req, res, next) => {
+  if (!/^\/creator-api(\/|$)/.test(req.path)) return next();
+  if (!ATTACHMENT_UPLOAD_PATH.test(req.path)) return profileImageBody(req, res, next);
+  conversationImageBody(req, res, (err?: unknown) => {
+    if (!err) return next();
+    const e = err as { status?: number; type?: string };
+    const answer = () => {
+      if (res.headersSent) return;
+      if (e.status === 413 || e.type === 'entity.too.large') return res.status(413).json({ error: 'payload_too_large', maxBytes: CONVERSATION_IMAGE_MAX_BYTES });
+      res.status(400).json({ error: 'invalid_body' });
+    };
+    // Answer once the rest has been read (and thrown away), so the browser
+    // gets the answer rather than a reset connection.
+    if (req.complete) return answer();
+    req.once('end', answer);
+    req.resume();
+  });
+});
 
 // Whitelist: exact path match or prefix-with-glob. We only forward paths
 // the Network exposes for creator-side flows, never anything else.
@@ -149,6 +172,9 @@ const ALLOWED_PREFIX: Array<{ prefix: string; methods: Set<string> }> = [
 
 /** POST /creators/me/conversations/:id/realtime → { ticket, expiresAt } (+ url, added here). */
 const REALTIME_TICKET_PATH = /^\/creators\/me\/conversations\/[^/]+\/realtime$/;
+/** GET /creators/me/conversations/:id/attachments/:attachmentId → an image's
+ *  file: the one response relayed as bytes, and only as an image. */
+const ATTACHMENT_FILE_PATH = /^\/creators\/me\/conversations\/[^/]+\/attachments\/[^/]+$/;
 
 function isAllowed(method: string, subpath: string): boolean {
   if (ALLOWED_EXACT.has(subpath)) return true;
@@ -242,6 +268,23 @@ creatorPortalRouter.all(/^\/creator-api(\/.*)?$/, async (req: Request, res: Resp
     if (disposition) res.setHeader('content-disposition', disposition);
 
     const upstreamCt = upstream.headers.get('content-type') ?? '';
+
+    // A conversation image: the bytes, as the image type the Network gave
+    // (one of the four it serves), and nothing that could render as a page.
+    // Never cached, so signing out or a takedown takes effect at once.
+    if (upstream.ok && req.method === 'GET' && ATTACHMENT_FILE_PATH.test(subpath)) {
+      const type = upstreamCt.split(';')[0]!.trim().toLowerCase();
+      if (!CONVERSATION_IMAGE_TYPES.includes(type)) {
+        return res.status(502).json({ error: 'proxy_error', detail: 'unexpected_content_type' });
+      }
+      res.status(200);
+      res.setHeader('Content-Type', type);
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+      res.setHeader('Content-Disposition', 'inline');
+      return res.send(Buffer.from(await upstream.arrayBuffer()));
+    }
+
     const body = await upstream.text();
 
     // Log non-2xx upstream responses with body so we can debug Network-side

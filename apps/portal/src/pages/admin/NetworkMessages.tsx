@@ -15,11 +15,11 @@
  * "is typing…", and new messages as they land. It still polls, slowly while
  * the socket is up.
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { MessagesSquare } from 'lucide-react';
-import { api, ApiError } from '../../api.js';
+import { api, apiBlob, ApiError } from '../../api.js';
 import { Button, Card, EmptyState, ErrorBanner, Page, Select, formatDate } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
 import { TenantLink } from '../../tenant-link.js';
@@ -40,6 +40,7 @@ import {
   type BookingStatus,
   type ConversationMessage,
   type LastMessage,
+  type MessageAttachment,
 } from '../creator/conversation-shared.js';
 import { ClaimError, fetchClaimPreview } from '../creator/BookingConfirm.js';
 import { BookCreatorDialog, networkErrorCode } from './BookCreatorDialog.js';
@@ -247,9 +248,23 @@ export function AdminNetworkThread() {
   }, []);
 
   const send = useMutation({
-    mutationFn: (body: string) => api(`/admin/network/conversations/${encodeURIComponent(id)}/messages`, { method: 'POST', body: { body } }),
+    mutationFn: (m: { body: string; attachmentIds: string[] }) =>
+      api(`/admin/network/conversations/${encodeURIComponent(id)}/messages`, {
+        method: 'POST',
+        body: { ...(m.body ? { body: m.body } : {}), ...(m.attachmentIds.length ? { attachmentIds: m.attachmentIds } : {}) },
+      }),
     onSuccess: refresh,
   });
+  const uploadImage = useCallback(
+    async (image: Blob) =>
+      (await api<{ attachment: MessageAttachment }>(`/admin/network/conversations/${encodeURIComponent(id)}/attachments`, { method: 'POST', body: image }))
+        .attachment,
+    [id],
+  );
+  const loadImage = useCallback(
+    (attachmentId: string) => apiBlob(`/admin/network/conversations/${encodeURIComponent(id)}/attachments/${encodeURIComponent(attachmentId)}`),
+    [id],
+  );
   const earlier = useMutation({
     mutationFn: (before: string) =>
       api<VendorThread>(`/admin/network/conversations/${encodeURIComponent(id)}?before=${encodeURIComponent(before)}`),
@@ -334,6 +349,7 @@ export function AdminNetworkThread() {
           hasMore={olderHasMore ?? t.hasMore}
           loadingEarlier={earlier.isPending}
           onLoadEarlier={() => messages[0] && earlier.mutate(messages[0].id)}
+          loadAttachment={loadImage}
           renderBooking={(bookingId) => {
             const b = bookings.get(bookingId);
             return b ? (
@@ -345,7 +361,8 @@ export function AdminNetworkThread() {
         <div style={{ marginTop: 8, borderTop: `1px solid ${theme.borderSubtle}`, paddingTop: 14 }}>
           <ErrorBanner error={send.error ? errorText(send.error) : null} />
           <Composer
-            onSend={(body) => send.mutateAsync(body)}
+            onSend={(m) => send.mutateAsync(m)}
+            onUpload={uploadImage}
             pending={send.isPending}
             disabledReason={t.conversation.canWrite ? null : CANNOT_WRITE[t.conversation.cannotWriteReason ?? ''] ?? 'You can’t write here.'}
             placeholder={`Message ${names.creator}`}
@@ -679,7 +696,8 @@ export function MessageCreatorDialog({ creator, onClose }: { creator: { id: stri
           Ask about dates, formats or a custom deal. {creator.name} answers here on OpenPartner, and we don&rsquo;t share your email address with them.
         </p>
         <ErrorBanner error={start.error ? (code && text[code] ? text[code] : start.error) : null} />
-        <Composer onSend={(body) => start.mutateAsync(body)} pending={start.isPending} placeholder={`Hi ${creator.name.split(' ')[0]}, …`} />
+        {/* Text only: images go in once the conversation exists. */}
+        <Composer onSend={(m) => start.mutateAsync(m.body)} pending={start.isPending} placeholder={`Hi ${creator.name.split(' ')[0]}, …`} />
         <div style={{ marginTop: 10 }}>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
         </div>

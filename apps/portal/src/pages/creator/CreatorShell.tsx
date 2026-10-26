@@ -24,6 +24,7 @@ import { CreatorStorefrontSetupPage } from './CreatorStorefrontSetup.js';
 import { CreatorBookingsPage } from './CreatorBookings.js';
 import { CreatorMessagesPage, CreatorThreadPage, useCreatorUnreadMessages } from './CreatorMessages.js';
 import { UnreadDot } from './conversation-shared.js';
+import { clearAttachmentCache } from './conversation-media.js';
 import { CreatorLocationPrompt, useCreatorLocationMissing } from './CreatorLocation.js';
 import { CreatorReviewBanners } from './CreatorReview.js';
 
@@ -265,6 +266,8 @@ function CreatorSidebar({ creator, variant = 'sidebar' }: { creator: NonNullable
           } catch {
             /* ignore */
           }
+          // Conversation images are kept in memory; nobody else gets them.
+          clearAttachmentCache();
           nav('/');
         }}
         style={{

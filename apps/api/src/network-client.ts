@@ -31,6 +31,7 @@ import { decryptSecret, encryptSecret } from './crypto.js';
 import { getWhiteLabelState } from './white-label.js';
 import { bookingFeeBpsFor } from './booking-fee.js';
 import { CLIENT_IP_HEADER, signClientIp } from './routes/creator-portal.js';
+import { CONVERSATION_IMAGE_TYPES } from './conversation-images.js';
 
 const CONFIG_KEY = 'network_membership';
 // Outbox / fire-and-forget pushes — short timeout, the scheduler retries.
@@ -652,6 +653,41 @@ export class NetworkProxyError extends Error {
   }
 }
 
+/**
+ * GET a file the Network serves this brand: a conversation image. The
+ * brand's token, as callNetwork uses it, but the body comes back as bytes,
+ * and only as one of CONVERSATION_IMAGE_TYPES. Anything else is an error, so
+ * it can never be relayed to a browser as a page.
+ */
+async function fetchNetworkFile(db: Knex, tenantId: string, path: string): Promise<{ contentType: string; body: Buffer }> {
+  const m = await getNetworkMembership(db, tenantId);
+  if (!m || !m.enabled || !m.vendorTokenCiphertext) throw new NetworkProxyError(503, 'network_not_configured');
+  const networkUrl = m.networkUrl || process.env.NETWORK_URL;
+  if (!networkUrl) throw new NetworkProxyError(503, 'network_url_unresolvable');
+  let token: string;
+  try {
+    token = decryptSecret(m.vendorTokenCiphertext);
+  } catch (err) {
+    throw new NetworkProxyError(500, `vendor_token_undecryptable: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  let res: Response;
+  try {
+    res = await fetch(`${networkUrl.replace(/\/$/, '')}${path}`, {
+      headers: { authorization: `Bearer ${token}`, 'user-agent': 'OpenPartner-Vendor/1' },
+      signal: AbortSignal.timeout(PROXY_TIMEOUT_MS),
+    });
+  } catch (err) {
+    throw new NetworkProxyError(503, `network_unreachable: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!res.ok) {
+    const text = await res.text();
+    throw new NetworkProxyError(res.status, text.slice(0, 500) || `http_${res.status}`);
+  }
+  const contentType = (res.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
+  if (!CONVERSATION_IMAGE_TYPES.includes(contentType)) throw new NetworkProxyError(502, 'unexpected_content_type');
+  return { contentType, body: Buffer.from(await res.arrayBuffer()) };
+}
+
 /** GET /vendors/me/export (docs/network-protocol.md): Network rows keyed by
  *  table name, minus what is the creator's, and the creators they name as
  *  their public face. */
@@ -751,6 +787,14 @@ export const networkProxy = {
     const m = await getNetworkMembership(db, tenantId);
     return { ...ticket, url: realtimeSocketUrl(m?.networkUrl || process.env.NETWORK_URL || '') };
   },
+  /** An image to send in the conversation (the raw file) → { attachment }. */
+  uploadConversationAttachment: (db: Knex, tenantId: string, id: string, image: Buffer, contentType: string) =>
+    callNetwork<{ attachment: unknown }>(db, tenantId, 'POST', `/vendors/me/conversations/${encodeURIComponent(id)}/attachments`, image, {
+      rawContentType: contentType,
+    }),
+  /** An image's file, for the brand's portal to show. */
+  conversationAttachmentFile: (db: Knex, tenantId: string, id: string, attachmentId: string) =>
+    fetchNetworkFile(db, tenantId, `/vendors/me/conversations/${encodeURIComponent(id)}/attachments/${encodeURIComponent(attachmentId)}`),
   /** All of the above the Network holds for this brand: its conversations,
    *  their messages, and its bookings with their payment records, for the
    *  workspace export (export.ts exportNetwork). Also while the membership

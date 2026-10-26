@@ -4,14 +4,30 @@
  * (CreatorMessages.tsx) and the brand's Network → Messages
  * (admin/NetworkMessages.tsx).
  *
- * A thread is text messages plus booking events. Each booking's card is
- * drawn where it started (its "requested" or "offered" event) and shows its
- * current state; later events are one-line notes. Everything the other side
- * typed is rendered as text, never HTML.
+ * A thread is text messages, with their images, plus booking events. Each
+ * booking's card is drawn where it started (its "requested" or "offered"
+ * event) and shows its current state; later events are one-line notes.
+ * Everything the other side typed is rendered as text, never HTML; only its
+ * http(s) links become links (conversation-media.tsx).
  */
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type ReactNode } from 'react';
+import { ImagePlus, LoaderCircle, X } from 'lucide-react';
 import { Button, Textarea } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
+import {
+  AttachmentGrid,
+  IMAGE_TYPES,
+  ImageProblem,
+  Linkified,
+  MAX_IMAGES_PER_MESSAGE,
+  prepareImage,
+  seedAttachment,
+  uploadErrorText,
+  type LoadAttachment,
+  type MessageAttachment,
+} from './conversation-media.js';
+
+export type { LoadAttachment, MessageAttachment } from './conversation-media.js';
 
 export type ConversationAuthor = 'creator' | 'vendor' | 'system';
 export type BookingEvent =
@@ -38,6 +54,8 @@ export interface ConversationMessage {
   body: string | null;
   event: BookingEvent | null;
   bookingId: string | null;
+  /** Images, in order. Older Networks don't send it. */
+  attachments?: MessageAttachment[];
   createdAt: string;
 }
 
@@ -59,6 +77,8 @@ export interface LastMessage {
   kind: 'text' | 'event';
   event: BookingEvent | null;
   preview: string | null;
+  /** Images in the message. */
+  images?: number;
   createdAt: string;
 }
 
@@ -189,6 +209,7 @@ export function Thread({
   hasMore,
   onLoadEarlier,
   loadingEarlier,
+  loadAttachment,
 }: {
   messages: ConversationMessage[];
   side: 'creator' | 'vendor';
@@ -198,6 +219,9 @@ export function Thread({
   hasMore?: boolean;
   onLoadEarlier?: () => void;
   loadingEarlier?: boolean;
+  /** Fetches an image's file with this side's credentials. Keep it stable
+   *  (useCallback): images reload when it changes. */
+  loadAttachment: LoadAttachment;
 }) {
   const end = useRef<HTMLDivElement | null>(null);
   const lastId = messages.at(-1)?.id;
@@ -228,26 +252,30 @@ export function Thread({
         if (m.kind === 'event') return <EventNote key={m.id} text={eventText(m, side, names)} at={m.createdAt} />;
         const mine = m.author === side;
         const who = m.author === 'creator' ? names.creator : m.authorName ? `${m.authorName} · ${names.brand}` : names.brand;
+        const images = m.attachments ?? [];
         return (
           <div key={m.id} style={{ display: 'flex', justifyContent: mine ? 'flex-end' : 'flex-start' }}>
-            <div style={{ maxWidth: 'min(560px, 85%)' }}>
-              <div style={{ fontSize: 11, color: theme.textDim, marginBottom: 3, textAlign: mine ? 'right' : 'left' }}>
+            <div style={{ maxWidth: 'min(560px, 85%)', display: 'flex', flexDirection: 'column', gap: 6, alignItems: mine ? 'flex-end' : 'flex-start' }}>
+              <div style={{ fontSize: 11, color: theme.textDim, textAlign: mine ? 'right' : 'left' }}>
                 {mine ? 'You' : who} · {timeLabel(m.createdAt)}
               </div>
-              <div
-                style={{
-                  background: mine ? alpha(theme.accent, 0.12) : theme.surface2,
-                  border: `1px solid ${mine ? alpha(theme.accent, 0.3) : theme.borderSubtle}`,
-                  borderRadius: 10,
-                  padding: '9px 12px',
-                  fontSize: 14,
-                  lineHeight: 1.5,
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
-                }}
-              >
-                {m.body}
-              </div>
+              {images.length > 0 && <AttachmentGrid attachments={images} load={loadAttachment} align={mine ? 'right' : 'left'} />}
+              {m.body && (
+                <div
+                  style={{
+                    background: mine ? alpha(theme.accent, 0.12) : theme.surface2,
+                    border: `1px solid ${mine ? alpha(theme.accent, 0.3) : theme.borderSubtle}`,
+                    borderRadius: 10,
+                    padding: '9px 12px',
+                    fontSize: 14,
+                    lineHeight: 1.5,
+                    whiteSpace: 'pre-wrap',
+                    overflowWrap: 'anywhere',
+                  }}
+                >
+                  <Linkified text={m.body} />
+                </div>
+              )}
             </div>
           </div>
         );
@@ -265,37 +293,213 @@ function EventNote({ text, at }: { text: string; at: string }) {
   );
 }
 
+/** An image in the composer: being prepared and uploaded, ready to send
+ *  (`id`), or refused (`error`). */
+interface PendingImage {
+  key: string;
+  preview: string | null;
+  id?: string;
+  error?: string;
+}
+
+let pendingKey = 0;
+
+/** Touch keyboards keep Enter for a new line; the Send button sends. */
+function coarsePointer(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
+}
+
+function imageFiles(list: FileList | null | undefined): File[] {
+  return Array.from(list ?? []).filter((f) => f.type.startsWith('image/'));
+}
+
+/**
+ * The message box. Enter sends and Shift+Enter starts a new line (on a touch
+ * keyboard Enter is a new line). With `onUpload`, images can be pasted,
+ * dropped or picked: each is prepared (conversation-media.tsx) and uploaded
+ * straight away, and sent with the message, up to four.
+ */
 export function Composer({
   onSend,
   pending,
   disabledReason,
   placeholder = 'Write a message',
   onTyping,
+  onUpload,
 }: {
-  onSend: (body: string) => Promise<unknown>;
+  onSend: (message: { body: string; attachmentIds: string[] }) => Promise<unknown>;
   pending: boolean;
   /** Shown instead of the box when this side can't write. */
   disabledReason?: string | null;
   placeholder?: string;
   /** Told as this side types and stops (the live socket, conversation-live.ts). */
   onTyping?: (typing: boolean) => void;
+  /** Uploads an image to the conversation; without it, the box is text only. */
+  onUpload?: (image: Blob) => Promise<MessageAttachment>;
 }) {
   const [body, setBody] = useState('');
+  const [images, setImages] = useState<PendingImage[]>([]);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const picker = useRef<HTMLInputElement | null>(null);
+  const touch = useMemo(coarsePointer, []);
+  const latest = useRef(images);
+  latest.current = images;
+  // Previews are blob URLs: let them go with the composer.
+  useEffect(() => () => latest.current.forEach((i) => i.preview && URL.revokeObjectURL(i.preview)), []);
+
   if (disabledReason) {
     return <div style={{ fontSize: 13, color: theme.textMuted, background: theme.surface2, borderRadius: theme.radiusSm, padding: '10px 12px' }}>{disabledReason}</div>;
   }
+
   const text = body.trim();
-  async function send() {
-    if (!text || pending) return;
-    onTyping?.(false);
-    await onSend(text);
-    setBody('');
+  const uploading = images.some((i) => !i.id && !i.error);
+  const ready = images.filter((i) => i.id).map((i) => i.id!);
+  const canSend = (text.length > 0 || ready.length > 0) && !uploading && !pending;
+
+  function update(key: string, patch: Partial<PendingImage>) {
+    setImages((list) => list.map((i) => (i.key === key ? { ...i, ...patch } : i)));
   }
+
+  function remove(key: string) {
+    setImages((list) => {
+      const gone = list.find((i) => i.key === key);
+      if (gone?.preview) URL.revokeObjectURL(gone.preview);
+      return list.filter((i) => i.key !== key);
+    });
+  }
+
+  function add(files: File[]) {
+    if (!onUpload || files.length === 0) return;
+    setProblem(null);
+    const room = MAX_IMAGES_PER_MESSAGE - latest.current.filter((i) => !i.error).length;
+    if (room <= 0) {
+      setProblem(`Up to ${MAX_IMAGES_PER_MESSAGE} images per message.`);
+      return;
+    }
+    if (files.length > room) setProblem(`Up to ${MAX_IMAGES_PER_MESSAGE} images per message: the first ${room} were added.`);
+    for (const file of files.slice(0, room)) {
+      const key = `img${++pendingKey}`;
+      const preview = typeof URL.createObjectURL === 'function' ? URL.createObjectURL(file) : null;
+      setImages((list) => [...list, { key, preview }]);
+      void (async () => {
+        try {
+          const blob = await prepareImage(file);
+          const attachment = await onUpload(blob);
+          seedAttachment(attachment.id, blob);
+          update(key, { id: attachment.id });
+        } catch (err) {
+          update(key, { error: err instanceof ImageProblem ? err.message : uploadErrorText(err) });
+        }
+      })();
+    }
+  }
+
+  async function send() {
+    if (!canSend) return;
+    onTyping?.(false);
+    const sentText = text;
+    const sent = new Set(images.filter((i) => i.id).map((i) => i.key));
+    await onSend({ body: sentText, attachmentIds: ready });
+    // Clear only what went: text typed or images added while it was sending
+    // stay. Refused images go too; they were never going to be sent.
+    setBody((current) => (current.trim() === sentText ? '' : current));
+    setProblem(null);
+    setImages((list) =>
+      list.filter((i) => {
+        if (!sent.has(i.key) && !i.error) return true;
+        if (i.preview) URL.revokeObjectURL(i.preview);
+        return false;
+      }),
+    );
+  }
+
+  function onPaste(e: ClipboardEvent<HTMLTextAreaElement>) {
+    const files = imageFiles(e.clipboardData?.files);
+    if (files.length === 0 || !onUpload) return;
+    // A copied image may come with its name or markup as text: keep only
+    // the image, unless there's real text alongside it.
+    if (!e.clipboardData.getData('text/plain').trim()) e.preventDefault();
+    add(files);
+  }
+
+  function onDrop(e: DragEvent<HTMLDivElement>) {
+    setDragging(false);
+    const files = imageFiles(e.dataTransfer?.files);
+    if (files.length === 0 || !onUpload) return;
+    e.preventDefault();
+    add(files);
+  }
+
+  const lines = body.split('\n').length;
   return (
-    <div>
+    <div
+      onDragOver={(e) => {
+        if (!onUpload || !Array.from(e.dataTransfer?.types ?? []).includes('Files')) return;
+        e.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={onDrop}
+      style={{ borderRadius: theme.radiusSm, outline: dragging ? `2px dashed ${theme.accent}` : 'none', outlineOffset: 4 }}
+    >
+      {images.length > 0 && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+          {images.map((i) => (
+            <div
+              key={i.key}
+              title={i.error}
+              style={{
+                position: 'relative',
+                width: 72,
+                height: 72,
+                borderRadius: 8,
+                overflow: 'hidden',
+                background: theme.surface2,
+                border: `1px solid ${i.error ? theme.danger : theme.borderSubtle}`,
+              }}
+            >
+              {i.preview && <img src={i.preview} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: i.id ? 1 : 0.5 }} />}
+              {!i.id && !i.error && (
+                <span aria-label="Uploading" style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: theme.text }}>
+                  <LoaderCircle size={20} className="op-spin" />
+                </span>
+              )}
+              <button
+                type="button"
+                aria-label="Remove image"
+                onClick={() => remove(i.key)}
+                style={{
+                  position: 'absolute',
+                  top: 3,
+                  right: 3,
+                  width: 20,
+                  height: 20,
+                  borderRadius: '50%',
+                  border: 'none',
+                  padding: 0,
+                  background: alpha('#000000', 0.6),
+                  color: '#fff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                }}
+              >
+                <X size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      {(problem || images.some((i) => i.error)) && (
+        <div role="alert" style={{ fontSize: 12, color: theme.danger, marginBottom: 6 }}>
+          {problem ?? images.find((i) => i.error)?.error}
+        </div>
+      )}
       <Textarea
         value={body}
-        rows={3}
+        rows={Math.min(8, Math.max(2, lines))}
         maxLength={MESSAGE_MAX}
         placeholder={placeholder}
         aria-label="Message"
@@ -304,18 +508,42 @@ export function Composer({
           onTyping?.(e.target.value.trim().length > 0);
         }}
         onBlur={() => onTyping?.(false)}
+        onPaste={onPaste}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault();
-            void send();
-          }
+          if (e.key !== 'Enter' || e.shiftKey || e.altKey) return;
+          // Mid-composition (Japanese, Chinese, …) Enter picks the word.
+          if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+          if (touch && !e.metaKey && !e.ctrlKey) return;
+          e.preventDefault();
+          void send();
         }}
       />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
-        <Button onClick={() => void send()} disabled={!text || pending}>
-          {pending ? 'Sending…' : 'Send'}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
+        <Button onClick={() => void send()} disabled={!canSend}>
+          {pending ? 'Sending…' : uploading ? 'Uploading…' : 'Send'}
         </Button>
-        <span style={{ fontSize: 12, color: theme.textDim }}>Keep payments on OpenPartner: only bookings paid here are covered.</span>
+        {onUpload && (
+          <>
+            <Button variant="ghost" size="sm" onClick={() => picker.current?.click()} icon={<ImagePlus size={16} />}>
+              Image
+            </Button>
+            <input
+              ref={picker}
+              type="file"
+              accept={IMAGE_TYPES.join(',')}
+              multiple
+              hidden
+              aria-label="Add images"
+              onChange={(e) => {
+                add(imageFiles(e.target.files));
+                e.target.value = '';
+              }}
+            />
+          </>
+        )}
+        <span style={{ fontSize: 12, color: theme.textDim }}>
+          {touch ? '' : 'Enter to send, Shift+Enter for a new line. '}Keep payments on OpenPartner: only bookings paid here are covered.
+        </span>
       </div>
     </div>
   );
@@ -381,7 +609,8 @@ export function previewLine(last: LastMessage | null, side: 'creator' | 'vendor'
     );
   }
   const who = last.author === side ? 'You: ' : '';
-  return `${who}${last.preview ?? ''}`;
+  const images = last.images ?? 0;
+  return `${who}${last.preview ?? (images > 1 ? `${images} images` : images === 1 ? 'Image' : '')}`;
 }
 
 export function UnreadDot({ count }: { count: number }) {

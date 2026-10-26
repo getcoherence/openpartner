@@ -52,6 +52,13 @@ export async function creatorApi<T = unknown>(
   return res.json() as Promise<T>;
 }
 
+/** A file through the proxy (a conversation image), as a Blob. */
+export async function creatorApiBlob(path: string): Promise<Blob> {
+  const res = await fetch(`/api/creator-api${path}`, { credentials: 'include' });
+  if (!res.ok) throw new ApiError(res.status, `${res.status}`);
+  return res.blob();
+}
+
 function friendlyMessage(res: Response, detail: unknown): string {
   const fallback = res.statusText ? `${res.status} ${res.statusText}` : `${res.status}`;
   if (!detail || typeof detail !== 'object') return fallback;
