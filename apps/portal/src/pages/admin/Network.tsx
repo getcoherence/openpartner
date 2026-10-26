@@ -1,77 +1,37 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Navigate } from 'react-router';
 import { api, ApiError } from '../../api.js';
+import { useTenantBase } from '../../tenant-base.js';
 import { Button, Card, ErrorBanner, Input, Label, Page } from '../../ui.js';
-import { alpha, theme } from '../../theme.js';
+import { theme } from '../../theme.js';
+import { isNetworkConnected, type NetworkMembership } from './NetworkSettingsSection.js';
 
-interface NetworkMembership {
-  enabled: boolean;
-  networkUrl: string;
-  hasVendorToken: boolean;
-  scopedKeyId: string | null;
-  autoEnroll: boolean;
-  /** The Network's key may pay bonuses (Network bounties). Absent on an
-   *  API from before bonuses. */
-  bonusesAuthorized?: boolean;
-}
-
-interface NetworkSelf {
-  id: string;
-  displayName: string;
-  status: string;
-  partnerCount: number;
-  /** OpenPartner's review of this vendor. Only 'approved' vendors are
-   *  discoverable on the marketplace. Absent on an older Network. */
-  reviewStatus?: 'pending' | 'approved' | 'rejected';
-}
-
-interface ConsentSummary {
-  partners: number;
-  granted: number;
-  withdrawn: number;
-  declined: number;
-}
-
-interface BackfillResult {
-  total: number;
-  pushed: number;
-  queued: number;
-}
-
+/**
+ * Network → Get connected. Only for a brand that isn't connected yet: once
+ * it is, its Network settings live on Admin → Settings, and this route
+ * (where the Network's links and the connect callback land) sends it there.
+ */
 export function AdminNetwork() {
-  return (
-    <Page
-      title="Network"
-      subtitle="List your brand on the OpenPartner Network so creators can find and apply to your programs."
-    >
-      <NetworkConnection />
-    </Page>
-  );
-}
-
-function NetworkConnection() {
-  const qc = useQueryClient();
+  const tenantBase = useTenantBase();
   const { data: membership, isLoading, error } = useQuery({
     queryKey: ['network-membership'],
     queryFn: () => api<NetworkMembership>('/config/network'),
   });
 
-  // Connected once enabled=true AND vendor token saved.
-  const connected = !!(membership?.enabled && membership.hasVendorToken);
+  if (isNetworkConnected(membership)) return <Navigate to={`${tenantBase}/admin/settings#network`} replace />;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {error && <ErrorBanner error={"Couldn't load Network settings."} />}
-      {isLoading && <Card><p style={{ fontSize: 13, margin: 0, color: theme.textMuted }}>Loading…</p></Card>}
-      {membership && (
-        <>
-          {!connected ? <ConnectForm membership={membership} /> : <ConnectedPanel membership={membership} />}
-          {connected && membership.bonusesAuthorized === false && <AuthorizeBonusesPanel />}
-          {connected && <AutoEnrollPanel membership={membership} onChange={() => qc.invalidateQueries({ queryKey: ['network-membership'] })} />}
-          {connected && <BackfillPanel />}
-        </>
-      )}
-    </div>
+    <Page
+      title="Network"
+      subtitle="List your brand on the OpenPartner Network so creators can find and apply to your programs."
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        {error && <ErrorBanner error={"Couldn't load Network settings."} />}
+        {isLoading && <Card><p style={{ fontSize: 13, margin: 0, color: theme.textMuted }}>Loading…</p></Card>}
+        {membership && <ConnectForm membership={membership} />}
+      </div>
+    </Page>
   );
 }
 
@@ -152,216 +112,6 @@ function ConnectForm({ membership }: { membership: NetworkMembership }) {
             </p>
           )}
         </>
-      )}
-    </Card>
-  );
-}
-
-function ConnectedPanel({ membership }: { membership: NetworkMembership }) {
-  const { data: self, error, isLoading, refetch, isRefetching } = useQuery({
-    queryKey: ['network-self'],
-    queryFn: () => api<NetworkSelf>('/admin/network/me'),
-    retry: 1,
-  });
-  // On-demand heartbeat fire — useful when the brand admin updated their
-  // logo / name / etc. and is wondering why the marketplace listing
-  // hasn't refreshed. Returns the result inline so propagation failures
-  // (Network rejected, vendor token bad, etc.) surface visibly instead
-  // of dying in the cron logs.
-  const heartbeat = useMutation({
-    mutationFn: () =>
-      api<{ sent: boolean; partnerCount: number; reason?: string }>('/admin/network/heartbeat', { method: 'POST' }),
-    onSuccess: () => refetch(),
-  });
-  return (
-    <Card>
-      <h3 style={{ marginTop: 0, marginBottom: 8, fontSize: 15, fontWeight: 500, color: theme.success }}>Connected ✓</h3>
-      <p style={{ fontSize: 13, color: theme.textMuted, marginTop: 0, marginBottom: 8 }}>
-        Network: <code>{membership.networkUrl}</code>
-      </p>
-      {isLoading && <p style={{ fontSize: 13, color: theme.textMuted, margin: 0 }}><em>Loading vendor profile…</em></p>}
-      {!isLoading && self && (
-        <p style={{ fontSize: 13, color: theme.textMuted, margin: 0 }}>
-          Listed as <strong style={{ color: theme.text }}>{self.displayName}</strong> · status: {self.status} · {self.partnerCount} active partners
-        </p>
-      )}
-      {!isLoading && self?.reviewStatus === 'pending' && (
-        <p style={{ fontSize: 13, color: theme.warn, margin: '8px 0 0' }}>
-          Waiting for OpenPartner review. Your published programs appear on the marketplace once your brand is
-          approved, and you&rsquo;ll get an email when that happens.
-        </p>
-      )}
-      {!isLoading && self?.reviewStatus === 'rejected' && (
-        <p style={{ fontSize: 13, color: theme.danger, margin: '8px 0 0' }}>
-          Your brand isn&rsquo;t approved for the OpenPartner marketplace, so your programs aren&rsquo;t listed. Reply to the
-          review email if you think this is a mistake.
-        </p>
-      )}
-      {!isLoading && error && (
-        <div style={{ marginTop: 6 }}>
-          <div style={{ color: theme.danger, fontSize: 13 }}>
-            Couldn&rsquo;t load vendor profile from the Network: {error instanceof Error ? error.message : String(error)}
-          </div>
-          <button
-            type="button"
-            onClick={() => refetch()}
-            disabled={isRefetching}
-            style={{
-              marginTop: 8,
-              background: 'transparent',
-              color: theme.accentText,
-              border: `1px solid ${theme.accent}`,
-              borderRadius: 6,
-              padding: '6px 12px',
-              fontSize: 13,
-              cursor: isRefetching ? 'wait' : 'pointer',
-            }}
-          >
-            {isRefetching ? 'Retrying…' : 'Retry'}
-          </button>
-        </div>
-      )}
-      <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${theme.borderSubtle}` }}>
-        <button
-          type="button"
-          onClick={() => heartbeat.mutate()}
-          disabled={heartbeat.isPending}
-          style={{
-            background: 'transparent',
-            color: theme.accentText,
-            border: `1px solid ${theme.accentA55}`,
-            borderRadius: 6,
-            padding: '6px 12px',
-            fontSize: 12,
-            cursor: heartbeat.isPending ? 'wait' : 'pointer',
-          }}
-        >
-          {heartbeat.isPending ? 'Sending…' : 'Push update to marketplace now'}
-        </button>
-        <span style={{ marginLeft: 10, fontSize: 12, color: theme.textDim }}>
-          Otherwise auto-syncs hourly. Use this after changing your logo or name.
-        </span>
-        {heartbeat.data && (
-          <div style={{ marginTop: 8, fontSize: 12, color: heartbeat.data.sent ? theme.success : theme.danger }}>
-            {heartbeat.data.sent
-              ? `Sent — marketplace will reflect changes within a minute.`
-              : `Failed: ${heartbeat.data.reason ?? 'unknown reason'}`}
-          </div>
-        )}
-        {heartbeat.error && (
-          <div style={{ marginTop: 8, fontSize: 12, color: theme.danger }}>
-            Failed: {heartbeat.error instanceof Error ? heartbeat.error.message : String(heartbeat.error)}
-          </div>
-        )}
-      </div>
-    </Card>
-  );
-}
-
-/**
- * The stored `autoEnroll` flag now means "offer the Network to my
- * partners". Partners decide for themselves (join-page checkbox, a
- * one-time portal prompt, a portal setting); nothing about a partner is
- * shared until they opt in. Off = they're never asked.
- */
-function AutoEnrollPanel({ membership, onChange }: { membership: NetworkMembership; onChange: () => void }) {
-  const qc = useQueryClient();
-  const m = useMutation({
-    mutationFn: (autoEnroll: boolean) =>
-      api('/config/network', { method: 'POST', body: { autoEnroll } }),
-    onSuccess: () => {
-      onChange();
-      qc.invalidateQueries({ queryKey: ['network-partner-consent'] });
-    },
-  });
-  const { data: counts } = useQuery({
-    queryKey: ['network-partner-consent'],
-    queryFn: () => api<ConsentSummary>('/config/network/partner-consent'),
-  });
-  return (
-    <Card>
-      <h3 style={{ marginTop: 0, fontSize: 15, fontWeight: 500 }}>Offer the Network to your partners</h3>
-      <p style={{ fontSize: 13, color: theme.textMuted, marginTop: 0 }}>
-        Partners choose for themselves whether to join the OpenPartner Network. When this is on, they see an
-        optional checkbox on your join page, a one-time question when they first sign in, and a setting they can
-        change any time. Only partners who opt in have their name, email and partner profile shared with the
-        Network. The Network dedups creators by email, so the same person joining you and another brand gets a
-        single Network identity.
-      </p>
-      <p style={{ fontSize: 13, color: theme.textMuted }}>
-        Turn this off for programs whose partners are your customers (an in-app referral program, for example).
-        They&rsquo;re then never asked and never shared.
-      </p>
-      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.text }}>
-        <input
-          type="checkbox"
-          checked={membership.autoEnroll}
-          disabled={m.isPending}
-          onChange={(e) => m.mutate(e.target.checked)}
-        />
-        <span>Offer the Network to partners</span>
-      </label>
-      {counts && (
-        <p style={{ marginTop: 12, marginBottom: 0, fontSize: 13, color: theme.textMuted }}>
-          <strong style={{ color: theme.text }}>{counts.granted}</strong> of {counts.partners} active partners have
-          opted in
-          {counts.declined + counts.withdrawn > 0 && <> · {counts.declined + counts.withdrawn} said no</>}.
-        </p>
-      )}
-    </Card>
-  );
-}
-
-/** Keys issued before Network bounties can't pay bonuses; one click adds
- *  the scope to the key the Network already holds. */
-function AuthorizeBonusesPanel() {
-  const qc = useQueryClient();
-  const m = useMutation({
-    mutationFn: () => api<NetworkMembership>('/config/network/authorize-bonuses', { method: 'POST', body: {} }),
-    onSuccess: (membership) => qc.setQueryData(['network-membership'], membership),
-  });
-  return (
-    <Card style={{ borderColor: alpha(theme.info, 0.333) }}>
-      <h3 style={{ marginTop: 0, fontSize: 15, fontWeight: 500 }}>Re-authorize to enable Network bounties</h3>
-      <p style={{ fontSize: 13, color: theme.textMuted, marginTop: 0, lineHeight: 1.5 }}>
-        Creators can earn bounties you post on the Network, such as a fee for an approved video. The Network pays
-        them as bonuses through your program, so it needs permission to record a bonus. Your connection predates
-        bounties and doesn&rsquo;t have it yet. Nothing else about the connection changes.
-      </p>
-      <ErrorBanner error={m.error} />
-      <Button onClick={() => m.mutate()} disabled={m.isPending}>
-        {m.isPending ? 'Authorizing…' : 'Re-authorize'}
-      </Button>
-    </Card>
-  );
-}
-
-function BackfillPanel() {
-  const [result, setResult] = useState<BackfillResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const m = useMutation({
-    mutationFn: () => api<BackfillResult>('/config/network/backfill', { method: 'POST', body: {} }),
-    onSuccess: (r) => { setResult(r); setError(null); },
-    onError: (err) => setError(err instanceof ApiError ? err.message : 'failed'),
-  });
-  useEffect(() => { setResult(null); }, []);
-  return (
-    <Card>
-      <h3 style={{ marginTop: 0, fontSize: 15, fontWeight: 500 }}>Re-sync opted-in partners</h3>
-      <p style={{ fontSize: 13, color: theme.textMuted, marginTop: 0 }}>
-        Sends the partners who opted in to the Network again — for example after a Network outage. Partners who
-        haven&rsquo;t opted in are never sent. Creators already on the Network from another brand come back with a
-        flag so you can see their cross-brand presence.
-      </p>
-      {error && <ErrorBanner error={error} />}
-      <Button onClick={() => m.mutate()} disabled={m.isPending}>
-        {m.isPending ? 'Syncing…' : 'Re-sync now'}
-      </Button>
-      {result && (
-        <p style={{ marginTop: 12, fontSize: 13, color: theme.textMuted }}>
-          Pushed <strong style={{ color: theme.text }}>{result.pushed}</strong> of <strong style={{ color: theme.text }}>{result.total}</strong>.
-          {result.queued > 0 && <> {result.queued} queued for retry.</>}
-        </p>
       )}
     </Card>
   );

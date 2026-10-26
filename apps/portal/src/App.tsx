@@ -82,6 +82,7 @@ import { MyAffiliationsPage } from './pages/partner/MyAffiliations.js';
 import { MyRequestsPage } from './pages/partner/MyRequests.js';
 import { MyProfilePage } from './pages/partner/MyProfile.js';
 import { NetworkProfileBanner } from './pages/partner/NetworkProfileBanner.js';
+import { NetworkListingNotice } from './pages/admin/NetworkListingNotice.js';
 import { NetworkConsentPrompt, usePartnerNetworkAccess } from './pages/partner/NetworkConsent.js';
 import { PartnerPostbacksPage } from './pages/partner/Postbacks.js';
 import { PartnerBountiesPage } from './pages/partner/Bounties.js';
@@ -291,6 +292,14 @@ function Shell() {
     showNetwork &&
     shellPath.startsWith('/network/') &&
     !shellPath.startsWith('/network/profile');
+  // A brand whose marketplace listing is still in review (or turned down)
+  // hears it on its Network pages. A brand still in signup review already
+  // has the banner above, which covers the listing.
+  const showNetworkListingNotice =
+    auth.principal.role === 'admin' &&
+    showNetwork &&
+    approvalStatus !== 'pending' &&
+    shellPath.startsWith('/admin/network/');
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: theme.bg }}>
@@ -301,7 +310,11 @@ function Shell() {
       ) : (
         <Sidebar principal={auth.principal} />
       )}
-      <main style={{ flex: 1, minWidth: 0, overflow: 'auto' }}>
+      {/* The window scrolls, not main. overflow-x: clip (unlike auto) keeps
+          main from being a scroll container, so position: sticky inside it
+          (the mobile top bar, the Settings section menu) sticks to the
+          viewport. Wide content scrolls in its own wrapper. */}
+      <main style={{ flex: 1, minWidth: 0, overflowX: 'clip' }}>
         {isMobile && <MobileTopBar onMenu={() => setDrawerOpen(true)} />}
         {auth.principal.role === 'admin' && approvalStatus === 'pending' && !reviewBannerDismissed && (
           <PendingReviewBanner isMobile={isMobile} onDismiss={() => setReviewBannerDismissed(true)} />
@@ -309,6 +322,7 @@ function Shell() {
         {auth.principal.role === 'admin' && brandLocationMissing && <BrandLocationPrompt isMobile={isMobile} />}
         {showNetworkConsentPrompt && <NetworkConsentPrompt isMobile={isMobile} />}
         {showNetworkProfileBanner && <NetworkProfileBanner isMobile={isMobile} />}
+        {showNetworkListingNotice && <NetworkListingNotice isMobile={isMobile} />}
         <Routes>
           <Route index element={<Dashboard principal={auth.principal} />} />
 
@@ -1329,15 +1343,15 @@ function NavSection({
   );
 }
 
-/** Network sidebar section. We only surface Offerings / Requests /
- *  Billing once the brand is connected — those pages all error out if
- *  there's no vendorToken, and showing dead nav entries is just noise.
- *  Connection itself stays visible so the admin can come back to wire
- *  it up. */
+/** Network sidebar section. Before the brand connects it holds just "Get
+ *  connected": the other pages all error out without a vendorToken. Once
+ *  connected, the connection's settings live on Admin → Settings, so the
+ *  section is only the pages brands work in. Billing is for self-hosted
+ *  instances; hosted plans include the Network. */
 function NetworkNav() {
   const { data } = useQuery({
     queryKey: ['network-membership'],
-    queryFn: () => api<{ enabled: boolean; hasVendorToken: boolean }>('/config/network'),
+    queryFn: () => api<{ enabled: boolean; hasVendorToken: boolean; tier?: 'hosted' | 'self_hosted' }>('/config/network'),
     staleTime: 60_000,
     retry: false,
   });
@@ -1345,8 +1359,7 @@ function NetworkNav() {
   const unread = useBrandUnreadMessages(connected);
   return (
     <NavSection title="Network" collapsible storageKey="admin-network">
-      <NavItem to="/admin/network" icon={<Globe size={16} />} exact>{connected ? 'Connection' : 'Get connected'}</NavItem>
-      {connected && (
+      {connected ? (
         <>
           <NavItem to="/admin/network/requests" icon={<Inbox size={16} />}>Requests</NavItem>
           <NavItem to="/admin/network/creators" icon={<Users size={16} />}>Discover creators</NavItem>
@@ -1356,8 +1369,12 @@ function NetworkNav() {
             </span>
           </NavItem>
           <NavItem to="/admin/network/bookings" icon={<CalendarCheck size={16} />}>Bookings</NavItem>
-          <NavItem to="/admin/network/billing" icon={<CreditCard size={16} />}>Billing</NavItem>
+          {data?.tier !== 'hosted' && (
+            <NavItem to="/admin/network/billing" icon={<CreditCard size={16} />}>Billing</NavItem>
+          )}
         </>
+      ) : (
+        <NavItem to="/admin/network" icon={<Globe size={16} />} exact>Get connected</NavItem>
       )}
     </NavSection>
   );
