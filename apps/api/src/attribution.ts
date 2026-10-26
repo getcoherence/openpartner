@@ -105,11 +105,11 @@ export function ruleTakesEventType(subRule: Pick<CommissionSubRule, 'eventType'>
   return !subRule.eventType || subRule.eventType === eventType;
 }
 
-interface ClickWithCampaign extends ClickRow {
+export interface ClickWithCampaign extends ClickRow {
   campaign: ProgramRow;
 }
 
-interface Touch {
+export interface Touch {
   click: ClickWithCampaign;
   weight: number;
   /** The click is older than its program's window: the touch reached this
@@ -125,10 +125,55 @@ export function isCouponClick(click: Pick<ClickRow, 'linkId' | 'landingUrl'>): b
 }
 
 /** Who gets credit for one event, and under which model. */
-interface AttributionDecision {
+export interface AttributionDecision {
   model: AttributionModel;
   touches: Touch[];
+  /**
+   *   window             the model ran over the clicks in the window
+   *   renewal            a repeat conversion kept the touches of the
+   *                      customer's first conversion of its type
+   *   latest_conversion  no click was left in the window, so the
+   *                      customer's latest conversion carried it
+   */
+  source: 'window' | 'renewal' | 'latest_conversion';
+  /** The earlier conversion a renewal or latest_conversion came from. */
+  fromEventId: string | null;
 }
+
+/**
+ * What became of one of the customer's clicks when an event was decided.
+ * attributeEvent doesn't need it; the journey view (journey.ts) uses it to
+ * say why a click did or didn't count.
+ *
+ *   flagged          fraud-flagged; never counts
+ *   partner_revoked  its partner has been revoked
+ *   no_program       its program no longer exists
+ *   after_event      it came after the event (beyond the clock grace)
+ *   outside_window   older than its program's attribution window
+ *   yielded_to_link  a code redemption that gives way to a link click in
+ *                    the window (Program.couponsYieldToLinks)
+ *   in_window        a candidate the model ran over
+ */
+export type ClickVerdict =
+  | 'flagged'
+  | 'partner_revoked'
+  | 'no_program'
+  | 'after_event'
+  | 'outside_window'
+  | 'yielded_to_link'
+  | 'in_window';
+
+export interface AttributionTrace {
+  /** Every click linked to the customer, keyed by click id. */
+  verdicts: Map<string, ClickVerdict>;
+  /** The in-window candidates, oldest first. The model's input when the
+   *  decision's source is `window`. */
+  candidates: ClickWithCampaign[];
+}
+
+export type AttributionOutcome =
+  | { status: 'corrective' | 'no_identity' | 'no_click' | 'outside_window'; decision: null; trace: AttributionTrace }
+  | { status: 'decided'; decision: AttributionDecision; trace: AttributionTrace };
 
 /** Signed age of the click at the event: negative when the click came after. */
 function clickAgeMs(click: ClickRow, event: EventRow): number {
@@ -167,110 +212,9 @@ export async function attributeEvent(
   event: EventRow,
   modelOverride?: AttributionModel,
 ): Promise<AttributeResult> {
-  if (CORRECTIVE_EVENT_TYPES.has(event.type)) return { status: 'corrective' };
-
-  // userId is the BRAND's user ID, unique only within a tenant. RLS
-  // scopes `db`, but a multi-tenant pool that bypasses RLS (no app role)
-  // would otherwise match another brand's identity for the same userId
-  // and credit that brand's partner. So the identities, and the clicks
-  // they point at, are read for the event's tenant explicitly: an Identity
-  // stitched on such a pool can name another tenant's click. The partner
-  // and program reads below are keyed on these clicks.
-  const tenantId = event.tenantId;
-  const identities = await db<IdentityRow>(TABLES.Identity).where({ tenantId, userId: event.userId });
-  if (identities.length === 0) return { status: 'no_identity' };
-
-  const clickIds = identities.map((i) => i.clickId);
-  const clicks = await db<ClickRow>(TABLES.Click).where({ tenantId }).whereIn('id', clickIds);
-  const cleanClicks = clicks.filter((c) => !c.fraudFlag);
-  if (cleanClicks.length === 0) return { status: 'no_click' };
-
-  // Revoked partners are excluded from attribution — any call landing
-  // here (whether a live event webhook or a replay via
-  // attributeBacklogForUser) skips them regardless of whether the event
-  // timestamp predates the revoke. This matches the admin-intent of
-  // "stop all earning for this partner going forward" and keeps backlog
-  // re-runs from retroactively shifting weight around a revoked
-  // partner. Historical attribution rows already in the table for the
-  // partner aren't deleted on revoke — admin reverses those manually
-  // via the commissions review queue if needed.
-  const partnerIds = Array.from(new Set(cleanClicks.map((c) => c.partnerId)));
-  const revokedPartners = await db('Partner').whereIn('id', partnerIds).whereNotNull('revokedAt').pluck('id');
-  const revokedSet = new Set(revokedPartners as string[]);
-  const eligibleByPartner = cleanClicks.filter((c) => !revokedSet.has(c.partnerId));
-  if (eligibleByPartner.length === 0) return { status: 'no_click' };
-
-  const programIds = Array.from(new Set(eligibleByPartner.map((c) => c.programId)));
-  const campaigns = await db<ProgramRow>(TABLES.Program).whereIn('id', programIds);
-  const campaignsById = new Map(campaigns.map((c) => [c.id, c]));
-
-  // Every click that may still earn, with its campaign attached. A renewal
-  // can only reuse a touch whose click is in here, so a click flagged as
-  // fraud or a partner revoked since the first conversion drops out of the
-  // renewals too.
-  const usable = new Map<string, ClickWithCampaign>();
-  for (const click of eligibleByPartner) {
-    const campaign = campaignsById.get(click.programId);
-    if (campaign) usable.set(click.id, { ...click, campaign });
-  }
-
-  // Clicks in-window relative to this event.
-  const eligible: ClickWithCampaign[] = [];
-  for (const click of usable.values()) {
-    const windowMs = click.campaign.attributionWindowDays * DAY_MS;
-    const ageMs = clickAgeMs(click, event);
-    // Outside the window OR a click that happened meaningfully AFTER the
-    // event: a later click must never attribute an earlier conversion
-    // (backlog / backdated events made negative ages pass the old one-sided
-    // check).
-    //
-    // The grace is load-bearing, not slop. A genuine conversion can measure
-    // slightly OLDER than the click that caused it for two ordinary reasons:
-    // Stripe stamps `created` in whole SECONDS, so a conversion in the same
-    // second as the click truncates to up to 999ms before it; and the clock
-    // stamping Click.ts is not the clock stamping the event. A strict `< 0`
-    // silently dropped both. What this rejects — a backdated backlog event
-    // replayed against a newer click — is hours or months off, never minutes.
-    if (ageMs < -CLICK_AFTER_EVENT_GRACE_MS || ageMs > windowMs) continue;
-    eligible.push(click);
-  }
-
-  // A coupon redemption's synthetic click is stamped at checkout, so under
-  // last click a code always beats the link click that brought the
-  // customer. A program can turn that round (Program.couponsYieldToLinks,
-  // off by default): its coupon clicks drop out whenever a link click is in
-  // the window, so the code credits only when no link did. Each coupon click
-  // follows its own program's setting. A renewal inherits its first
-  // conversion's touches (priorConversions) before this matters, so the
-  // setting decides who wins a customer, not who keeps them.
-  if (eligible.some((c) => !isCouponClick(c))) {
-    for (let i = eligible.length - 1; i >= 0; i--) {
-      const click = eligible[i]!;
-      if (isCouponClick(click) && click.campaign.couponsYieldToLinks) eligible.splice(i, 1);
-    }
-  }
-
-  // A repeat of a conversion the customer already made keeps that
-  // conversion's attribution; a first-of-its-type event is decided by the
-  // window, falling back to the customer's latest conversion only when no
-  // click is in the window any more.
-  const prior = CORRECTIVE_EVENT_TYPES.has(event.type) ? null : await priorConversions(db, event, usable, modelOverride);
-  let decision: AttributionDecision | null = prior?.sameType ?? null;
-
-  if (!decision && eligible.length > 0) {
-    eligible.sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
-
-    // Pick the model. Override wins; else use the most-recent click's campaign's model.
-    const lastClick = eligible[eligible.length - 1]!;
-    const model: AttributionModel = modelOverride ?? lastClick.campaign.attributionModel;
-
-    const weights = applyModel(model, eligible.length);
-    decision = { model, touches: eligible.map((click, i) => ({ click, weight: weights[i]!, pastWindow: false })) };
-  }
-
-  decision ??= prior?.latest ?? null;
-  if (!decision) return { status: 'outside_window' };
-  const { model, touches } = decision;
+  const outcome = await decideAttribution(db, event, modelOverride);
+  if (outcome.status !== 'decided') return { status: outcome.status };
+  const { model, touches } = outcome.decision;
 
   const results: NonNullable<AttributeResult['touches']> = [];
   let allDup = true;
@@ -427,6 +371,145 @@ export async function attributeEvent(
 }
 
 /**
+ * Who gets credit for `event`, and under which model, without writing
+ * anything. attributeEvent writes the result; the journey view
+ * (journey.ts) uses the same decision, plus the per-click trace, to show
+ * an admin why the credit went where it did. One function, so the
+ * explanation can't drift from the engine.
+ */
+export async function decideAttribution(
+  db: Knex,
+  event: EventRow,
+  modelOverride?: AttributionModel,
+): Promise<AttributionOutcome> {
+  const trace: AttributionTrace = { verdicts: new Map(), candidates: [] };
+  if (CORRECTIVE_EVENT_TYPES.has(event.type)) return { status: 'corrective', decision: null, trace };
+
+  // userId is the BRAND's user ID, unique only within a tenant. RLS
+  // scopes `db`, but a multi-tenant pool that bypasses RLS (no app role)
+  // would otherwise match another brand's identity for the same userId
+  // and credit that brand's partner. So the identities, and the clicks
+  // they point at, are read for the event's tenant explicitly: an Identity
+  // stitched on such a pool can name another tenant's click. The partner
+  // and program reads below are keyed on these clicks.
+  const tenantId = event.tenantId;
+  const identities = await db<IdentityRow>(TABLES.Identity).where({ tenantId, userId: event.userId });
+  if (identities.length === 0) return { status: 'no_identity', decision: null, trace };
+
+  const clickIds = identities.map((i) => i.clickId);
+  const clicks = await db<ClickRow>(TABLES.Click).where({ tenantId }).whereIn('id', clickIds);
+  for (const c of clicks) if (c.fraudFlag) trace.verdicts.set(c.id, 'flagged');
+  const cleanClicks = clicks.filter((c) => !c.fraudFlag);
+  if (cleanClicks.length === 0) return { status: 'no_click', decision: null, trace };
+
+  // Revoked partners are excluded from attribution — any call landing
+  // here (whether a live event webhook or a replay via
+  // attributeBacklogForUser) skips them regardless of whether the event
+  // timestamp predates the revoke. This matches the admin-intent of
+  // "stop all earning for this partner going forward" and keeps backlog
+  // re-runs from retroactively shifting weight around a revoked
+  // partner. Historical attribution rows already in the table for the
+  // partner aren't deleted on revoke — admin reverses those manually
+  // via the commissions review queue if needed.
+  const partnerIds = Array.from(new Set(cleanClicks.map((c) => c.partnerId)));
+  const revokedPartners = await db('Partner').whereIn('id', partnerIds).whereNotNull('revokedAt').pluck('id');
+  const revokedSet = new Set(revokedPartners as string[]);
+  for (const c of cleanClicks) if (revokedSet.has(c.partnerId)) trace.verdicts.set(c.id, 'partner_revoked');
+  const eligibleByPartner = cleanClicks.filter((c) => !revokedSet.has(c.partnerId));
+  if (eligibleByPartner.length === 0) return { status: 'no_click', decision: null, trace };
+
+  const programIds = Array.from(new Set(eligibleByPartner.map((c) => c.programId)));
+  const campaigns = await db<ProgramRow>(TABLES.Program).whereIn('id', programIds);
+  const campaignsById = new Map(campaigns.map((c) => [c.id, c]));
+
+  // Every click that may still earn, with its campaign attached. A renewal
+  // can only reuse a touch whose click is in here, so a click flagged as
+  // fraud or a partner revoked since the first conversion drops out of the
+  // renewals too.
+  const usable = new Map<string, ClickWithCampaign>();
+  for (const click of eligibleByPartner) {
+    const campaign = campaignsById.get(click.programId);
+    if (campaign) usable.set(click.id, { ...click, campaign });
+    else trace.verdicts.set(click.id, 'no_program');
+  }
+
+  // Clicks in-window relative to this event.
+  const eligible: ClickWithCampaign[] = [];
+  for (const click of usable.values()) {
+    const windowMs = click.campaign.attributionWindowDays * DAY_MS;
+    const ageMs = clickAgeMs(click, event);
+    // Outside the window OR a click that happened meaningfully AFTER the
+    // event: a later click must never attribute an earlier conversion
+    // (backlog / backdated events made negative ages pass the old one-sided
+    // check).
+    //
+    // The grace is load-bearing, not slop. A genuine conversion can measure
+    // slightly OLDER than the click that caused it for two ordinary reasons:
+    // Stripe stamps `created` in whole SECONDS, so a conversion in the same
+    // second as the click truncates to up to 999ms before it; and the clock
+    // stamping Click.ts is not the clock stamping the event. A strict `< 0`
+    // silently dropped both. What this rejects — a backdated backlog event
+    // replayed against a newer click — is hours or months off, never minutes.
+    if (ageMs < -CLICK_AFTER_EVENT_GRACE_MS) {
+      trace.verdicts.set(click.id, 'after_event');
+      continue;
+    }
+    if (ageMs > windowMs) {
+      trace.verdicts.set(click.id, 'outside_window');
+      continue;
+    }
+    eligible.push(click);
+  }
+
+  // A coupon redemption's synthetic click is stamped at checkout, so under
+  // last click a code always beats the link click that brought the
+  // customer. A program can turn that round (Program.couponsYieldToLinks,
+  // off by default): its coupon clicks drop out whenever a link click is in
+  // the window, so the code credits only when no link did. Each coupon click
+  // follows its own program's setting. A renewal inherits its first
+  // conversion's touches (priorConversions) before this matters, so the
+  // setting decides who wins a customer, not who keeps them.
+  if (eligible.some((c) => !isCouponClick(c))) {
+    for (let i = eligible.length - 1; i >= 0; i--) {
+      const click = eligible[i]!;
+      if (isCouponClick(click) && click.campaign.couponsYieldToLinks) {
+        trace.verdicts.set(click.id, 'yielded_to_link');
+        eligible.splice(i, 1);
+      }
+    }
+  }
+  for (const c of eligible) trace.verdicts.set(c.id, 'in_window');
+  trace.candidates = [...eligible].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
+
+  // A repeat of a conversion the customer already made keeps that
+  // conversion's attribution; a first-of-its-type event is decided by the
+  // window, falling back to the customer's latest conversion only when no
+  // click is in the window any more.
+  const prior = CORRECTIVE_EVENT_TYPES.has(event.type) ? null : await priorConversions(db, event, usable, modelOverride);
+  let decision: AttributionDecision | null = prior?.sameType ?? null;
+
+  if (!decision && eligible.length > 0) {
+    eligible.sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
+
+    // Pick the model. Override wins; else use the most-recent click's campaign's model.
+    const lastClick = eligible[eligible.length - 1]!;
+    const model: AttributionModel = modelOverride ?? lastClick.campaign.attributionModel;
+
+    const weights = applyModel(model, eligible.length);
+    decision = {
+      model,
+      touches: eligible.map((click, i) => ({ click, weight: weights[i]!, pastWindow: false })),
+      source: 'window',
+      fromEventId: null,
+    };
+  }
+
+  decision ??= prior?.latest ?? null;
+  if (!decision) return { status: 'outside_window', decision: null, trace };
+  return { status: 'decided', decision, trace };
+}
+
+/**
  * The customer's earlier conversions that can carry `event`, derived from
  * the raw Attribution × Event rows — nothing is cached, so a replay or a
  * re-import reaches the same answer.
@@ -509,9 +592,12 @@ async function priorConversions(
     if (touches.length === 0) continue;
 
     const control = touches.reduce((a, b) => (new Date(b.click.ts).getTime() > new Date(a.click.ts).getTime() ? b : a));
-    const carried = control.click.campaign.renewalsStayWithPartner ? { model, touches } : null;
-    if (sameType === undefined && group[0]!.eventType === event.type) sameType = carried;
-    latest = carried;
+    const carries = control.click.campaign.renewalsStayWithPartner;
+    const fromEventId = group[0]!.eventId;
+    if (sameType === undefined && group[0]!.eventType === event.type) {
+      sameType = carries ? { model, touches, source: 'renewal', fromEventId } : null;
+    }
+    latest = carries ? { model, touches, source: 'latest_conversion', fromEventId } : null;
   }
   // A repeat whose first conversion's program has the setting off is
   // decided by the window alone, like every event before the setting

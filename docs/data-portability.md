@@ -26,7 +26,9 @@ the file, not part of the restore.
 
 Rows are raw DB rows — the same shape `select *` returns, no reshaping,
 no derived fields. Anything derived (attribution, commissions) is present
-as its own table *and* re-derivable from the raw layers. Two exceptions,
+as its own table *and* re-derivable from the raw layers. Views built on
+read, such as the [customer journey](customer-journey.md), store nothing
+of their own, so a restored instance shows the same ones. Two exceptions,
 both deliberate: credential columns are dropped (see
 [Credentials](#credentials)), and `Config` carries only the brand's own
 settings (see [Settings](#settings-config)).

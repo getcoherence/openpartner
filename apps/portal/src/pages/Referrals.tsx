@@ -235,6 +235,8 @@ function ReferralCard({
             {adminView && referral.userId && (
               <div style={{ fontSize: 12, color: theme.textDim, marginTop: 3, overflowWrap: 'anywhere' }}>
                 User ID <code style={{ fontFamily: theme.fontMono }}>{referral.userId}</code>
+                {' · '}
+                <TenantLink to={`/admin/journey?customer=${encodeURIComponent(referral.userId)}`}>Journey</TenantLink>
               </div>
             )}
             {showReferralId && (

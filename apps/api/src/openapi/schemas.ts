@@ -518,6 +518,9 @@ export const CommissionListItem = CommissionRowShape.extend({
     description:
       "The type of the attributed event the commission was earned on: `signup`, `trial_started`, `subscription_created`, `invoice_paid`, or one of your custom types. Null on a bonus's commission.",
   }),
+  eventId: id.nullable().openapi({
+    description: "The attributed event the commission was earned on (`GET /events/{id}/journey` explains its credit). Null on a bonus's commission.",
+  }),
   bonus: z
     .object({
       id,
@@ -1570,5 +1573,127 @@ export const ImportResult = z
     }),
   })
   .openapi('ImportResult');
+
+// ------------------------------------------------------- Customer journey
+
+const JourneyCredit = z.object({
+  partnerId: id,
+  partnerName: z.string().nullable(),
+  weight: z.number().openapi({ description: 'Share of the credit, 0–1.', example: 1 }),
+});
+
+export const JourneyTouch = z
+  .object({
+    clickId: id,
+    kind: z.enum(['link', 'code']).openapi({
+      description: '`link`: a click on a partner link. `code`: a partner code redeemed at checkout, recorded when the code was used.',
+    }),
+    ts,
+    partner: z.object({ id, name: z.string().nullable() }),
+    program: z.object({ id, name: z.string().nullable() }),
+    code: z.string().nullable().openapi({ description: 'On a `code` touch, the code.' }),
+    landingUrl: z.string().nullable().openapi({ description: 'On a `link` touch, where the link sent the visitor.' }),
+    landedAt: tsNullable.openapi({ description: 'When the script on the landing page reported the visit. Null when it never did.' }),
+    referer: z.string().nullable(),
+    utmSource: z.string().nullable(),
+    utmMedium: z.string().nullable(),
+    utmCampaign: z.string().nullable(),
+    subId: z.string().nullable().openapi({ description: "The publisher's sub-ID, when the link carried one." }),
+    browser: z.string().nullable(),
+    device: z.string().nullable(),
+    country: z.string().nullable(),
+    linkedAt: tsNullable.openapi({ description: 'When the click was linked to this customer: identify, a checkout carrying it, or the code redemption.' }),
+    flagged: z.boolean().openapi({ description: 'Fraud-flagged. A flagged click never earns credit.' }),
+  })
+  .openapi('JourneyTouch');
+
+export const JourneyEvent = z
+  .object({
+    id,
+    type: z.string(),
+    ts,
+    value: z.number().nullable(),
+    currency: z.string().nullable(),
+    corrective: z.boolean().openapi({ description: 'A refund, chargeback, dispute or failed payment: recorded, never attributed.' }),
+    credited: z.array(JourneyCredit).openapi({ description: 'Who the recorded attribution credits, under the model the event was decided by.' }),
+  })
+  .openapi('JourneyEvent');
+
+export const JourneyDecision = z
+  .object({
+    eventId: id,
+    status: z.enum(['credited', 'corrective', 'no_identity', 'no_click', 'outside_window']).openapi({
+      description:
+        "What today's data decides. `no_identity`: the customer was never linked to a partner click. `no_click`: every linked click is flagged or its partner revoked. `outside_window`: no linked click is in its program's window and no earlier conversion carries the customer.",
+    }),
+    source: z.enum(['window', 'renewal', 'latest_conversion']).nullable().openapi({
+      description:
+        "`window`: the model ran over the clicks in the window. `renewal`: a repeat conversion kept the touches of the customer's first conversion of its type. `latest_conversion`: no click was left in the window, so the customer's latest conversion carried it.",
+    }),
+    model: z.enum(ATTRIBUTION_MODELS).nullable(),
+    fromEvent: z
+      .object({ id, type: z.string(), ts })
+      .nullable()
+      .openapi({ description: 'The earlier conversion a `renewal` or `latest_conversion` decision came from.' }),
+    touches: z.array(
+      z.object({
+        clickId: id,
+        verdict: z
+          .enum(['credited', 'in_window', 'outside_window', 'after_event', 'yielded_to_link', 'flagged', 'partner_revoked', 'no_program'])
+          .openapi({
+            description:
+              "What became of the touch for this conversion. `in_window`: a candidate the model gave no share. `yielded_to_link`: a code that gives way to a link click in the window (the program's coupons-yield-to-links setting). `after_event`: it came after the conversion.",
+          }),
+        weight: z.number().nullable(),
+        pastWindow: z.boolean().openapi({ description: 'Credited through an earlier conversion although older than the window.' }),
+        secondsBeforeEvent: z.number().int().openapi({ description: 'Seconds from the touch to the conversion; negative when it came after.' }),
+        linkedAfterEvent: z.boolean().openapi({ description: 'Linked to the customer after the conversion happened.' }),
+      }),
+    ),
+    recorded: z
+      .array(
+        z.object({
+          attributionId: id,
+          clickId: id,
+          partnerId: id,
+          partnerName: z.string().nullable(),
+          model: z.enum(ATTRIBUTION_MODELS),
+          weight: z.number(),
+          computedAt: ts,
+          commissions: z.array(
+            z.object({
+              id,
+              partnerId: id,
+              partnerName: z.string().nullable(),
+              amount: Decimal,
+              currency: z.string(),
+              status: z.enum(COMMISSION_STATUSES),
+              recruiter: z.boolean().openapi({ description: "A recruiter's share of the partner's commission." }),
+            }),
+          ),
+        }),
+      )
+      .openapi({ description: 'The attribution written for this conversion and what it earned: what was actually credited and paid.' }),
+    matchesRecord: z.boolean().openapi({
+      description: "False when today's data credits differently from `recorded`: a click linked, flagged or revoked since, or nothing recorded.",
+    }),
+    alternatives: z
+      .array(z.object({ model: z.enum(ATTRIBUTION_MODELS), live: z.boolean(), credits: z.array(JourneyCredit) }))
+      .nullable()
+      .openapi({
+        description: "Who each model credits over the same in-window touches. Null unless `source` is `window`: a renewal keeps an earlier conversion's touches whatever the model.",
+      }),
+  })
+  .openapi('JourneyDecision');
+
+export const Journey = z
+  .object({
+    userId: z.string().openapi({ description: "Your customer id, as sent to identify and conversions." }),
+    touches: z.array(JourneyTouch).openapi({ description: 'Every partner touch linked to the customer, oldest first (the newest 200).' }),
+    events: z.array(JourneyEvent).openapi({ description: "The customer's events, oldest first (the newest 200, plus the selected one)." }),
+    selected: JourneyDecision.nullable().openapi({ description: 'Who got credit for one conversion, and why. Null when the customer has no events.' }),
+    truncated: z.object({ touches: z.boolean(), events: z.boolean() }),
+  })
+  .openapi('Journey');
 
 export const Ok = z.object({ ok: z.literal(true) }).openapi('Ok');

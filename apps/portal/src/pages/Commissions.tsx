@@ -7,6 +7,7 @@ import {
   isRecruiterCommission,
   type CommissionSourceFields,
 } from '../lib/commission-source.js';
+import { TenantLink } from '../tenant-link.js';
 import { theme } from '../theme.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Page, StatusPill, Table, formatDate, money, shortId } from '../ui.js';
 
@@ -23,6 +24,8 @@ interface Commission extends CommissionSourceFields {
   accruedAt: string;
   paidAt: string | null;
   campaignName?: string | null;
+  /** The attributed event; null on a bonus's commission. */
+  eventId?: string | null;
 }
 
 const PAGE_SIZE = 200;
@@ -73,7 +76,7 @@ export function CommissionsPage({ principal }: { principal: Principal }) {
 
   const isAdminView = principal.role === 'admin' && !partnerId;
   const columns = isAdminView
-    ? ['ID', 'Partner', 'Source', { label: 'Amount', align: 'right' as const }, 'Status', 'Accrued', 'Paid']
+    ? ['ID', 'Partner', 'Source', { label: 'Amount', align: 'right' as const }, 'Status', 'Accrued', 'Paid', 'Journey']
     : ['ID', 'Source', { label: 'Amount', align: 'right' as const }, 'Status', 'Accrued', 'Paid'];
 
   const rows = (data?.pages.flatMap((p) => p.commissions) ?? []).map((c) => {
@@ -85,6 +88,8 @@ export function CommissionsPage({ principal }: { principal: Principal }) {
       <StatusPill status={c.status} />,
       <span style={{ color: theme.textMuted }}>{formatDate(c.accruedAt, { relative: true })}</span>,
       <span style={{ color: theme.textMuted }}>{formatDate(c.paidAt, { relative: true })}</span>,
+      // Who else touched the customer, and why this partner got the credit.
+      isAdminView ? (c.eventId ? <TenantLink to={`/admin/journey?event=${encodeURIComponent(c.eventId)}`}>Open</TenantLink> : <span />) : null,
     ];
     return base.filter((x) => x !== null) as React.ReactNode[];
   });
