@@ -8272,7 +8272,7 @@
               "no_click",
               "outside_window"
             ],
-            "description": "What today's data decides. `no_identity`: the customer was never linked to a partner click. `no_click`: every linked click is flagged or its partner revoked. `outside_window`: no linked click is in its program's window and no earlier conversion carries the customer."
+            "description": "What today's data decides. `no_identity`: the customer was never linked to a partner click. `no_click`: every linked click is flagged or its partner revoked. `outside_window`: no linked click could take it (each is outside its window, came after the conversion, or lost its program) and no earlier conversion carries the customer."
           },
           "source": {
             "type": [
@@ -8299,6 +8299,10 @@
               "position",
               null
             ]
+          },
+          "candidates": {
+            "type": "integer",
+            "description": "How many touches were in the window: the model's input when `source` is `window`. Counts every linked click, also those past the 200 listed."
           },
           "fromEvent": {
             "type": [
@@ -8541,6 +8545,7 @@
           "status",
           "source",
           "model",
+          "candidates",
           "fromEvent",
           "touches",
           "recorded",

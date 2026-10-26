@@ -412,14 +412,17 @@ export async function decideAttribution(
   // partner aren't deleted on revoke — admin reverses those manually
   // via the commissions review queue if needed.
   const partnerIds = Array.from(new Set(cleanClicks.map((c) => c.partnerId)));
-  const revokedPartners = await db('Partner').whereIn('id', partnerIds).whereNotNull('revokedAt').pluck('id');
+  const revokedPartners = await db(TABLES.Partner).where({ tenantId }).whereIn('id', partnerIds).whereNotNull('revokedAt').pluck('id');
   const revokedSet = new Set(revokedPartners as string[]);
   for (const c of cleanClicks) if (revokedSet.has(c.partnerId)) trace.verdicts.set(c.id, 'partner_revoked');
   const eligibleByPartner = cleanClicks.filter((c) => !revokedSet.has(c.partnerId));
   if (eligibleByPartner.length === 0) return { status: 'no_click', decision: null, trace };
 
   const programIds = Array.from(new Set(eligibleByPartner.map((c) => c.programId)));
-  const campaigns = await db<ProgramRow>(TABLES.Program).whereIn('id', programIds);
+  // The program, like the partner above, is read for the event's tenant:
+  // an imported click naming another tenant's program must not earn under
+  // that tenant's terms (the note on userId above).
+  const campaigns = await db<ProgramRow>(TABLES.Program).where({ tenantId }).whereIn('id', programIds);
   const campaignsById = new Map(campaigns.map((c) => [c.id, c]));
 
   // Every click that may still earn, with its campaign attached. A renewal
@@ -546,6 +549,7 @@ async function priorConversions(
   const rows = (await db(A)
     .join(E, `${E}.id`, `${A}.eventId`)
     .where(`${E}.tenantId`, event.tenantId)
+    .andWhere(`${A}.tenantId`, event.tenantId)
     .andWhere(`${E}.userId`, event.userId)
     .andWhere(`${E}.ts`, '<', event.ts)
     .andWhereNot(`${E}.id`, event.id)

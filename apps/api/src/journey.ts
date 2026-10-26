@@ -95,13 +95,17 @@ export interface JourneyDecision {
    *   corrective      a refund or similar: never attributed
    *   no_identity     the customer was never linked to a partner click
    *   no_click        every linked click is flagged or its partner revoked
-   *   outside_window  no linked click is in its program's window, and no
-   *                   earlier conversion carries the customer
+   *   outside_window  no linked click could take it (each is outside its
+   *                   window, came after the event, or lost its program),
+   *                   and no earlier conversion carries the customer
    */
   status: 'credited' | 'corrective' | 'no_identity' | 'no_click' | 'outside_window';
   /** How the credit was decided (attribution.ts AttributionDecision.source). */
   source: 'window' | 'renewal' | 'latest_conversion' | null;
   model: AttributionModel | null;
+  /** How many touches were in the window: the model's input when the
+   *  window decided. Counts every linked click, also past the touch cap. */
+  candidates: number;
   /** The earlier conversion a renewal or latest_conversion decision came from. */
   fromEvent: { id: string; type: string; ts: string } | null;
   touches: Array<{
@@ -193,14 +197,24 @@ export async function buildJourney(
   const eventsTruncated = eventRows.length > JOURNEY_MAX_EVENTS;
   const events = eventRows.slice(0, JOURNEY_MAX_EVENTS);
 
-  let selectedEvent: EventRow | null = null;
+  // The event to explain: the one asked for, else the customer's latest
+  // conversion, looked up on its own so a run of newer refunds past the
+  // cap can't push it out. Listed even when older than the newest 200.
+  let selectedEvent: EventRow | null;
   if (eventId) {
-    selectedEvent = events.find((e) => e.id === eventId) ?? (await db<EventRow>(TABLES.Event).where({ tenantId, userId, id: eventId }).first()) ?? null;
+    selectedEvent = (await db<EventRow>(TABLES.Event).where({ tenantId, userId, id: eventId }).first()) ?? null;
     if (!selectedEvent) return null;
-    if (!events.some((e) => e.id === selectedEvent!.id)) events.push(selectedEvent);
   } else {
-    selectedEvent = events.find((e) => !CORRECTIVE_EVENT_TYPES.has(e.type)) ?? events[0] ?? null;
+    selectedEvent =
+      (await db<EventRow>(TABLES.Event)
+        .where({ tenantId, userId })
+        .whereNotIn('type', [...CORRECTIVE_EVENT_TYPES])
+        .orderBy([{ column: 'ts', order: 'desc' }, { column: 'id', order: 'desc' }])
+        .first()) ??
+      events[0] ??
+      null;
   }
+  if (selectedEvent && !events.some((e) => e.id === selectedEvent!.id)) events.push(selectedEvent);
   events.sort((a, b) => ms(a.ts) - ms(b.ts) || a.id.localeCompare(b.id));
 
   if (allClicks.length === 0 && events.length === 0) return null;
@@ -384,6 +398,7 @@ async function explain(
     status: outcome.status === 'decided' ? 'credited' : outcome.status,
     source: decision?.source ?? null,
     model: decision?.model ?? null,
+    candidates: outcome.trace.candidates.length,
     fromEvent,
     touches,
     recorded,

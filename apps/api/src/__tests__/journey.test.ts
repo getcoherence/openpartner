@@ -134,6 +134,7 @@ interface JourneyBody {
     status: string;
     source: string | null;
     model: string | null;
+    candidates: number;
     fromEvent: { id: string } | null;
     touches: Array<{ clickId: string; verdict: string; weight: number | null; secondsBeforeEvent: number; linkedAfterEvent: boolean; pastWindow: boolean }>;
     recorded: Array<{ partnerId: string; weight: number; commissions: Array<{ amount: string; recruiter: boolean }> }>;
@@ -352,6 +353,56 @@ describe.skipIf(skipIntegration)('GET /customers/:userId/journey', () => {
     expect(nobody.status).toBe(404);
     expect(nobody.body).toEqual({ error: 'customer_not_found' });
     expect((await admin(`/customers/${'x'.repeat(513)}/journey`)).status).toBe(400);
+  });
+
+  it('explains the latest conversion even behind more refunds than the list holds', async () => {
+    const p = await program();
+    const ada = await partner('Ada');
+    await linkClick('u12', ada, p, 2);
+    const paid = await convert('u12', 'invoice_paid', new Date(Date.now() - DAY));
+    // 201 newer corrective events: past the 200 the journey lists.
+    await db(TABLES.Event).insert(
+      Array.from({ length: 201 }, (_, i) => ({
+        id: ulid(),
+        tenantId: T,
+        userId: 'u12',
+        type: 'refund',
+        value: '-1.00',
+        currency: 'USD',
+        metadata: {},
+        ts: new Date(Date.now() - 1000 * (i + 1)),
+      })),
+    );
+
+    const res = await admin('/customers/u12/journey');
+    expect(res.status).toBe(200);
+    expectShape(S.Journey, res.body, 'journey');
+    expect(res.body.selected).toMatchObject({ eventId: paid, status: 'credited' });
+    expect(res.body.truncated.events).toBe(true);
+    // The newest 200, plus the conversion being explained.
+    expect(res.body.events).toHaveLength(201);
+    expect(res.body.events[0].id).toBe(paid);
+  });
+
+  it("sums a partner's touches under each model, and counts the model's input", async () => {
+    const p = await program({ model: 'linear' });
+    const [ada, bob] = [await partner('Ada'), await partner('Bob')];
+    await linkClick('u13', ada, p, 9);
+    await linkClick('u13', ada, p, 5);
+    await linkClick('u13', bob, p, 1);
+    const eventId = await convert('u13');
+
+    const s = (await journeyOf(eventId)).selected!;
+    expect(s).toMatchObject({ model: 'linear', candidates: 3 });
+    const linear = s.alternatives!.find((a) => a.model === 'linear')!;
+    expect(linear.live).toBe(true);
+    expect(linear.credits).toEqual([
+      { partnerId: ada, partnerName: 'Ada', weight: 0.6667 },
+      { partnerId: bob, partnerName: 'Bob', weight: 0.3333 },
+    ]);
+    // Linear writes one row per click: Ada's two thirds are two rows.
+    expect(s.recorded.map((r) => r.partnerId).sort()).toEqual([ada, ada, bob].sort());
+    expect(s.matchesRecord).toBe(true);
   });
 
   it('a customer linked to a click but with no events has touches and no decision', async () => {

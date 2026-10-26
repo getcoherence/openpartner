@@ -1624,13 +1624,16 @@ export const JourneyDecision = z
     eventId: id,
     status: z.enum(['credited', 'corrective', 'no_identity', 'no_click', 'outside_window']).openapi({
       description:
-        "What today's data decides. `no_identity`: the customer was never linked to a partner click. `no_click`: every linked click is flagged or its partner revoked. `outside_window`: no linked click is in its program's window and no earlier conversion carries the customer.",
+        "What today's data decides. `no_identity`: the customer was never linked to a partner click. `no_click`: every linked click is flagged or its partner revoked. `outside_window`: no linked click could take it (each is outside its window, came after the conversion, or lost its program) and no earlier conversion carries the customer.",
     }),
     source: z.enum(['window', 'renewal', 'latest_conversion']).nullable().openapi({
       description:
         "`window`: the model ran over the clicks in the window. `renewal`: a repeat conversion kept the touches of the customer's first conversion of its type. `latest_conversion`: no click was left in the window, so the customer's latest conversion carried it.",
     }),
     model: z.enum(ATTRIBUTION_MODELS).nullable(),
+    candidates: z.number().int().openapi({
+      description: "How many touches were in the window: the model's input when `source` is `window`. Counts every linked click, also those past the 200 listed.",
+    }),
     fromEvent: z
       .object({ id, type: z.string(), ts })
       .nullable()

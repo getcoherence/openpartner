@@ -55,6 +55,7 @@ function baseJourney(): Journey {
       status: 'credited',
       source: 'window',
       model: 'last_click',
+      candidates: 3,
       fromEvent: null,
       touches: [
         { clickId: 'c1', verdict: 'in_window', weight: 0, pastWindow: false, secondsBeforeEvent: 13 * 86_400, linkedAfterEvent: false },
@@ -187,12 +188,20 @@ describe('Customer journey page', () => {
     await waitFor(() => expect(requested).toContain('/api/events/e0/journey'));
   });
 
+  it('counts the model’s input from the decision, not the touches shown', async () => {
+    journey.selected = { ...journey.selected!, candidates: 240 };
+    journey.truncated = { touches: true, events: false };
+    renderPage('/admin/journey?event=e1');
+    expect(await screen.findByText('Decided by the last click model over the 240 partner touches in the window.')).toBeTruthy();
+    expect(screen.getByText(/a credited one can be older than those shown/)).toBeTruthy();
+  });
+
   it('a conversion nobody got says why', async () => {
     journey.selected = { ...journey.selected!, status: 'outside_window', source: null, model: null, recorded: [], alternatives: null };
     journey.events[0]!.credited = [];
     renderPage('/admin/journey?event=e1');
     expect(await screen.findByText('Nobody was credited')).toBeTruthy();
-    expect(screen.getByText(/Every touch is older than its program's attribution window/)).toBeTruthy();
+    expect(screen.getByText(/No touch could take this conversion \(each touch's reason is below/)).toBeTruthy();
     expect(screen.getByText(/nobody credited/)).toBeTruthy();
   });
 });

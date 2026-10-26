@@ -12,7 +12,7 @@
  * Opened from a commission row (?event=), or by looking a customer up by
  * the id the brand sends to identify (?customer=).
  */
-import { useState, type FormEvent, type ReactNode } from 'react';
+import { useState, type CSSProperties, type FormEvent, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router';
 import { Code2, MousePointerClick, Route as RouteIcon } from 'lucide-react';
@@ -75,6 +75,7 @@ export interface JourneyDecision {
   status: 'credited' | 'corrective' | 'no_identity' | 'no_click' | 'outside_window';
   source: 'window' | 'renewal' | 'latest_conversion' | null;
   model: Model | null;
+  candidates: number;
   fromEvent: { id: string; type: string; ts: string } | null;
   touches: Array<{ clickId: string; verdict: Verdict; weight: number | null; pastWindow: boolean; secondsBeforeEvent: number; linkedAfterEvent: boolean }>;
   recorded: Array<{
@@ -137,6 +138,18 @@ function hostOf(url: string | null): string | null {
   }
 }
 
+/** A button that reads as text: no box, but the browser's focus ring kept. */
+const textButton: CSSProperties = {
+  background: 'none',
+  border: 'none',
+  padding: 0,
+  margin: 0,
+  font: 'inherit',
+  color: 'inherit',
+  textAlign: 'left',
+  cursor: 'pointer',
+};
+
 function Pill({ children, bg, fg }: { children: ReactNode; bg: string; fg: string }) {
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', background: bg, color: fg, padding: '3px 9px', borderRadius: 999, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>
@@ -157,7 +170,7 @@ export function decisionSummary(d: JourneyDecision, events: JourneyEvent[]): str
     case 'no_click':
       return 'Every touch linked to this customer is fraud-flagged or belongs to a revoked partner, so nobody was credited.';
     case 'outside_window':
-      return "Every touch is older than its program's attribution window, and no earlier conversion carries the customer, so nobody was credited.";
+      return "No touch could take this conversion (each touch's reason is below: outside its window, after the sale, or its program deleted), and no earlier conversion carries the customer, so nobody was credited.";
   }
   if (d.source === 'renewal' && d.fromEvent) {
     return `A repeat ${type}. It stays with the partner credited for the customer's first ${d.fromEvent.type} (${formatDate(d.fromEvent.ts)}), whatever they clicked since.`;
@@ -165,9 +178,8 @@ export function decisionSummary(d: JourneyDecision, events: JourneyEvent[]): str
   if (d.source === 'latest_conversion' && d.fromEvent) {
     return `No touch was left in the window, so the customer's latest conversion (${d.fromEvent.type}, ${formatDate(d.fromEvent.ts)}) carried it.`;
   }
-  const candidates = d.touches.filter((t) => t.verdict === 'credited' || t.verdict === 'in_window').length;
   const model = d.model ? MODEL_LABEL[d.model].toLowerCase() : 'the program';
-  return `Decided by the ${model} model over the ${candidates} partner ${candidates === 1 ? 'touch' : 'touches'} in the window.`;
+  return `Decided by the ${model} model over the ${d.candidates} partner ${d.candidates === 1 ? 'touch' : 'touches'} in the window.`;
 }
 
 export function AdminJourney() {
@@ -252,7 +264,9 @@ export function JourneyView({ journey, onSelect }: { journey: Journey; onSelect:
       <p style={{ margin: '0 0 12px', fontSize: 13, color: theme.textMuted }}>
         Customer <code>{journey.userId}</code>. Only partner touches are recorded: paid search, organic and direct visits
         never reach OpenPartner, so they're gaps between these steps, not missing steps.
-        {journey.truncated.touches || journey.truncated.events ? ' Showing the newest 200 touches and events.' : ''}
+        {journey.truncated.touches || journey.truncated.events
+          ? ' Showing the newest 200 touches and events. The decision still weighs every touch, so a credited one can be older than those shown.'
+          : ''}
       </p>
       <Card padded={false}>
         {rows.length === 0 ? (
@@ -316,8 +330,7 @@ function EventRow({ event, selected, onSelect }: { event: JourneyEvent; selected
       onClick={onSelect}
       aria-pressed={selected}
       style={{
-        all: 'unset',
-        cursor: 'pointer',
+        ...textButton,
         display: 'block',
         width: '100%',
         borderLeft: `3px solid ${selected ? theme.accent : 'transparent'}`,
@@ -361,7 +374,7 @@ function DecisionCard({ decision: d, events, onSelect }: { decision: JourneyDeci
           {d.fromEvent && (
             <>
               {' '}
-              <button type="button" onClick={() => onSelect(d.fromEvent!.id)} style={{ all: 'unset', cursor: 'pointer', color: theme.accentText, textDecoration: 'underline' }}>
+              <button type="button" onClick={() => onSelect(d.fromEvent!.id)} style={{ ...textButton, color: theme.accentText, textDecoration: 'underline' }}>
                 Show that conversion
               </button>
             </>

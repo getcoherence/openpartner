@@ -69,7 +69,7 @@ Each touch also has:
 A conversion nobody was credited for says why in `status`:
 - `no_identity`: never linked to a partner click.
 - `no_click`: every touch is flagged, or its partner is revoked.
-- `outside_window`: every touch is outside its window.
+- `outside_window`: no touch could take it, and no earlier conversion carries the customer. Each touch says why: outside its window, after the conversion, or its program deleted.
 - `corrective`: a refund, chargeback, dispute or failed payment, which is never attributed.
 
 ## When today's data disagrees with the record
