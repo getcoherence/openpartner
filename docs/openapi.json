@@ -7714,6 +7714,14 @@
           "bonusesAuthorized": {
             "type": "boolean",
             "description": "The Network's federation key holds `bonuses:write`, so OpenPartner Network bounties can pay your partners through `POST /bonuses`. Keys from before Network bounties don't: `POST /config/network/authorize-bonuses` adds it."
+          },
+          "tier": {
+            "type": "string",
+            "enum": [
+              "hosted",
+              "self_hosted"
+            ],
+            "description": "How this instance is billed for the Network. `hosted`: included in your OpenPartner plan. `self_hosted`: a separate Network subscription."
           }
         },
         "required": [
@@ -7722,7 +7730,8 @@
           "hasVendorToken",
           "scopedKeyId",
           "autoEnroll",
-          "bonusesAuthorized"
+          "bonusesAuthorized",
+          "tier"
         ]
       },
       "UpdateNetworkMembershipRequest": {

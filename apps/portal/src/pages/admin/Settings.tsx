@@ -4,8 +4,11 @@ import { Settings as SettingsIcon, Mail, Wallet, Palette, Image as ImageIcon, Tr
 import { api, ApiError } from '../../api.js';
 import { alpha, theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select, Textarea } from '../../ui.js';
+import { useBrand } from '../../lib/useBrand.js';
+import { NetworkSettingsSection } from './NetworkSettingsSection.js';
 import { PaypalPayoutsCard } from './PaypalPayoutsCard.js';
 import { ReferralStagesSection } from './ReferralStagesSection.js';
+import { SettingsSections, type SettingsSection } from './SettingsSections.js';
 
 type PayoutRail = 'auto' | 'stripe_connect' | 'manual';
 type PayoutCadence = 'weekly' | 'biweekly' | 'monthly' | 'manual';
@@ -83,26 +86,27 @@ interface PublicMailSettings {
 }
 
 export function AdminSettings() {
+  // White-label workspaces are isolated from the Network, so it has no
+  // section there.
+  const { whiteLabel } = useBrand();
+  const sections: SettingsSection[] = [
+    { id: 'brand', group: 'Brand', label: 'Brand info', content: <ProgramSection /> },
+    { id: 'resources', group: 'Brand', label: 'Brand resources', content: <BrandResourcesSection /> },
+    { id: 'signups', group: 'Partners', label: 'Signups', content: <PartnerSignupSection /> },
+    { id: 'portal-access', group: 'Partners', label: 'Portal access', content: <PartnerPortalAccessSection /> },
+    { id: 'referral-stages', group: 'Partners', label: 'Referral stages', content: <ReferralStagesSection /> },
+    ...(whiteLabel
+      ? []
+      : [{ id: 'network', group: 'Network', label: 'OpenPartner Network', content: <NetworkSettingsSection /> }]),
+    { id: 'payouts', group: 'Payouts', label: 'Payouts', content: <PayoutSection /> },
+    { id: 'statements', group: 'Payouts', label: 'Payout statements', content: <PayoutStatementsSection /> },
+    { id: 'paypal', group: 'Payouts', label: 'Pay with PayPal', content: <PaypalPayoutsCard /> },
+    { id: 'email', group: 'Workspace', label: 'Email delivery', content: <MailSection /> },
+    { id: 'danger', group: 'Workspace', label: 'Danger zone', content: <DangerZone /> },
+  ];
   return (
     <Page title="Settings" subtitle="How the partner portal identifies your brand, sends mail, and pays partners.">
-      <ProgramSection />
-      <div style={{ height: 18 }} />
-      <BrandResourcesSection />
-      <div style={{ height: 18 }} />
-      <PartnerSignupSection />
-      <div style={{ height: 18 }} />
-      <PartnerPortalAccessSection />
-      <div style={{ height: 18 }} />
-      <ReferralStagesSection />
-      <div style={{ height: 18 }} />
-      <PayoutSection />
-      <div style={{ height: 18 }} />
-      <PayoutStatementsSection />
-      <PaypalPayoutsCard />
-      <div style={{ height: 18 }} />
-      <MailSection />
-      <div style={{ height: 18 }} />
-      <DangerZone />
+      <SettingsSections sections={sections} />
     </Page>
   );
 }
