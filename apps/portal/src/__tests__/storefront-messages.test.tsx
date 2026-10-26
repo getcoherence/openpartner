@@ -14,7 +14,7 @@
  *     payments, and sends the creator's price.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { BrowserRouter, Route, Routes } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BookingConfirmPage } from '../pages/creator/BookingConfirm.js';
@@ -262,6 +262,85 @@ describe('brand thread', () => {
     );
     expect(await screen.findByText('Ada Lovelace has refunded this booking.')).toBeTruthy();
     expect(screen.queryByText(/Payment received/)).toBeNull();
+  });
+
+  it('is live: shows the creator online and typing, sends its own typing, and refetches on a new message', async () => {
+    class FakeSocket {
+      static OPEN = 1;
+      static last: FakeSocket | null = null;
+      readyState = 0;
+      sent: unknown[] = [];
+      onopen: (() => void) | null = null;
+      onmessage: ((ev: { data: string }) => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor(
+        readonly url: string,
+        readonly protocols: string[],
+      ) {
+        FakeSocket.last = this;
+      }
+      send(data: string) {
+        this.sent.push(JSON.parse(data));
+      }
+      close() {
+        this.readyState = 3;
+        this.onclose?.();
+      }
+      open() {
+        this.readyState = 1;
+        this.onopen?.();
+      }
+      hear(frame: unknown) {
+        this.onmessage?.({ data: JSON.stringify(frame) });
+      }
+    }
+    const realSocket = globalThis.WebSocket;
+    (globalThis as unknown as { WebSocket: unknown }).WebSocket = FakeSocket;
+    try {
+      let threadReads = 0;
+      routes['GET /api/t/acme/admin/network/conversations/cnv_1'] = () => {
+        threadReads += 1;
+        return [
+          200,
+          {
+            conversation: { id: 'cnv_1', creator: OFFER.creator, blocked: false, canWrite: true, cannotWriteReason: null, canBook: true },
+            messages: [],
+            hasMore: false,
+            bookings: [],
+          },
+        ];
+      };
+      routes['POST /api/t/acme/admin/network/conversations/cnv_1/realtime'] = () => [200, { ticket: 'tkt 1', expiresAt: '2026-10-25T21:00:00Z', url: 'wss://network.test/api/realtime' }];
+      renderAt('/t/acme/admin/network/messages/cnv_1', <Route path="/t/:slug/admin/network/messages/:id" element={<AdminNetworkThread />} />);
+
+      await waitFor(() => expect(FakeSocket.last).not.toBeNull());
+      const socket = FakeSocket.last!;
+      // The ticket travels in the subprotocol header, never the URL.
+      expect(socket.url).toBe('wss://network.test/api/realtime');
+      expect(socket.protocols).toEqual(['openpartner-live', 'ticket.tkt 1']);
+      act(() => {
+        socket.open();
+        socket.hear({ type: 'hello', side: 'vendor', presence: { creator: true, vendor: true } });
+      });
+      expect(await screen.findByText('Online')).toBeTruthy();
+
+      act(() => socket.hear({ type: 'typing', side: 'creator', name: 'Ada Lovelace', typing: true }));
+      expect(await screen.findByText('Ada Lovelace is typing…')).toBeTruthy();
+
+      fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Hello' } });
+      expect(socket.sent).toContainEqual({ type: 'typing', typing: true });
+
+      const before = threadReads;
+      act(() => socket.hear({ type: 'message', id: 'cnm_9', kind: 'text' }));
+      await waitFor(() => expect(threadReads).toBeGreaterThan(before));
+      expect(screen.queryByText(/is typing/)).toBeNull();
+
+      act(() => socket.hear({ type: 'presence', presence: { creator: false, vendor: true } }));
+      expect(await screen.findByText('Offline')).toBeTruthy();
+    } finally {
+      (globalThis as unknown as { WebSocket: unknown }).WebSocket = realSocket;
+    }
   });
 
   it('explains why it cannot write when the creator blocked the brand', async () => {

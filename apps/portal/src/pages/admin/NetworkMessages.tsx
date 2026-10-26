@@ -10,6 +10,10 @@
  *
  * Coming back from Checkout (?booking=…&checkout=success) records the
  * payment straight away rather than waiting for Stripe's webhook.
+ *
+ * An open thread is live (conversation-live.ts): the creator's presence,
+ * "is typing…", and new messages as they land. It still polls, slowly while
+ * the socket is up.
  */
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router';
@@ -20,11 +24,14 @@ import { Button, Card, EmptyState, ErrorBanner, Page, Select, formatDate } from 
 import { alpha, theme } from '../../theme.js';
 import { TenantLink } from '../../tenant-link.js';
 import { useTenantBase } from '../../tenant-base.js';
+import { useConversationLive, type LiveTicket } from '../creator/conversation-live.js';
 import {
   BookingStatusPill,
   Composer,
   Face,
+  PresenceBadge,
   Thread,
+  TypingNote,
   UnreadDot,
   formatMinor,
   formatWholeAmount,
@@ -205,15 +212,22 @@ export function AdminNetworkThread() {
   const [booking, setBooking] = useState(false);
   const [returned, setReturned] = useState<string | null>(null);
 
-  const thread = useQuery({
-    queryKey: ['admin-network-thread', id],
-    queryFn: () => api<VendorThread>(`/admin/network/conversations/${encodeURIComponent(id)}`),
-    refetchInterval: 10_000,
-  });
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: ['admin-network-thread', id] });
     void qc.invalidateQueries({ queryKey: ['admin-network-conversations'] });
   };
+  // Live: the creator's presence and typing, and new messages at once.
+  const live = useConversationLive(
+    id,
+    'vendor',
+    () => api<LiveTicket>(`/admin/network/conversations/${encodeURIComponent(id)}/realtime`, { method: 'POST', body: {} }),
+    refresh,
+  );
+  const thread = useQuery({
+    queryKey: ['admin-network-thread', id],
+    queryFn: () => api<VendorThread>(`/admin/network/conversations/${encodeURIComponent(id)}`),
+    refetchInterval: live.connected ? 60_000 : 10_000,
+  });
 
   // Back from Stripe Checkout: record the payment now, then tidy the URL.
   useEffect(() => {
@@ -290,10 +304,11 @@ export function AdminNetworkThread() {
         </div>
       }
     >
-      <div style={{ marginBottom: 10 }}>
+      <div style={{ marginBottom: 10, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <TenantLink to="/admin/network/messages" style={{ fontSize: 13, color: theme.accentText }}>
           ← All messages
         </TenantLink>
+        <PresenceBadge online={live.otherOnline} />
       </div>
       {banner && (
         <div
@@ -326,13 +341,15 @@ export function AdminNetworkThread() {
             ) : null;
           }}
         />
-        <div style={{ marginTop: 16, borderTop: `1px solid ${theme.borderSubtle}`, paddingTop: 14 }}>
+        <TypingNote name={live.typing} />
+        <div style={{ marginTop: 8, borderTop: `1px solid ${theme.borderSubtle}`, paddingTop: 14 }}>
           <ErrorBanner error={send.error ? errorText(send.error) : null} />
           <Composer
             onSend={(body) => send.mutateAsync(body)}
             pending={send.isPending}
             disabledReason={t.conversation.canWrite ? null : CANNOT_WRITE[t.conversation.cannotWriteReason ?? ''] ?? 'You can’t write here.'}
             placeholder={`Message ${names.creator}`}
+            onTyping={live.setTyping}
           />
         </div>
       </Card>

@@ -738,6 +738,19 @@ export const networkProxy = {
     ),
   postConversationMessage: (db: Knex, tenantId: string, id: string, body: unknown) =>
     callNetwork<{ message: unknown }>(db, tenantId, 'POST', `/vendors/me/conversations/${encodeURIComponent(id)}/messages`, body),
+  /** A ticket for the conversation's live socket, plus the socket's URL on
+   *  this brand's Network (the browser opens it directly). */
+  conversationRealtime: async (db: Knex, tenantId: string, id: string, body: { authorName?: string }) => {
+    const ticket = await callNetwork<{ ticket: string; expiresAt: string }>(
+      db,
+      tenantId,
+      'POST',
+      `/vendors/me/conversations/${encodeURIComponent(id)}/realtime`,
+      body,
+    );
+    const m = await getNetworkMembership(db, tenantId);
+    return { ...ticket, url: realtimeSocketUrl(m?.networkUrl || process.env.NETWORK_URL || '') };
+  },
   /** All of the above the Network holds for this brand: its conversations,
    *  their messages, and its bookings with their payment records, for the
    *  workspace export (export.ts exportNetwork). Also while the membership
@@ -886,6 +899,14 @@ export async function setNetworkBookingFee(
 export function platformNetworkUrl(): string | null {
   const v = (process.env.NETWORK_URL ?? '').trim();
   return v.length > 0 ? v : null;
+}
+
+/** Where a browser opens a conversation's live socket on this Network:
+ *  https://network.openpartner.dev/api → wss://network.openpartner.dev/api/realtime. */
+export function realtimeSocketUrl(networkUrl: string): string | null {
+  const base = networkUrl.trim().replace(/\/$/, '');
+  if (!/^https?:\/\//i.test(base)) return null;
+  return `${base.replace(/^http/i, 'ws')}/realtime`;
 }
 
 // ---------- Creator "Continue with Google" (docs/creator-sign-in.md) ----------
