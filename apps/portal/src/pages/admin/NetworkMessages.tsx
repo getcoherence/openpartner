@@ -134,6 +134,8 @@ const ACTION_ERRORS: Record<string, string> = {
   not_delivered: 'The creator hasn’t delivered yet.',
   plan_required: 'Tracking a booking adds the creator as your partner, which needs an active plan.',
   partnership_ended: 'This creator’s earlier partnership on that offering ended. Invite them to it again from Discover creators.',
+  partner_revoked: 'You revoked this creator as a partner. Reinstate them under Partners to track their bookings.',
+  partner_exists_on_brand: 'This creator is already your partner, and this workspace can’t add a program to an existing partner yet. Update OpenPartner, or book them untracked.',
   rate_limited: 'You’re sending messages very quickly. Wait a little and try again.',
   brand_pending_review: 'Your brand is still being reviewed. You can do this once it’s approved.',
   vendor_pending_review: 'Your brand is still being reviewed. You can do this once it’s approved.',

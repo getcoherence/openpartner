@@ -13,6 +13,7 @@ import { afterCommit, getTenancyMode, tenantOf } from '../tenancy.js';
 import { db as platformDb } from '../db.js';
 import { checkCountryAccess, countryCodeSchema, recordLocationDeclaration } from '../country-access.js';
 import {
+  getNetworkConsent,
   grantNetworkConsent,
   isNetworkFederationCall,
   syncPartnerRevokeToNetwork,
@@ -168,6 +169,72 @@ export const createSchema = z.object({
 
 export const partnersRouter = Router();
 
+/**
+ * Store the commission snapshot a Network approval carried, for the one
+ * program it names (`programId`) or partner-wide (null). Two accepted shapes:
+ *   - commissionRules (compound array) — preferred, written verbatim
+ *   - commissionType + commissionValue (legacy single rule) — accepted
+ *     for older Network deployments; legacy columns get filled, no
+ *     compound array stored
+ *
+ * When commissionRules is present, the legacy NOT NULL columns are
+ * populated from the first 'every' sub-rule (or the first sub-rule)
+ * as a best-effort summary; the resolver always prefers commissionRules.
+ *
+ * Without enough info to write either shape we fall back to the live
+ * Campaign rule rather than silently mis-pricing.
+ * Same fallback for a snapshot that can't price the partner the way the
+ * program does — a granted program's rule with its slabs stripped by a
+ * Network that predates them, or a slab table that fails a program's own
+ * checks. A snapshot outranks the live rule for good, so it isn't stored;
+ * the partner accrues on the live rule. See vetApprovalSnapshot. A
+ * program-scoped snapshot (one program named) is only compared with that
+ * program's rule — it never prices the partner anywhere else.
+ */
+async function storeApprovalSnapshot(
+  db: Knex,
+  tenantId: string,
+  partnerId: string,
+  given: NonNullable<z.infer<typeof createSchema>['commissionSnapshot']>,
+  programId: string | null,
+  grantedProgramIds: string[],
+): Promise<void> {
+  let snap: typeof given | undefined = given;
+  const verdict = await vetApprovalSnapshot(db, snap, programId ? [programId] : grantedProgramIds);
+  if (!verdict.store) {
+    console.warn(`[partners] approval snapshot for ${partnerId} not stored: ${verdict.reason}; accruing on the live program rule`);
+    snap = undefined;
+  } else if (verdict.commissionRules) {
+    snap = { ...snap, commissionRules: verdict.commissionRules as NonNullable<typeof snap.commissionRules> };
+  }
+  if (snap?.commissionRules && snap.commissionRules.length > 0) {
+    await upsertPartnerCommission(db, {
+      partnerId,
+      tenantId,
+      programId,
+      // Vetted above: any slab table has been parsed (vetApprovalSnapshot),
+      // and the legacy columns only read type/value/recurring anyway.
+      ...legacyRuleColumns(snap.commissionRules as readonly CommissionSubRule[]),
+      commissionRules: JSON.stringify(snap.commissionRules),
+      holdbackDays: snap.holdbackDays ?? null,
+      source: 'approval',
+      snapshottedAt: new Date(),
+    });
+  } else if (snap?.commissionType != null && snap.commissionValue != null) {
+    await upsertPartnerCommission(db, {
+      partnerId,
+      tenantId,
+      programId,
+      commissionType: snap.commissionType,
+      commissionValue: snap.commissionValue.toFixed(4),
+      recurring: snap.recurring ?? false,
+      holdbackDays: snap.holdbackDays ?? null,
+      source: 'approval',
+      snapshottedAt: new Date(),
+    });
+  }
+}
+
 /** What `partners:create` may not do on POST /partners, which needs
  *  `partners:write`: send the invite (the default!) or set commission
  *  terms. That's what makes it safe as an in-app integration's runtime
@@ -232,7 +299,14 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write', 'part
   // RLS alone: on a pool that bypasses RLS, these read and granted every
   // tenant's partners and programs (Oct 2026 verification).
   const existing = await db<PartnerRow>(TABLES.Partner).where({ email, tenantId }).first();
-  if (existing) return res.status(409).json({ error: 'email_taken' });
+  // The Network approving a creator who is already this brand's partner (an
+  // earlier program, or the brand's own partner at the address the Network
+  // verified): the new programs go to that partner (below) rather than a
+  // 409, which would fail the approval for good. A partner the brand
+  // revoked stays revoked; the Network is told why.
+  const fromNetwork = await isNetworkFederationCall(db, tenantId, req.principal, body.data.metadata);
+  if (existing && !fromNetwork) return res.status(409).json({ error: 'email_taken' });
+  if (existing?.revokedAt) return res.status(409).json({ error: 'partner_revoked' });
 
   if (body.data.recruitedByPartnerId) {
     const problem = await recruiterProblem(db, tenantId, null, body.data.recruitedByPartnerId);
@@ -271,7 +345,7 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write', 'part
   // program was named (see commissionSnapshot); programCommissions
   // entries must target granted programs, at most one entry each, and
   // not the program the snapshot already covers.
-  let snap = body.data.commissionSnapshot;
+  const snap = body.data.commissionSnapshot;
   const hasSnapshot =
     (snap?.commissionRules != null && snap.commissionRules.length > 0) ||
     (snap?.commissionType != null && snap.commissionValue != null);
@@ -290,11 +364,41 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write', 'part
     termed.add(t.programId);
   }
 
+  if (existing) {
+    // A Network approval for an existing partner (checked above): grant
+    // the programs, and record the approval's terms where the partner has
+    // none for that program yet. Terms the brand already agreed stand.
+    const grantSource = body.data.campaignGrantSource ?? 'admin';
+    await db(TABLES.PartnerProgram)
+      .insert(programIds.map((cid) => ({ id: `pc_${ulid()}`, tenantId, partnerId: existing.id, programId: cid, source: grantSource })))
+      .onConflict(['tenantId', 'partnerId', 'programId'])
+      .ignore();
+    await autoMintCouponsForGrants(db, tenantId, { id: existing.id, email: existing.email }, programIds);
+    if (snap && snapshotProgramId && !(await findPartnerCommission(db, existing.id, snapshotProgramId))) {
+      await storeApprovalSnapshot(db, tenantId, existing.id, snap, snapshotProgramId, programIds);
+    }
+    // They joined this program through the Network, as a member: that's
+    // their consent to the Network sync, unless they've already decided
+    // either way here.
+    if (!(await getNetworkConsent(db, existing.id))) {
+      await grantNetworkConsent(db, tenantId, existing.id, 'network_offering');
+      afterCommit(req, 'network federation push', (trx) => syncPartnerToNetwork(trx, tenantId, existing));
+    }
+    const approvedPayload = {
+      partnerId: existing.id,
+      email: existing.email,
+      name: existing.name,
+      networkCreatorId: (body.data.metadata as Record<string, unknown>).networkCreatorId,
+      programIds,
+    } satisfies WebhookPayload<'partnership.approved'>;
+    onCommit(db, 'partnership.approved webhook', () => dispatchEvent(tenantId, 'partnership.approved', approvedPayload));
+    return res.status(200).json({ ...existing, invited: false, existing: true });
+  }
+
   // Portal access when the caller didn't say. An invited partner is going
   // to sign in. So is a creator the Network provisions: they're a Network
   // member, not a brand's in-app customer. Anyone else created without an
   // invite gets the tenant's default (partner-portal-access.ts).
-  const fromNetwork = await isNetworkFederationCall(db, tenantId, req.principal, body.data.metadata);
   const portalAccess =
     body.data.portalAccess ??
     (sendInvite || fromNetwork ? true : (await readPartnerAccessSettings(db, tenantId)).uninvitedPortalAccess);
@@ -368,61 +472,7 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write', 'part
     await autoMintCouponsForGrants(db, tenantId, { id, email }, programIds);
   }
 
-  // Persist the commission snapshot if the federation push carried one.
-  // Two accepted shapes:
-  //   - commissionRules (compound array) — preferred, written verbatim
-  //   - commissionType + commissionValue (legacy single rule) — accepted
-  //     for older Network deployments; legacy columns get filled, no
-  //     compound array stored
-  //
-  // When commissionRules is present, the legacy NOT NULL columns are
-  // populated from the first 'every' sub-rule (or the first sub-rule)
-  // as a best-effort summary; the resolver always prefers commissionRules.
-  //
-  // Without enough info to write either shape we fall back to the live
-  // Campaign rule rather than silently mis-pricing.
-  // Same fallback for a snapshot that can't price the partner the way the
-  // program does — a granted program's rule with its slabs stripped by a
-  // Network that predates them, or a slab table that fails a program's own
-  // checks. A snapshot outranks the live rule for good, so it isn't stored;
-  // the partner accrues on the live rule. See vetApprovalSnapshot. A
-  // program-scoped snapshot (one program named) is only compared with that
-  // program's rule — it never prices the partner anywhere else.
-  if (snap) {
-    const verdict = await vetApprovalSnapshot(db, snap, snapshotProgramId ? [snapshotProgramId] : programIds);
-    if (!verdict.store) {
-      console.warn(`[partners] approval snapshot for ${id} not stored: ${verdict.reason}; accruing on the live program rule`);
-      snap = undefined;
-    } else if (verdict.commissionRules) {
-      snap = { ...snap, commissionRules: verdict.commissionRules as NonNullable<typeof snap.commissionRules> };
-    }
-  }
-  if (snap?.commissionRules && snap.commissionRules.length > 0) {
-    await upsertPartnerCommission(db, {
-      partnerId: id,
-      tenantId,
-      programId: snapshotProgramId,
-      // Vetted above: any slab table has been parsed (vetApprovalSnapshot),
-      // and the legacy columns only read type/value/recurring anyway.
-      ...legacyRuleColumns(snap.commissionRules as readonly CommissionSubRule[]),
-      commissionRules: JSON.stringify(snap.commissionRules),
-      holdbackDays: snap.holdbackDays ?? null,
-      source: 'approval',
-      snapshottedAt: new Date(),
-    });
-  } else if (snap?.commissionType != null && snap.commissionValue != null) {
-    await upsertPartnerCommission(db, {
-      partnerId: id,
-      tenantId,
-      programId: snapshotProgramId,
-      commissionType: snap.commissionType,
-      commissionValue: snap.commissionValue.toFixed(4),
-      recurring: snap.recurring ?? false,
-      holdbackDays: snap.holdbackDays ?? null,
-      source: 'approval',
-      snapshottedAt: new Date(),
-    });
-  }
+  if (snap) await storeApprovalSnapshot(db, tenantId, id, snap, snapshotProgramId, programIds);
   for (const { programId, ...terms } of programTerms) {
     await writeCommissionOverride(db, tenantId, id, programId, terms);
   }

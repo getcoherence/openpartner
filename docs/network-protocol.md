@@ -551,6 +551,28 @@ scoped to one program instead of every program. A pre-rename brand has
 to upgrade to be approvable. `campaignIds` can be dropped once no
 pre-rename brand is federated.
 
+**A creator who is already the brand's partner.** The Network approves
+a creator for each program separately: an application, or a tracked
+booking, for a second program of the same brand sends `POST /partners`
+again, at the same address. A brand's own partner who joined the Network
+with that address does the same on their first approval. Coming from the
+Network (its registered key, `metadata.source = 'openpartner_network'`),
+that's no longer a `409 email_taken`:
+- the existing partner is granted the programs (`campaignGrantSource`)
+  and their default coupons;
+- a program-scoped `commissionSnapshot` is stored only if the partner has
+  no terms for that program yet, so terms the brand already set stand;
+- Network consent is recorded only if the partner never decided either
+  way;
+- `partnership.approved` fires (not `partner.created`);
+- the answer is `200 { …partner, existing: true }`, and the Network
+  carries on with the link.
+
+Anyone else still gets `409 email_taken`. A partner the brand revoked
+gets `409 partner_revoked`, and the Network tells both sides why
+(`partner_revoked`). An instance from before this answers
+`email_taken`, which the Network reports as `partner_exists_on_brand`.
+
 ### Commission terms on `POST /partners`
 
 The Network sends the approved offering's terms as `commissionSnapshot`
