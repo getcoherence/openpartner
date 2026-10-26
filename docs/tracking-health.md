@@ -78,7 +78,9 @@ commissions.
 
 New flags are emailed to every activated admin once a day (the
 `tracking-alerts` job, 06:40 UTC). Each flag is emailed once when it first
-appears, not every day it stays. A flag nobody has seen for three days
+appears, not every day it stays. If no admin could be emailed, the next run
+tries again; if some could, the ones whose email failed aren't sent it again,
+and the flags stay on the page. A flag nobody has seen for three days
 closes; if it comes back after that, it's emailed again, unless it was
 emailed in the last seven days. The job needs the scheduler
 (`OPENPARTNER_ENABLE_SCHEDULER=1` on a self-host).
