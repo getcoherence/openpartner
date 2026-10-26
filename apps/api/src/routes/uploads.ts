@@ -1,7 +1,7 @@
 import express, { Router } from 'express';
 import { TABLES } from '@openpartner/db';
 import { requireAuth, requireAdmin } from '../auth.js';
-import { tenantOf } from '../tenancy.js';
+import { afterCommit, tenantOf } from '../tenancy.js';
 import { sendHeartbeat } from '../network-client.js';
 import { fsStorageDir, getStorage, MAX_UPLOAD_BYTES, newUploadKey, UploadError, validateImageUpload } from '../storage.js';
 import { brandAssetUploadHandler, handleBrandAssetUpload } from './brand-resources.js';
@@ -59,11 +59,11 @@ uploadsRouter.post(
     // Push the new logo to the Network now instead of waiting up to an
     // hour for the cron heartbeat. Brand admins upload then immediately
     // check the discover/offering pages — without this they see the old
-    // (or missing) logo and assume something's broken. Fire-and-forget
-    // so a Network blip doesn't fail the upload.
-    sendHeartbeat(db, tenantId).catch((err) => {
-      console.error('[uploads/logo] opportunistic heartbeat failed', err);
-    });
+    // (or missing) logo and assume something's broken. After commit, in a
+    // transaction of its own: handed `db`, the push lost the race with the
+    // response's commit every time. A Network blip is logged, never fails
+    // the upload.
+    afterCommit(req, 'network heartbeat', (trx) => sendHeartbeat(trx, tenantId));
 
     res.json({ logoUrl: url });
   },

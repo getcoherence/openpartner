@@ -30,6 +30,7 @@ import { TABLES, type AudienceSize, type NetworkOutboxRow } from '@openpartner/d
 import { decryptSecret, encryptSecret } from './crypto.js';
 import { getWhiteLabelState } from './white-label.js';
 import { bookingFeeBpsFor } from './booking-fee.js';
+import { resolveBrandName } from './brand-name.js';
 import { CLIENT_IP_HEADER, signClientIp } from './routes/creator-portal.js';
 import { CONVERSATION_IMAGE_TYPES } from './conversation-images.js';
 
@@ -1648,7 +1649,8 @@ export async function reportNetworkPayoutsToNetwork(
 // count feels live to brand admins, infrequent enough to be polite to
 // the Network. Also opportunistically fired by `/admin/network/me` so a
 // brand admin who just landed on the page after a partner was added
-// sees fresh data on the next request.
+// sees fresh data on the next request, and after a logo upload or a
+// Brand info save so the listing picks up the new logo or name.
 //
 // Counting: non-revoked Partners. lastEventAt is the most recent Event
 // timestamp (any kind), giving the Network signal even from tenants
@@ -1659,6 +1661,11 @@ export interface HeartbeatResult {
   partnerCount: number;
   reason?: string;
 }
+
+/** The Network's cap on Vendor.displayName (signup and heartbeat alike). */
+const NETWORK_DISPLAY_NAME_MAX = 120;
+/** Tenant.displayName of the self-host seed row (migration 20260507000000). */
+const SEEDED_TENANT_NAME = 'Default tenant';
 
 export async function sendHeartbeat(db: Knex, tenantId: string): Promise<HeartbeatResult> {
   // White-label tenants are isolated — suppress the liveness heartbeat so
@@ -1727,6 +1734,19 @@ export async function sendHeartbeat(db: Knex, tenantId: string): Promise<Heartbe
     console.warn('[network-client] tenant logoUrl read failed; skipping logo propagation', err);
   }
 
+  // The brand name the portal shows (brand-name.ts), so a rename under
+  // Brand info reaches the listing. Left out when there's nothing worth
+  // sending: the self-host seed row's placeholder would overwrite the name
+  // the admin gave at connect, and a name over the Network's cap would fail
+  // the whole heartbeat. Best-effort, like the logo.
+  let displayName: string | null = null;
+  try {
+    const name = (await resolveBrandName(db, tenantId))?.trim();
+    if (name && name !== SEEDED_TENANT_NAME && name.length <= NETWORK_DISPLAY_NAME_MAX) displayName = name;
+  } catch (err) {
+    console.warn('[network-client] brand name read failed; skipping it', err);
+  }
+
   // The booking fee rate the brand's plan gives it (booking-fee.ts), so the
   // Network can show it before the brand pays. Best-effort, like the logo.
   let bookingFeeBps: number | null = null;
@@ -1749,6 +1769,7 @@ export async function sendHeartbeat(db: Knex, tenantId: string): Promise<Heartbe
         partnerCount,
         ...(lastEventAt ? { lastEventAt } : {}),
         logoUrl,
+        ...(displayName ? { displayName } : {}),
         ...(bookingFeeBps != null ? { bookingFeeBps } : {}),
       }),
       signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),

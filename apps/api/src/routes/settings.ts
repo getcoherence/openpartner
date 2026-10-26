@@ -48,7 +48,7 @@ import { readPartnerAccessSettings, savePartnerAccessSettings } from '../partner
 import { readStatementSettings, saveStatementSettings } from '../payout-statements.js';
 import { clearNetworkListingSkip } from '../onboarding-settings.js';
 import { createApiKeyRow } from '../auth.js';
-import { getTenancyMode, tenantOf } from '../tenancy.js';
+import { afterCommit, getTenancyMode, tenantOf } from '../tenancy.js';
 import { NETWORK_FEDERATION_SCOPES } from './api-keys.js';
 import { getTenantBillingState, hasActivePlan } from '../billing-plan.js';
 import { bookingFeeBpsFor } from '../booking-fee.js';
@@ -262,6 +262,12 @@ settingsRouter.post('/config/program', requireAuth, requireAdmin, async (req, re
   if (Object.keys(tenantPatch).length > 0) {
     tenantPatch.updatedAt = now;
     await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).update(tenantPatch);
+  }
+  // Push a renamed brand to its Network listing now instead of at the next
+  // hourly heartbeat. After commit, so it reads the saved name; a Network
+  // blip is logged, never fails the save.
+  if (next.programName !== previous.programName) {
+    afterCommit(req, 'network heartbeat', (trx) => sendHeartbeat(trx, tenantId));
   }
   // Re-hydrate so the returned shape matches GET (includes logoUrl + brand fields).
   res.json(await readSettings(db, tenantId));
