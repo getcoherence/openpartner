@@ -879,11 +879,10 @@ settingsRouter.get('/admin/network/me', requireAuth, requireAdmin, async (req, r
   proxy(req, res, async (db, tenantId) => {
     // Fire a heartbeat opportunistically so a brand admin who just
     // updated their logo / added a partner / etc. doesn't have to wait
-    // until the next :07 cron. Fire-and-forget — don't block the page
-    // load on a Network blip.
-    sendHeartbeat(db, tenantId).catch((err) => {
-      console.error('[admin/network/me] opportunistic heartbeat failed', err);
-    });
+    // until the next :07 cron. After commit, in a transaction of its own:
+    // handed `db` without being awaited, it raced the response's commit.
+    // A Network blip is logged, never fails the page.
+    afterCommit(req, 'network heartbeat', (trx) => sendHeartbeat(trx, tenantId));
     // Override the Network's stored partnerCount with the local truth.
     // Network's value updates via the hourly heartbeat job — between
     // ticks (or before the first tick after connecting) it lags reality.

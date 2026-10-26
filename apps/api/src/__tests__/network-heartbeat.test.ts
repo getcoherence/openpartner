@@ -9,7 +9,8 @@
  *   - renaming the brand under Brand info (POST /config/program) pushes a
  *     heartbeat once the save has committed; a save that keeps the name
  *     doesn't, and a Network failure never fails the save
- *   - a logo upload pushes the new logo the same way
+ *   - a logo upload pushes the new logo the same way, and so does opening
+ *     the admin Network page (GET /admin/network/me)
  *
  * Spins up an in-process receiver as the Network. Skipped if DATABASE_URL
  * isn't set, like the rest of the integration suite.
@@ -71,6 +72,11 @@ beforeAll(async () => {
               body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
               committedName: (row?.value as { programName?: string | null } | undefined)?.programName ?? null,
             });
+          }
+          if (req.url === '/vendors/me') {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ id: 'vnd_heartbeat_test', displayName: SIGNUP_NAME, status: 'active', partnerCount: 99 }));
+            return;
           }
           res.writeHead(beatStatus);
           res.end();
@@ -191,6 +197,23 @@ describe.skipIf(skipIntegration)('POST /config/program pushes a rename', () => {
     expect(beats).toHaveLength(1);
     const row = await db(TABLES.Config).where({ tenantId: T.id, key: 'program_settings' }).first();
     expect((row!.value as { programName: string }).programName).toBe('Acme Labs');
+  });
+});
+
+describe.skipIf(skipIntegration)('GET /admin/network/me pushes a heartbeat', () => {
+  it('sends it before answering, and reports the local partner count', async () => {
+    const res = await request(app).get(`/t/${T.slug}/admin/network/me`).set(asAdmin());
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ id: 'vnd_heartbeat_test', partnerCount: 0 });
+    expect(beats).toHaveLength(1);
+    expect(beats[0]!.body.displayName).toBe(SIGNUP_NAME);
+  });
+
+  it('a heartbeat failure never fails the page', async () => {
+    beatStatus = 500;
+    const res = await request(app).get(`/t/${T.slug}/admin/network/me`).set(asAdmin());
+    expect(res.status).toBe(200);
+    expect(beats).toHaveLength(1);
   });
 });
 
