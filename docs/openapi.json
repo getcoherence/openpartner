@@ -3557,6 +3557,13 @@
             ],
             "description": "The type of the attributed event the commission was earned on: `signup`, `trial_started`, `subscription_created`, `invoice_paid`, or one of your custom types. Null on a bonus's commission."
           },
+          "eventId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The attributed event the commission was earned on (`GET /events/{id}/journey` explains its credit). Null on a bonus's commission."
+          },
           "bonus": {
             "type": [
               "object",
@@ -3663,6 +3670,7 @@
           "matureAt",
           "source",
           "eventType",
+          "eventId",
           "bonus",
           "recruiter"
         ]
@@ -7966,6 +7974,585 @@
             "type": "boolean"
           }
         }
+      },
+      "Journey": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string",
+            "description": "Your customer id, as sent to identify and conversions."
+          },
+          "touches": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JourneyTouch"
+            },
+            "description": "Every partner touch linked to the customer, oldest first (the newest 200)."
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JourneyEvent"
+            },
+            "description": "The customer's events, oldest first (the newest 200, plus the selected one)."
+          },
+          "selected": {
+            "$ref": "#/components/schemas/JourneyDecision"
+          },
+          "truncated": {
+            "type": "object",
+            "properties": {
+              "touches": {
+                "type": "boolean"
+              },
+              "events": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "touches",
+              "events"
+            ]
+          }
+        },
+        "required": [
+          "userId",
+          "touches",
+          "events",
+          "selected",
+          "truncated"
+        ]
+      },
+      "JourneyTouch": {
+        "type": "object",
+        "properties": {
+          "clickId": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "link",
+              "code"
+            ],
+            "description": "`link`: a click on a partner link. `code`: a partner code redeemed at checkout, recorded when the code was used."
+          },
+          "ts": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "partner": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ]
+          },
+          "program": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ]
+          },
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "On a `code` touch, the code."
+          },
+          "landingUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "On a `link` touch, where the link sent the visitor."
+          },
+          "landedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the script on the landing page reported the visit. Null when it never did.",
+            "pattern": "Z$"
+          },
+          "referer": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "utmSource": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "utmMedium": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "utmCampaign": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The publisher's sub-ID, when the link carried one."
+          },
+          "browser": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "device": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "country": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "linkedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the click was linked to this customer: identify, a checkout carrying it, or the code redemption.",
+            "pattern": "Z$"
+          },
+          "flagged": {
+            "type": "boolean",
+            "description": "Fraud-flagged. A flagged click never earns credit."
+          }
+        },
+        "required": [
+          "clickId",
+          "kind",
+          "ts",
+          "partner",
+          "program",
+          "code",
+          "landingUrl",
+          "landedAt",
+          "referer",
+          "utmSource",
+          "utmMedium",
+          "utmCampaign",
+          "subId",
+          "browser",
+          "device",
+          "country",
+          "linkedAt",
+          "flagged"
+        ]
+      },
+      "JourneyEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "ts": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "currency": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "corrective": {
+            "type": "boolean",
+            "description": "A refund, chargeback, dispute or failed payment: recorded, never attributed."
+          },
+          "credited": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "partnerId": {
+                  "type": "string"
+                },
+                "partnerName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "weight": {
+                  "type": "number",
+                  "description": "Share of the credit, 0–1.",
+                  "example": 1
+                }
+              },
+              "required": [
+                "partnerId",
+                "partnerName",
+                "weight"
+              ]
+            },
+            "description": "Who the recorded attribution credits, under the model the event was decided by."
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "ts",
+          "value",
+          "currency",
+          "corrective",
+          "credited"
+        ]
+      },
+      "JourneyDecision": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "eventId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "credited",
+              "corrective",
+              "no_identity",
+              "no_click",
+              "outside_window"
+            ],
+            "description": "What today's data decides. `no_identity`: the customer was never linked to a partner click. `no_click`: every linked click is flagged or its partner revoked. `outside_window`: no linked click could take it (each is outside its window, came after the conversion, or lost its program) and no earlier conversion carries the customer."
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "window",
+              "renewal",
+              "latest_conversion",
+              null
+            ],
+            "description": "`window`: the model ran over the clicks in the window. `renewal`: a repeat conversion kept the touches of the customer's first conversion of its type. `latest_conversion`: no click was left in the window, so the customer's latest conversion carried it."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "last_click",
+              "first_click",
+              "linear",
+              "position",
+              null
+            ]
+          },
+          "candidates": {
+            "type": "integer",
+            "description": "How many touches were in the window: the model's input when `source` is `window`. Counts every linked click, also those past the 200 listed."
+          },
+          "fromEvent": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              },
+              "ts": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "Z$"
+              }
+            },
+            "required": [
+              "id",
+              "type",
+              "ts"
+            ],
+            "description": "The earlier conversion a `renewal` or `latest_conversion` decision came from."
+          },
+          "touches": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "clickId": {
+                  "type": "string"
+                },
+                "verdict": {
+                  "type": "string",
+                  "enum": [
+                    "credited",
+                    "in_window",
+                    "outside_window",
+                    "after_event",
+                    "yielded_to_link",
+                    "flagged",
+                    "partner_revoked",
+                    "no_program"
+                  ],
+                  "description": "What became of the touch for this conversion. `in_window`: a candidate the model gave no share. `yielded_to_link`: a code that gives way to a link click in the window (the program's coupons-yield-to-links setting). `after_event`: it came after the conversion."
+                },
+                "weight": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "pastWindow": {
+                  "type": "boolean",
+                  "description": "Credited through an earlier conversion although older than the window."
+                },
+                "secondsBeforeEvent": {
+                  "type": "integer",
+                  "description": "Seconds from the touch to the conversion; negative when it came after."
+                },
+                "linkedAfterEvent": {
+                  "type": "boolean",
+                  "description": "Linked to the customer after the conversion happened."
+                }
+              },
+              "required": [
+                "clickId",
+                "verdict",
+                "weight",
+                "pastWindow",
+                "secondsBeforeEvent",
+                "linkedAfterEvent"
+              ]
+            }
+          },
+          "recorded": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "attributionId": {
+                  "type": "string"
+                },
+                "clickId": {
+                  "type": "string"
+                },
+                "partnerId": {
+                  "type": "string"
+                },
+                "partnerName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "model": {
+                  "type": "string",
+                  "enum": [
+                    "last_click",
+                    "first_click",
+                    "linear",
+                    "position"
+                  ]
+                },
+                "weight": {
+                  "type": "number"
+                },
+                "computedAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "Z$"
+                },
+                "commissions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "partnerId": {
+                        "type": "string"
+                      },
+                      "partnerName": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "amount": {
+                        "$ref": "#/components/schemas/Decimal"
+                      },
+                      "currency": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "accrued",
+                          "approved",
+                          "paid",
+                          "reversed"
+                        ]
+                      },
+                      "recruiter": {
+                        "type": "boolean",
+                        "description": "A recruiter's share of the partner's commission."
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "partnerId",
+                      "partnerName",
+                      "amount",
+                      "currency",
+                      "status",
+                      "recruiter"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "attributionId",
+                "clickId",
+                "partnerId",
+                "partnerName",
+                "model",
+                "weight",
+                "computedAt",
+                "commissions"
+              ]
+            },
+            "description": "The attribution written for this conversion and what it earned: what was actually credited and paid."
+          },
+          "matchesRecord": {
+            "type": "boolean",
+            "description": "False when today's data credits differently from `recorded`: a click linked, flagged or revoked since, or nothing recorded."
+          },
+          "alternatives": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "enum": [
+                    "last_click",
+                    "first_click",
+                    "linear",
+                    "position"
+                  ]
+                },
+                "live": {
+                  "type": "boolean"
+                },
+                "credits": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "partnerId": {
+                        "type": "string"
+                      },
+                      "partnerName": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "weight": {
+                        "type": "number",
+                        "description": "Share of the credit, 0–1.",
+                        "example": 1
+                      }
+                    },
+                    "required": [
+                      "partnerId",
+                      "partnerName",
+                      "weight"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "model",
+                "live",
+                "credits"
+              ]
+            },
+            "description": "Who each model credits over the same in-window touches. Null unless `source` is `window`: a renewal keeps an earlier conversion's touches whatever the model."
+          }
+        },
+        "required": [
+          "eventId",
+          "status",
+          "source",
+          "model",
+          "candidates",
+          "fromEvent",
+          "touches",
+          "recorded",
+          "matchesRecord",
+          "alternatives"
+        ],
+        "description": "Who got credit for one conversion, and why. Null when the customer has no events."
       }
     },
     "parameters": {}
@@ -19548,6 +20135,184 @@
           },
           "403": {
             "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/events/{id}/journey": {
+      "get": {
+        "operationId": "getEventJourney",
+        "tags": [
+          "Attribution"
+        ],
+        "summary": "Who got credit for a conversion, and why",
+        "description": "The journey of the event's customer: every partner touch linked to them (link clicks and codes), oldest first, and their events. `selected` explains this event: what became of each touch (credited, outside its window, a code that gave way to a link…), how the credit was decided, and who each attribution model would credit over the same touches. `recorded` is what was actually written and earned. Only partner touches are recorded, so paid search, organic and direct visits are gaps in the path, not steps.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The id."
+            },
+            "required": true,
+            "description": "The id.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The journey.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Journey"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`event_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/customers/{userId}/journey": {
+      "get": {
+        "operationId": "getCustomerJourney",
+        "tags": [
+          "Attribution"
+        ],
+        "summary": "A customer's partner journey",
+        "description": "The same journey, looked up by your customer id. `selected` explains `?eventId=`, or without it the customer's latest conversion.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The userId."
+            },
+            "required": true,
+            "description": "The userId.",
+            "name": "userId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "required": false,
+            "name": "eventId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The journey.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Journey"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_query`, `tenant_slug_missing`, `invalid_user_id`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`customer_not_found`, `event_not_found`",
             "content": {
               "application/json": {
                 "schema": {
