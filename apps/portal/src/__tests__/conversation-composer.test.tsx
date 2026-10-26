@@ -15,7 +15,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { Composer, Thread, ThreadPane, type ConversationMessage, type MessageAttachment } from '../pages/creator/conversation-shared.js';
+import { Composer, MessagesLayout, Thread, ThreadPane, type ConversationMessage, type MessageAttachment } from '../pages/creator/conversation-shared.js';
 import { clearAttachmentCache, linkParts, prepareImage } from '../pages/creator/conversation-media.js';
 
 let urls = 0;
@@ -78,7 +78,9 @@ describe('Composer', () => {
     // Nothing to send: Enter does nothing.
     fireEvent.keyDown(box(), { key: 'Enter' });
     expect(onSend).toHaveBeenCalledTimes(1);
-    expect(screen.getByText(/Enter to send, Shift\+Enter for a new line/)).toBeTruthy();
+    // The shortcut is on the send button's tooltip, not spelled out under the box.
+    expect(screen.queryByText(/Shift\+Enter/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Send' }).getAttribute('title')).toBe('Send (Enter)');
   });
 
   it('uploads a pasted image and sends it, alone or with text', async () => {
@@ -229,6 +231,23 @@ describe('ThreadPane', () => {
     expect(screen.getByTestId('thread-scroll').contains(box())).toBe(false);
   });
 
+  it('keeps the messages and the box in one centred column', () => {
+    render(pane('a', 'b'));
+    const column = screen.getByTestId('thread-scroll').firstElementChild as HTMLElement;
+    expect(column.style.maxWidth).toBe('820px');
+    expect(column.style.margin).toBe('0px auto');
+    expect(box().closest<HTMLElement>('[style*="max-width: 820px"]')).not.toBeNull();
+  });
+
+  it('sits beside the conversation list, in a panel that ends 12px above the window', () => {
+    render(<MessagesLayout showThread list={<nav>the list</nav>} thread={pane('a', 'b')} />);
+    const panel = screen.getByTestId('messages-panel');
+    expect(panel.style.height).toBe(`${window.innerHeight - 12}px`);
+    expect(panel.style.gridTemplateColumns).toContain('340px');
+    expect(screen.getByText('the list')).toBeTruthy();
+    expect(panel.contains(box())).toBe(true);
+  });
+
   it('follows new messages at the bottom, leaves a reader who scrolled up, and keeps their place when earlier ones load', () => {
     const layout = { scrollHeight: 1000, clientHeight: 400 };
     const { rerender } = render(pane('m1', 'm5'));
@@ -278,6 +297,28 @@ describe('Thread', () => {
     expect(link.getAttribute('rel')).toBe('noopener noreferrer nofollow ugc');
     expect(screen.getByText(/<b>bold<\/b>/)).toBeTruthy();
     expect(document.querySelector('b')).toBeNull();
+  });
+
+  it('puts only the time under a message, for hover, with who wrote it as the tooltip', () => {
+    const at = new Date(2026, 9, 26, 14, 5).toISOString();
+    render(
+      <Thread
+        messages={[msg({ id: 'cnm_t', author: 'vendor', authorName: 'Grace', body: 'Hello', createdAt: at }), msg({ id: 'cnm_u', author: 'creator', authorName: null, body: 'Hi', createdAt: at })]}
+        side="creator"
+        names={names}
+        renderBooking={() => null}
+        loadAttachment={vi.fn()}
+      />,
+    );
+    const times = [...document.querySelectorAll('time.op-msg-time')];
+    expect(times).toHaveLength(2);
+    expect(times.map((t) => t.textContent)).toEqual([times[0]!.textContent, times[0]!.textContent]);
+    expect(times[0]!.textContent).not.toMatch(/Grace|Acme|You/);
+    // After the message, inside it (so it shows on its hover), never above it.
+    const theirs = screen.getByTitle('Grace · Acme');
+    expect(theirs.classList.contains('op-msg')).toBe(true);
+    expect(theirs.lastElementChild).toBe(times[0]);
+    expect(theirs.textContent!.startsWith('Hello')).toBe(true);
   });
 
   it('never lets go of an image still on screen, however many there are', async () => {
