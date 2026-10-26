@@ -96,7 +96,7 @@ export interface VerificationStart {
 }
 
 /** Platforms the Network can verify today. TikTok and Instagram follow via OAuth. */
-const VERIFIABLE: ReadonlySet<Platform> = new Set<Platform>(['youtube', 'website']);
+export const VERIFIABLE: ReadonlySet<Platform> = new Set<Platform>(['youtube', 'website']);
 
 // Curated category list — covers the most-searched niches across
 // existing creator marketplaces. Brands filter on these in Tier 3.
@@ -109,7 +109,8 @@ const CATEGORIES = [
 
 const AGE_RANGES: AgeRange[] = ['13-17', '18-24', '25-34', '35-44', '45-54', '55+'];
 
-const PLATFORMS: { kind: Platform; label: string; placeholder: string }[] = [
+/** Every platform a creator can list, in the order the editors show them. */
+export const PLATFORMS: { kind: Platform; label: string; placeholder: string }[] = [
   { kind: 'tiktok', label: 'TikTok', placeholder: 'your-handle' },
   { kind: 'instagram', label: 'Instagram', placeholder: 'your-handle' },
   { kind: 'youtube', label: 'YouTube', placeholder: 'your-handle' },
@@ -851,7 +852,7 @@ function PlatformRowEditor({
  * to check. The Network does the lookup; the code stays valid for 24h and
  * reopening the dialog shows the same one.
  */
-function VerifyAccountDialog({
+export function VerifyAccountDialog({
   adapter,
   platform,
   label,

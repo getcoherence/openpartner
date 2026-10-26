@@ -81,6 +81,24 @@ beforeEach(() => {
       return json(200, { id: 'crt_1', email: 'maya@example.test', name: 'Maya Chen', handle: 'mayabuilds', avatarUrl: null, pastBrands: [], profileComplete: true });
     }
     if (path === '/creators/me/packages' && method === 'POST') return json(201, { id: `pkg_${requests.length}`, ...body });
+    const putPlatform = /^\/creators\/me\/platforms\/(\w+)$/.exec(path);
+    if (putPlatform && method === 'PUT') {
+      const platforms = storefront.platforms as StorefrontChannel[];
+      if (!platforms.some((p) => p.platform === putPlatform[1])) {
+        const added: StorefrontChannel = {
+          ...SUBSTACK,
+          id: `cpf_${putPlatform[1]}`,
+          platform: putPlatform[1]!,
+          handle: String(body?.handle),
+          profileUrl: null,
+          followerCount: (body?.followerCount as number | null) ?? null,
+          description: null,
+          cadence: null,
+        };
+        storefront = { ...storefront, platforms: [...platforms, added] };
+      }
+      return json(200, { ok: true });
+    }
     if (path === '/creators/by-handle/mayabuilds') {
       return json(200, {
         id: 'crt_1',
@@ -219,6 +237,37 @@ describe('storefront editor', () => {
         cadence: 'Weekly',
       },
     });
+  });
+
+  it('adds a channel not listed yet, then opens its pitch', async () => {
+    renderAt('/creator/storefront', '/creator/storefront', <CreatorStorefrontPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /Add a channel/ }));
+    // Only platforms the creator hasn't listed are offered.
+    const options = within(screen.getByLabelText('Channel')).getAllByRole('option').map((o) => (o as HTMLOptionElement).value);
+    expect(options).not.toContain('youtube');
+    expect(options).not.toContain('substack');
+    expect(options).toContain('tiktok');
+
+    fireEvent.change(screen.getByLabelText('Channel'), { target: { value: 'tiktok' } });
+    fireEvent.change(screen.getByLabelText('Handle'), { target: { value: '@mayabuilds' } });
+    fireEvent.change(screen.getByLabelText('Audience'), { target: { value: '15000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add channel' }));
+
+    await waitFor(() => expect(requests.some((r) => r.method === 'PUT')).toBe(true));
+    expect(requests.find((r) => r.method === 'PUT')).toMatchObject({
+      path: '/creators/me/platforms/tiktok',
+      body: { handle: '@mayabuilds', followerCount: 15000 },
+    });
+    // Straight on to the new channel's pitch.
+    expect(await screen.findByLabelText('What your TikTok covers')).toBeTruthy();
+  });
+
+  it('hides Add a channel once every platform is listed', async () => {
+    const all = ['tiktok', 'instagram', 'youtube', 'twitter', 'linkedin', 'substack', 'twitch', 'podcast', 'website'];
+    storefront = { ...storefront, platforms: all.map((p) => ({ ...SUBSTACK, id: `cpf_${p}`, platform: p, description: null, cadence: null })) };
+    renderAt('/creator/storefront', '/creator/storefront', <CreatorStorefrontPage />);
+    await screen.findAllByRole('button', { name: 'Add pitch' });
+    expect(screen.queryByRole('button', { name: /Add a channel/ })).toBeNull();
   });
 });
 
