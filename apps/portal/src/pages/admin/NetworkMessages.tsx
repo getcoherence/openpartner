@@ -18,8 +18,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { MessagesSquare } from 'lucide-react';
+import { ArrowLeft, MessagesSquare } from 'lucide-react';
 import { api, apiBlob, ApiError } from '../../api.js';
+import { useIsMobile } from '../../lib/useMediaQuery.js';
 import { Button, Card, EmptyState, ErrorBanner, Page, Select, formatDate } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
 import { TenantLink } from '../../tenant-link.js';
@@ -28,12 +29,17 @@ import { useConversationLive, type LiveTicket } from '../creator/conversation-li
 import {
   BookingStatusPill,
   Composer,
+  ConversationListPane,
   Face,
+  MessagesLayout,
+  NoConversationOpen,
   PresenceBadge,
   Thread,
+  ThreadHeader,
   ThreadPane,
   TypingNote,
   UnreadDot,
+  conversationRowStyle,
   formatMinor,
   formatWholeAmount,
   previewLine,
@@ -138,46 +144,70 @@ function errorText(err: unknown): unknown {
   return code && ACTION_ERRORS[code] ? ACTION_ERRORS[code] : err;
 }
 
+/**
+ * Network → Messages: the conversation list beside the open conversation
+ * (MessagesLayout), at /admin/network/messages and …/messages/:id.
+ */
 export function AdminNetworkMessages() {
+  const { id } = useParams();
+  return (
+    <MessagesLayout
+      showThread={!!id}
+      list={<BrandConversationList activeId={id} />}
+      thread={
+        id ? (
+          <BrandThread key={id} id={id} />
+        ) : (
+          <NoConversationOpen text="Your conversations with creators. Agree the details here, then book and pay in the thread." />
+        )
+      }
+    />
+  );
+}
+
+/** The same page, open on a conversation. */
+export const AdminNetworkThread = AdminNetworkMessages;
+
+function BrandConversationList({ activeId }: { activeId: string | undefined }) {
   const list = useQuery({
     queryKey: ['admin-network-conversations'],
     queryFn: () => api<{ conversations: ConversationSummary[]; unreadTotal: number }>('/admin/network/conversations'),
     refetchInterval: 30_000,
   });
   return (
-    <Page
+    <ConversationListPane
       title="Messages"
-      subtitle="Your conversations with creators. Agree the details here, then book and pay in the thread."
-      actions={
+      action={
         <TenantLink to="/admin/network/creators" style={{ textDecoration: 'none' }}>
-          <Button variant="secondary">Discover creators</Button>
+          <Button size="sm" variant="secondary">
+            Discover creators
+          </Button>
         </TenantLink>
       }
     >
-      <ErrorBanner error={list.error} />
+      {list.error && (
+        <div style={{ padding: 12 }}>
+          <ErrorBanner error={list.error} />
+        </div>
+      )}
       {list.isLoading ? (
-        <Card>Loading…</Card>
+        <div style={{ padding: 16, fontSize: 13, color: theme.textMuted }}>Loading…</div>
       ) : !list.data || list.data.conversations.length === 0 ? (
-        <EmptyState
-          title="No conversations yet"
-          hint="Open a creator’s storefront under Discover creators and send them a message or a booking request."
-          icon={<MessagesSquare size={28} strokeWidth={1.25} />}
-        />
+        <div style={{ padding: 16 }}>
+          <EmptyState
+            title="No conversations yet"
+            hint="Open a creator’s storefront under Discover creators and send them a message or a booking request."
+            icon={<MessagesSquare size={28} strokeWidth={1.25} />}
+          />
+        </div>
       ) : (
-        <Card padded={false}>
-          {list.data.conversations.map((c, i) => (
+        <>
+          {list.data.conversations.map((c) => (
             <TenantLink
               key={c.id}
               to={`/admin/network/messages/${c.id}`}
-              style={{
-                display: 'flex',
-                gap: 12,
-                alignItems: 'center',
-                padding: '12px 16px',
-                textDecoration: 'none',
-                color: theme.text,
-                borderTop: i === 0 ? 'none' : `1px solid ${theme.borderSubtle}`,
-              }}
+              aria-current={c.id === activeId ? 'page' : undefined}
+              style={conversationRowStyle(c.id === activeId)}
             >
               <Face name={c.creator?.name ?? '?'} src={c.creator?.avatarUrl} />
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -199,14 +229,15 @@ export function AdminNetworkMessages() {
               </div>
             </TenantLink>
           ))}
-        </Card>
+        </>
       )}
-    </Page>
+    </ConversationListPane>
   );
 }
 
-export function AdminNetworkThread() {
-  const { id = '' } = useParams();
+/** The open conversation: its header, then the thread and the message box. */
+function BrandThread({ id }: { id: string }) {
+  const isMobile = useIsMobile();
   const qc = useQueryClient();
   const [params, setParams] = useSearchParams();
   const [older, setOlder] = useState<ConversationMessage[]>([]);
@@ -275,12 +306,12 @@ export function AdminNetworkThread() {
     },
   });
 
-  if (thread.isLoading) return <Page title="Messages"><Card>Loading…</Card></Page>;
+  if (thread.isLoading) return <div style={{ padding: 20, fontSize: 13, color: theme.textMuted }}>Loading…</div>;
   if (!thread.data) {
     return (
-      <Page title="Messages">
+      <div style={{ padding: 20 }}>
         <ErrorBanner error={thread.error ?? 'This conversation isn’t available.'} />
-      </Page>
+      </div>
     );
   }
   const t = thread.data;
@@ -306,42 +337,53 @@ export function AdminNetworkThread() {
           : null;
 
   return (
-    <Page
-      title={creator?.name ?? 'Conversation'}
-      subtitle={creator?.handle ? `@${creator.handle}` : undefined}
-      actions={
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {creator?.handle && (
-            <TenantLink to={`/admin/network/creators/${encodeURIComponent(creator.handle)}`} style={{ textDecoration: 'none' }}>
-              <Button variant="secondary">Storefront</Button>
+    <>
+      <ThreadHeader
+        back={
+          isMobile ? (
+            <TenantLink to="/admin/network/messages" aria-label="All messages" style={{ color: theme.accentText, display: 'inline-flex' }}>
+              <ArrowLeft size={20} />
             </TenantLink>
-          )}
-          {t.conversation.canBook && creator?.handle && <Button onClick={() => setBooking(true)}>Request a booking</Button>}
-        </div>
-      }
-    >
-      <div style={{ marginBottom: 10, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <TenantLink to="/admin/network/messages" style={{ fontSize: 13, color: theme.accentText }}>
-          ← All messages
-        </TenantLink>
-        <PresenceBadge online={live.otherOnline} />
-      </div>
-      {banner && (
-        <div
-          role="status"
-          style={{
-            background: banner.tone === 'success' ? theme.successSoft : theme.surface2,
-            border: `1px solid ${banner.tone === 'success' ? alpha(theme.success, 0.333) : theme.borderSubtle}`,
-            color: banner.tone === 'success' ? theme.success : theme.textMuted,
-            borderRadius: theme.radiusSm,
-            padding: '10px 12px',
-            fontSize: 13,
-            marginBottom: 12,
-          }}
-        >
-          {banner.text}
-        </div>
-      )}
+          ) : null
+        }
+        face={<Face name={creator?.name ?? '?'} src={creator?.avatarUrl} />}
+        title={creator?.name ?? 'Conversation'}
+        subtitle={creator?.handle ? `@${creator.handle}` : undefined}
+        presence={<PresenceBadge online={live.otherOnline} />}
+        actions={
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {creator?.handle && (
+              <TenantLink to={`/admin/network/creators/${encodeURIComponent(creator.handle)}`} style={{ textDecoration: 'none' }}>
+                <Button size="sm" variant="secondary">
+                  Storefront
+                </Button>
+              </TenantLink>
+            )}
+            {t.conversation.canBook && creator?.handle && (
+              <Button size="sm" onClick={() => setBooking(true)}>
+                Request a booking
+              </Button>
+            )}
+          </div>
+        }
+      >
+        {banner && (
+          <div
+            role="status"
+            style={{
+              background: banner.tone === 'success' ? theme.successSoft : theme.surface2,
+              border: `1px solid ${banner.tone === 'success' ? alpha(theme.success, 0.333) : theme.borderSubtle}`,
+              color: banner.tone === 'success' ? theme.success : theme.textMuted,
+              borderRadius: theme.radiusSm,
+              padding: '10px 12px',
+              fontSize: 13,
+              marginTop: 10,
+            }}
+          >
+            {banner.text}
+          </div>
+        )}
+      </ThreadHeader>
       <ThreadPane
         firstId={messages[0]?.id}
         lastId={messages.at(-1)?.id}
@@ -386,7 +428,7 @@ export function AdminNetworkThread() {
           }}
         />
       )}
-    </Page>
+    </>
   );
 }
 
