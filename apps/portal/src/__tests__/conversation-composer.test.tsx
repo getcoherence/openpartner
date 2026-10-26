@@ -15,7 +15,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { Composer, Thread, type ConversationMessage, type MessageAttachment } from '../pages/creator/conversation-shared.js';
+import { Composer, Thread, ThreadPane, type ConversationMessage, type MessageAttachment } from '../pages/creator/conversation-shared.js';
 import { clearAttachmentCache, linkParts, prepareImage } from '../pages/creator/conversation-media.js';
 
 let urls = 0;
@@ -202,6 +202,64 @@ const names = { creator: 'Ada', brand: 'Acme' };
 function msg(over: Partial<ConversationMessage>): ConversationMessage {
   return { id: 'cnm_1', author: 'vendor', authorName: 'Grace', kind: 'text', body: null, event: null, bookingId: null, createdAt: new Date().toISOString(), ...over };
 }
+
+describe('ThreadPane', () => {
+  /** jsdom lays nothing out: give the scroller a size to scroll in. */
+  function sized(el: HTMLElement, layout: { scrollHeight: number; clientHeight: number }) {
+    let top = 0;
+    Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => layout.scrollHeight });
+    Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => layout.clientHeight });
+    Object.defineProperty(el, 'scrollTop', { configurable: true, get: () => top, set: (v: number) => (top = v) });
+    return { get top() { return top; }, set top(v: number) { top = v; } };
+  }
+
+  function pane(firstId: string, lastId: string, lastIsMine = false) {
+    return (
+      <ThreadPane firstId={firstId} lastId={lastId} lastIsMine={lastIsMine} footer={<Composer onSend={vi.fn(async (_m: Sent) => undefined)} onUpload={uploader()} pending={false} />}>
+        <div>messages {firstId}…{lastId}</div>
+      </ThreadPane>
+    );
+  }
+
+  it('puts send and + inside the box, and keeps the box out of the scrolling messages', () => {
+    render(pane('a', 'b'));
+    const row = box().parentElement!;
+    expect(row.querySelector('button[aria-label="Send"]')).not.toBeNull();
+    expect(row.querySelector('button[aria-label="Add an image"]')).not.toBeNull();
+    expect(screen.getByTestId('thread-scroll').contains(box())).toBe(false);
+  });
+
+  it('follows new messages at the bottom, leaves a reader who scrolled up, and keeps their place when earlier ones load', () => {
+    const layout = { scrollHeight: 1000, clientHeight: 400 };
+    const { rerender } = render(pane('m1', 'm5'));
+    const scroller = screen.getByTestId('thread-scroll');
+    const pos = sized(scroller, layout);
+
+    // At the bottom: a new message from the other side is followed.
+    pos.top = 600;
+    fireEvent.scroll(scroller);
+    layout.scrollHeight = 1100;
+    rerender(pane('m1', 'm6'));
+    expect(pos.top).toBe(1100);
+
+    // Scrolled up to read: theirs doesn't move them, their own does.
+    pos.top = 100;
+    fireEvent.scroll(scroller);
+    layout.scrollHeight = 1200;
+    rerender(pane('m1', 'm7'));
+    expect(pos.top).toBe(100);
+    layout.scrollHeight = 1300;
+    rerender(pane('m1', 'm8', true));
+    expect(pos.top).toBe(1300);
+
+    // Earlier messages load above: what they were reading stays put.
+    pos.top = 50;
+    fireEvent.scroll(scroller);
+    layout.scrollHeight = 1800;
+    rerender(pane('m0', 'm8', true));
+    expect(pos.top).toBe(550);
+  });
+});
 
 describe('Thread', () => {
   it('makes links clickable and keeps everything else text', () => {

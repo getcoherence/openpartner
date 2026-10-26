@@ -24,6 +24,7 @@ import {
   Face,
   PresenceBadge,
   Thread,
+  ThreadPane,
   TypingNote,
   UnreadDot,
   formatMinor,
@@ -285,7 +286,25 @@ export function CreatorThreadPage() {
           <Link to="/creator/storefront" style={{ color: theme.warn, fontWeight: 600 }}>Set up payments</Link>
         </div>
       )}
-      <Card>
+      <ThreadPane
+        firstId={messages[0]?.id}
+        lastId={messages.at(-1)?.id}
+        lastIsMine={messages.at(-1)?.author === 'creator'}
+        footer={
+          <>
+            <TypingNote name={live.typing} />
+            <ErrorBanner error={send.error ? errText(send.error) : block.error} />
+            <Composer
+              onSend={(m) => send.mutateAsync(m)}
+              onUpload={uploadImage}
+              pending={send.isPending}
+              disabledReason={!t.conversation.brandActive ? 'This brand isn’t on the Network any more.' : null}
+              placeholder={`Message ${t.conversation.brand?.name ?? 'the brand'}`}
+              onTyping={live.setTyping}
+            />
+          </>
+        }
+      >
         <Thread
           messages={messages}
           side="creator"
@@ -299,19 +318,7 @@ export function CreatorThreadPage() {
             return b ? <CreatorBookingCard booking={b} brand={brand} brandName={names.brand} canAccept={ready} onChanged={refresh} /> : null;
           }}
         />
-        <TypingNote name={live.typing} />
-        <div style={{ marginTop: 8, borderTop: `1px solid ${theme.borderSubtle}`, paddingTop: 14 }}>
-          <ErrorBanner error={send.error ? errText(send.error) : block.error} />
-          <Composer
-            onSend={(m) => send.mutateAsync(m)}
-            onUpload={uploadImage}
-            pending={send.isPending}
-            disabledReason={!t.conversation.brandActive ? 'This brand isn’t on the Network any more.' : null}
-            placeholder={`Message ${t.conversation.brand?.name ?? 'the brand'}`}
-            onTyping={live.setTyping}
-          />
-        </div>
-      </Card>
+      </ThreadPane>
       {offering && (
         <OfferDialog
           conversationId={t.conversation.id}

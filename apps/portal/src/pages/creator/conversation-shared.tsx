@@ -10,10 +10,11 @@
  * Everything the other side typed is rendered as text, never HTML; only its
  * http(s) links become links (conversation-media.tsx).
  */
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type ReactNode } from 'react';
-import { ImagePlus, LoaderCircle, X } from 'lucide-react';
-import { Button, Textarea } from '../../ui.js';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type ReactNode } from 'react';
+import { ArrowUp, LoaderCircle, Plus, X } from 'lucide-react';
+import { Button } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
+import { useIsMobile } from '../../lib/useMediaQuery.js';
 import {
   AttachmentGrid,
   IMAGE_TYPES,
@@ -223,12 +224,6 @@ export function Thread({
    *  (useCallback): images reload when it changes. */
   loadAttachment: LoadAttachment;
 }) {
-  const end = useRef<HTMLDivElement | null>(null);
-  const lastId = messages.at(-1)?.id;
-  useEffect(() => {
-    end.current?.scrollIntoView?.({ block: 'end' });
-  }, [lastId]);
-
   const drawn = new Set<string>();
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -280,7 +275,6 @@ export function Thread({
           </div>
         );
       })}
-      <div ref={end} />
     </div>
   );
 }
@@ -289,6 +283,117 @@ function EventNote({ text, at }: { text: string; at: string }) {
   return (
     <div style={{ textAlign: 'center', fontSize: 12, color: theme.textDim }}>
       {text} · {timeLabel(at)}
+    </div>
+  );
+}
+
+/** The pane is never shorter than this, however little room the page leaves. */
+const MIN_PANE_HEIGHT = 360;
+/** Within this of the bottom counts as reading the latest messages. */
+const NEAR_BOTTOM_PX = 80;
+
+/**
+ * A conversation laid out as a chat: the pane fills the window below what's
+ * above it on the page, the messages (`children`) scroll inside it, and
+ * `footer` (the message box) stays at its bottom, always in view.
+ *
+ * It follows new messages while the reader is at the bottom, or wrote the
+ * new one, and otherwise leaves them where they are reading. Earlier
+ * messages loading above (`firstId` changing) keep the reader's place.
+ */
+export function ThreadPane({
+  children,
+  footer,
+  firstId,
+  lastId,
+  lastIsMine,
+}: {
+  children: ReactNode;
+  footer: ReactNode;
+  firstId: string | undefined;
+  lastId: string | undefined;
+  lastIsMine: boolean;
+}) {
+  const isMobile = useIsMobile();
+  const pane = useRef<HTMLDivElement | null>(null);
+  const scroller = useRef<HTMLDivElement | null>(null);
+  const [height, setHeight] = useState<number | null>(null);
+  const atBottom = useRef(true);
+  const seen = useRef<{ firstId?: string; lastId?: string; scrollHeight: number }>({ scrollHeight: 0 });
+  // The page's own bottom padding (ui.tsx Page): the pane ends where it does.
+  const bottomGap = isMobile ? 20 : 32;
+
+  const measure = useRef(() => {});
+  measure.current = () => {
+    const el = pane.current;
+    if (!el) return;
+    const top = el.getBoundingClientRect().top + window.scrollY;
+    const viewport = window.visualViewport?.height ?? window.innerHeight;
+    const next = Math.max(MIN_PANE_HEIGHT, Math.round(viewport - top - bottomGap));
+    setHeight((current) => (current === next ? current : next));
+  };
+  // What's above (a banner, the header wrapping) can change on any render.
+  useLayoutEffect(() => measure.current());
+  useEffect(() => {
+    const onResize = () => measure.current();
+    window.addEventListener('resize', onResize);
+    window.visualViewport?.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      window.visualViewport?.removeEventListener('resize', onResize);
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    const before = seen.current;
+    if (before.lastId !== lastId) {
+      if (before.lastId === undefined || atBottom.current || lastIsMine) el.scrollTop = el.scrollHeight;
+    } else if (before.firstId !== firstId && before.firstId !== undefined) {
+      el.scrollTop += el.scrollHeight - before.scrollHeight;
+    }
+    seen.current = { firstId, lastId, scrollHeight: el.scrollHeight };
+  });
+
+  // The box growing (a line, an image) shrinks the messages: a reader at the
+  // bottom stays there.
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const watch = new ResizeObserver(() => {
+      if (atBottom.current) el.scrollTop = el.scrollHeight;
+    });
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, []);
+
+  return (
+    <div
+      ref={pane}
+      style={{
+        height: height ?? undefined,
+        minHeight: MIN_PANE_HEIGHT,
+        display: 'flex',
+        flexDirection: 'column',
+        background: theme.surface,
+        border: `1px solid ${theme.border}`,
+        borderRadius: theme.radiusMd,
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        ref={scroller}
+        data-testid="thread-scroll"
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
+        }}
+        style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: isMobile ? 14 : 20 }}
+      >
+        {children}
+      </div>
+      <div style={{ borderTop: `1px solid ${theme.borderSubtle}`, padding: isMobile ? '6px 10px 10px' : '6px 16px 14px', background: theme.surface }}>{footer}</div>
     </div>
   );
 }
@@ -341,7 +446,9 @@ export function Composer({
   const [images, setImages] = useState<PendingImage[]>([]);
   const [problem, setProblem] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [focused, setFocused] = useState(false);
   const picker = useRef<HTMLInputElement | null>(null);
+  const field = useRef<HTMLTextAreaElement | null>(null);
   const touch = useMemo(coarsePointer, []);
   const latest = useRef(images);
   latest.current = images;
@@ -432,6 +539,7 @@ export function Composer({
   }
 
   const lines = body.split('\n').length;
+  const busy = pending || uploading;
   return (
     <div
       onDragOver={(e) => {
@@ -441,10 +549,31 @@ export function Composer({
       }}
       onDragLeave={() => setDragging(false)}
       onDrop={onDrop}
-      style={{ borderRadius: theme.radiusSm, outline: dragging ? `2px dashed ${theme.accent}` : 'none', outlineOffset: 4 }}
     >
+      {(problem || images.some((i) => i.error)) && (
+        <div role="alert" style={{ fontSize: 12, color: theme.danger, marginBottom: 6 }}>
+          {problem ?? images.find((i) => i.error)?.error}
+        </div>
+      )}
+      {/* One rounded box, as chat apps have it: images on top, then + / text / send. */}
+      <div
+        onClick={(e) => {
+          if (e.target === e.currentTarget) field.current?.focus();
+        }}
+        style={{
+          background: theme.surface2,
+          border: `1px solid ${dragging || focused ? theme.accent : theme.border}`,
+          outline: dragging ? `2px dashed ${theme.accent}` : 'none',
+          outlineOffset: 3,
+          borderRadius: 16,
+          padding: 6,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 6,
+        }}
+      >
       {images.length > 0 && (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', padding: '4px 4px 0' }}>
           {images.map((i) => (
             <div
               key={i.key}
@@ -492,41 +621,12 @@ export function Composer({
           ))}
         </div>
       )}
-      {(problem || images.some((i) => i.error)) && (
-        <div role="alert" style={{ fontSize: 12, color: theme.danger, marginBottom: 6 }}>
-          {problem ?? images.find((i) => i.error)?.error}
-        </div>
-      )}
-      <Textarea
-        value={body}
-        rows={Math.min(8, Math.max(2, lines))}
-        maxLength={MESSAGE_MAX}
-        placeholder={placeholder}
-        aria-label="Message"
-        onChange={(e) => {
-          setBody(e.target.value);
-          onTyping?.(e.target.value.trim().length > 0);
-        }}
-        onBlur={() => onTyping?.(false)}
-        onPaste={onPaste}
-        onKeyDown={(e) => {
-          if (e.key !== 'Enter' || e.shiftKey || e.altKey) return;
-          // Mid-composition (Japanese, Chinese, …) Enter picks the word.
-          if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-          if (touch && !e.metaKey && !e.ctrlKey) return;
-          e.preventDefault();
-          void send();
-        }}
-      />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
-        <Button onClick={() => void send()} disabled={!canSend}>
-          {pending ? 'Sending…' : uploading ? 'Uploading…' : 'Send'}
-        </Button>
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 4 }}>
         {onUpload && (
           <>
-            <Button variant="ghost" size="sm" onClick={() => picker.current?.click()} icon={<ImagePlus size={16} />}>
-              Image
-            </Button>
+            <button type="button" aria-label="Add an image" title="Add an image" onClick={() => picker.current?.click()} style={roundButton('ghost')}>
+              <Plus size={18} />
+            </button>
             <input
               ref={picker}
               type="file"
@@ -541,12 +641,84 @@ export function Composer({
             />
           </>
         )}
-        <span style={{ fontSize: 12, color: theme.textDim }}>
-          {touch ? '' : 'Enter to send, Shift+Enter for a new line. '}Keep payments on OpenPartner: only bookings paid here are covered.
-        </span>
+        <textarea
+          ref={field}
+          value={body}
+          rows={Math.min(8, Math.max(1, lines))}
+          maxLength={MESSAGE_MAX}
+          placeholder={placeholder}
+          aria-label="Message"
+          onChange={(e) => {
+            setBody(e.target.value);
+            onTyping?.(e.target.value.trim().length > 0);
+          }}
+          onFocus={() => setFocused(true)}
+          onBlur={() => {
+            setFocused(false);
+            onTyping?.(false);
+          }}
+          onPaste={onPaste}
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter' || e.shiftKey || e.altKey) return;
+            // Mid-composition (Japanese, Chinese, …) Enter picks the word.
+            if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+            if (touch && !e.metaKey && !e.ctrlKey) return;
+            e.preventDefault();
+            void send();
+          }}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            resize: 'none',
+            border: 'none',
+            // The box shows focus; the field itself doesn't.
+            outline: 'none',
+            background: 'transparent',
+            color: theme.text,
+            fontFamily: 'inherit',
+            fontSize: 14,
+            lineHeight: 1.5,
+            padding: onUpload ? '7px 4px' : '7px 8px',
+            maxHeight: 8 * 21 + 14,
+            overflowY: 'auto',
+          }}
+        />
+        <button
+          type="button"
+          aria-label="Send"
+          title={touch ? 'Send' : 'Send (Enter)'}
+          onClick={() => void send()}
+          disabled={!canSend}
+          style={roundButton(canSend ? 'primary' : 'off')}
+        >
+          {busy ? <LoaderCircle size={16} className="op-spin" /> : <ArrowUp size={18} />}
+        </button>
+      </div>
+      </div>
+      <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6, padding: '0 4px' }}>
+        {touch ? '' : 'Enter to send, Shift+Enter for a new line. '}Keep payments on OpenPartner: only bookings paid here are covered.
       </div>
     </div>
   );
+}
+
+/** The composer's round buttons: + (ghost) and send (primary, or off while
+ *  there's nothing to send). */
+function roundButton(kind: 'ghost' | 'primary' | 'off'): CSSProperties {
+  return {
+    width: 34,
+    height: 34,
+    flexShrink: 0,
+    borderRadius: '50%',
+    border: 'none',
+    padding: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: kind === 'primary' ? theme.accent : 'transparent',
+    color: kind === 'primary' ? theme.accentInk : kind === 'off' ? theme.textDim : theme.textMuted,
+    cursor: kind === 'off' ? 'default' : 'pointer',
+  };
 }
 
 /** "● Online" while the other side has the thread open; nothing until the

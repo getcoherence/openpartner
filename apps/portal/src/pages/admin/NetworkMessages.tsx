@@ -31,6 +31,7 @@ import {
   Face,
   PresenceBadge,
   Thread,
+  ThreadPane,
   TypingNote,
   UnreadDot,
   formatMinor,
@@ -341,7 +342,25 @@ export function AdminNetworkThread() {
           {banner.text}
         </div>
       )}
-      <Card>
+      <ThreadPane
+        firstId={messages[0]?.id}
+        lastId={messages.at(-1)?.id}
+        lastIsMine={messages.at(-1)?.author === 'vendor'}
+        footer={
+          <>
+            <TypingNote name={live.typing} />
+            <ErrorBanner error={send.error ? errorText(send.error) : null} />
+            <Composer
+              onSend={(m) => send.mutateAsync(m)}
+              onUpload={uploadImage}
+              pending={send.isPending}
+              disabledReason={t.conversation.canWrite ? null : CANNOT_WRITE[t.conversation.cannotWriteReason ?? ''] ?? 'You can’t write here.'}
+              placeholder={`Message ${names.creator}`}
+              onTyping={live.setTyping}
+            />
+          </>
+        }
+      >
         <Thread
           messages={messages}
           side="vendor"
@@ -357,19 +376,7 @@ export function AdminNetworkThread() {
             ) : null;
           }}
         />
-        <TypingNote name={live.typing} />
-        <div style={{ marginTop: 8, borderTop: `1px solid ${theme.borderSubtle}`, paddingTop: 14 }}>
-          <ErrorBanner error={send.error ? errorText(send.error) : null} />
-          <Composer
-            onSend={(m) => send.mutateAsync(m)}
-            onUpload={uploadImage}
-            pending={send.isPending}
-            disabledReason={t.conversation.canWrite ? null : CANNOT_WRITE[t.conversation.cannotWriteReason ?? ''] ?? 'You can’t write here.'}
-            placeholder={`Message ${names.creator}`}
-            onTyping={live.setTyping}
-          />
-        </div>
-      </Card>
+      </ThreadPane>
       {booking && creator?.handle && (
         <BookCreatorDialog
           creator={{ id: creator.id, name: creator.name, handle: creator.handle }}
