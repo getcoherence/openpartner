@@ -1512,6 +1512,10 @@ export const NetworkMembership = z
       description:
         "The Network's federation key holds `bonuses:write`, so OpenPartner Network bounties can pay your partners through `POST /bonuses`. Keys from before Network bounties don't: `POST /config/network/authorize-bonuses` adds it.",
     }),
+    tier: z.enum(['hosted', 'self_hosted']).openapi({
+      description:
+        'How this instance is billed for the Network. `hosted`: included in your OpenPartner plan. `self_hosted`: a separate Network subscription.',
+    }),
   })
   .openapi('NetworkMembership');
 

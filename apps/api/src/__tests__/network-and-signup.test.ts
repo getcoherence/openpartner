@@ -42,7 +42,7 @@ process.env.PORTAL_URL = 'http://localhost:5673';
 
 const { db } = await import('../db.js');
 const { createApp } = await import('../app.js');
-const { drainOutbox } = await import('../network-client.js');
+const { drainOutbox, networkTier } = await import('../network-client.js');
 const { encryptSecret } = await import('../crypto.js');
 const { aggregateNetworkOriginatedPayouts } = await import('../usage-billing.js');
 const { createApiKeyRow } = await import('../auth.js');
@@ -637,6 +637,19 @@ describe.skipIf(skipIntegration)('re-sync (POST /config/network/backfill)', () =
     expect(res.body).not.toHaveProperty('vendorTokenCiphertext');
     expect(res.body.hasVendorToken).toBe(true);
     expect(res.body.networkUrl).toBe(receiverUrl);
+  });
+
+  it('GET /config/network reports the billing tier: self_hosted single-tenant, hosted multi-tenant', async () => {
+    const res = await request(app).get('/config/network').set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(res.status).toBe(200);
+    expect(res.body.tier).toBe('self_hosted');
+
+    process.env.OPENPARTNER_TENANCY = 'multi';
+    try {
+      expect(networkTier()).toBe('hosted');
+    } finally {
+      process.env.OPENPARTNER_TENANCY = 'single';
+    }
   });
 });
 

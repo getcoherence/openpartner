@@ -29,6 +29,7 @@ import type { Knex } from 'knex';
 import { TABLES, type AudienceSize, type NetworkOutboxRow } from '@openpartner/db';
 import { decryptSecret, encryptSecret } from './crypto.js';
 import { getWhiteLabelState } from './white-label.js';
+import { getTenancyMode } from './tenancy.js';
 import { bookingFeeBpsFor } from './booking-fee.js';
 import { resolveBrandName } from './brand-name.js';
 import { CLIENT_IP_HEADER, signClientIp } from './routes/creator-portal.js';
@@ -72,6 +73,17 @@ interface PublicNetworkMembership {
   /** The Network's key may pay bonuses (`bonuses:write`). Keys issued
    *  before Network bounties lack it until the brand re-authorizes. */
   bonusesAuthorized: boolean;
+  /** What this instance registers as (networkTier). The portal shows
+   *  Network billing only to self_hosted. */
+  tier: NetworkTier;
+}
+
+export type NetworkTier = 'hosted' | 'self_hosted';
+
+/** The tier this deployment registers with the Network. Hosted plans
+ *  include Network access; a self-hosted instance subscribes to it. */
+export function networkTier(): NetworkTier {
+  return getTenancyMode() === 'multi' ? 'hosted' : 'self_hosted';
 }
 
 /** The scope POST /bonuses needs; part of NETWORK_FEDERATION_SCOPES. */
@@ -98,6 +110,7 @@ export async function getPublicNetworkMembership(
       scopedKeyId: null,
       autoEnroll: false,
       bonusesAuthorized: false,
+      tier: networkTier(),
     };
   }
   return {
@@ -107,6 +120,7 @@ export async function getPublicNetworkMembership(
     scopedKeyId: m.scopedKeyId,
     autoEnroll: m.autoEnroll,
     bonusesAuthorized: await federationKeyHasScope(db, tenantId, m.scopedKeyId, NETWORK_BONUS_SCOPE),
+    tier: networkTier(),
   };
 }
 

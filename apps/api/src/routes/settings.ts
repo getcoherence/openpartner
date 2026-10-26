@@ -38,6 +38,7 @@ import {
   NETWORK_BONUS_SCOPE,
   NetworkProxyError,
   networkProxy,
+  networkTier,
   saveNetworkMembership,
   sendHeartbeat,
   signupWithNetwork,
@@ -713,7 +714,7 @@ settingsRouter.post('/config/network/start-connect', requireAuth, requireAdmin, 
       displayName: body.data.displayName ?? (tenantSlug ? tenantSlug : 'OpenPartner instance'),
       contactEmail: body.data.contactEmail ?? '',
       contactName: body.data.contactName,
-      tier: process.env.OPENPARTNER_TENANCY === 'multi' ? 'hosted' : 'self_hosted',
+      tier: networkTier(),
       portalCallbackUrl: body.data.portalCallbackUrl ?? inferredCallback,
     });
   } catch (err) {
