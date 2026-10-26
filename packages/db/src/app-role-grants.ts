@@ -8,9 +8,12 @@
  * every grant from scripts/ensure-app-role.ts, which applies these lists
  * on every boot. So every table the app role touches must be listed here,
  * under its current name and with the privileges its migration grants.
- * apps/api/src/__tests__/app-role-grants.test.ts fails when a table with
- * row-level security is missing, a listed table no longer exists, or a
- * listed grant is wider than the migration's.
+ * (PlatformSession is the one exception: no migration grants it, and the
+ * boot script always has.) apps/api/src/__tests__/app-role-grants.test.ts
+ * fails when a table with row-level security is missing, a listed table no
+ * longer exists, or a listed grant is wider than the migration's; CI
+ * provisions openpartner_app at migrate time so that last check has the
+ * migrations' grants to compare against.
  *
  * Deliberately not derived from pg_policies: a derived list would give
  * full DML to every RLS table missing from RESTRICTED_GRANTS, so a
@@ -43,7 +46,8 @@ export const TENANT_TABLES = [
   'MagicLinkToken',
   'Session',
   // No tenantId and no RLS (email-keyed workspace-picker sessions), but
-  // granted all the same, as they always have been.
+  // granted all the same: PlatformSessionBundle by its migration,
+  // PlatformSession only ever by the boot script.
   'PlatformSession',
   'PlatformSessionBundle',
   'WebhookEndpoint',

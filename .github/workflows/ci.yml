@@ -61,8 +61,15 @@ jobs:
       - name: Build @openpartner/db
         run: pnpm --filter @openpartner/db build
 
+      # Provision openpartner_app at migrate time, as a deployment with the
+      # password set from day one does, so each migration's own conditional
+      # grant lands on it. app-role-grants.test.ts compares the boot script's
+      # grants against those, and the RLS tests that SET ROLE openpartner_app
+      # run instead of skipping. CI-only password; the role never logs in here.
       - name: Migrate
         run: pnpm migrate
+        env:
+          OPENPARTNER_APP_DB_PASSWORD: ci_app_role_only
 
       - name: Lint
         run: pnpm lint

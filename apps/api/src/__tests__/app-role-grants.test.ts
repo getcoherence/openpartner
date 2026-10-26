@@ -10,8 +10,11 @@
  * RLS-pool query on Program with "permission denied".
  *
  * The scratch-role test needs a superuser connection (CI and local docker
- * have one) to create and SET ROLE to a throwaway role; the migration-parity
- * test needs openpartner_app to have existed before migrate (dev DBs, not CI).
+ * have one) to create and SET ROLE to a throwaway role. The migration-parity
+ * test needs openpartner_app to have existed when the migrations ran: CI
+ * provisions it at migrate time (.github/workflows/ci.yml) and the test
+ * refuses to pass vacuously there. On a dev DB where ensure-app-role has
+ * run, the role holds the script's own grants and the check proves nothing.
  */
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -35,6 +38,9 @@ const listed = new Map<string, string[]>([
   ]),
 ]);
 
+// No migration grants it; the boot script always has.
+const BOOT_SCRIPT_ONLY = new Set(['PlatformSession']);
+
 const scratchRole = `op_grants_test_${randomBytes(4).toString('hex')}`;
 let scratchRoleCreated = false;
 
@@ -46,6 +52,7 @@ async function privileges(role: string): Promise<Map<string, string[]>> {
        join pg_namespace n on n.oid = c.relnamespace
        cross join lateral aclexplode(c.relacl) a
       where n.nspname = 'public'
+        and c.relkind in ('r', 'p')
         and a.grantee = (select oid from pg_roles where rolname = ?)
       group by c.relname`,
     [role],
@@ -107,11 +114,8 @@ describe.skipIf(skipIntegration)('app-role grants against the migrated schema', 
   it('give a freshly provisioned role exactly the listed privileges', async () => {
     if (!scratchRoleCreated) return;
     await grantAppRole(db, scratchRole);
-    const held = await privileges(scratchRole);
-    const wrong = [...listed]
-      .filter(([t, privs]) => held.get(t)?.join() !== privs.join())
-      .map(([t, privs]) => `${t}: want ${privs.join()}, got ${held.get(t)?.join() ?? 'nothing'}`);
-    expect(wrong).toEqual([]);
+    // Whole maps, so a grant on an unlisted table fails too.
+    expect(Object.fromEntries(await privileges(scratchRole))).toEqual(Object.fromEntries(listed));
 
     // The query that failed on Oct 26 2026, now under RLS as that role.
     await db.transaction(async (trx) => {
@@ -123,16 +127,21 @@ describe.skipIf(skipIntegration)('app-role grants against the migrated schema', 
 
   it('grant no table more than its own migration granted openpartner_app', async () => {
     // Only meaningful where openpartner_app existed when the migrations
-    // ran, so each one's conditional grant landed on it. Tables it holds
-    // nothing on (CI, or the app_role migration's own list on a DB
-    // migrated without OPENPARTNER_APP_DB_PASSWORD) are skipped.
+    // ran, so each one's conditional grant landed on it. CI guarantees
+    // that, so there a listed table no migration grants (one deliberately
+    // kept off the app role, like PasswordCredential) fails too. Elsewhere
+    // such tables are skipped: a dev DB migrated without
+    // OPENPARTNER_APP_DB_PASSWORD lacks the app_role migration's grants.
     const fromMigrations = await privileges('openpartner_app');
+    const strict = Boolean(process.env.CI);
+    if (strict) expect(fromMigrations.size, 'CI migrates with the app role provisioned').toBeGreaterThan(0);
     const wider = [...listed]
       .filter(([t, privs]) => {
         const had = fromMigrations.get(t);
-        return had && privs.some((p) => !had.includes(p));
+        if (!had) return strict && !BOOT_SCRIPT_ONLY.has(t);
+        return privs.some((p) => !had.includes(p));
       })
-      .map(([t, privs]) => `${t}: listed ${privs.join()}, migration ${fromMigrations.get(t)!.join()}`);
+      .map(([t, privs]) => `${t}: listed ${privs.join()}, migration ${fromMigrations.get(t)?.join() ?? 'nothing'}`);
     expect(wider).toEqual([]);
   });
 });
