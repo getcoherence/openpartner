@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link, useNavigate } from 'react-router';
 import { CheckCircle2, Circle, Globe, HelpCircle } from 'lucide-react';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
@@ -770,10 +770,24 @@ interface RequestRow {
   status: string;
 }
 
+/** The parts of GET /creators/me/storefront the checklist reads. */
+interface StorefrontStatus {
+  bookingsOpen: boolean;
+  packages: unknown[];
+  /** "No thanks" to the storefront step. Absent on an older Network,
+   *  which can't remember it, so the step isn't offered there. */
+  setupDismissedAt?: string | null;
+}
+
+const STOREFRONT_KEY = ['creator-storefront'];
+
 /** Nudge for new creators: finish the profile (the Network's discovery
- *  bar, so brands can find them), get approved, and send a first
- *  application. Card disappears once all are done. */
+ *  bar, so brands can find them), get approved, set up a storefront or
+ *  say no thanks, and join a first program. Card disappears once all are
+ *  done. */
 function CreatorOnboarding() {
+  const navigate = useNavigate();
+  const qc = useQueryClient();
   const profile = useQuery({
     queryKey: ['creator-my-profile'],
     queryFn: () => creatorApi<CreatorProfile>('/creators/me'),
@@ -786,52 +800,97 @@ function CreatorOnboarding() {
     staleTime: 30_000,
     retry: false,
   });
+  // A partnership a brand started (an invite, a booking) is a first program too.
+  const affiliations = useQuery({
+    queryKey: ['creator-my-affiliations'],
+    queryFn: () => creatorApi<{ affiliations: unknown[] }>('/creators/me/affiliations'),
+    staleTime: 30_000,
+    retry: false,
+  });
+  const storefront = useQuery({
+    queryKey: STOREFRONT_KEY,
+    queryFn: () => creatorApi<StorefrontStatus>('/creators/me/storefront'),
+    staleTime: 30_000,
+    retry: false,
+  });
+  const noThanks = useMutation({
+    mutationFn: () => creatorApi<{ setupDismissedAt: string | null }>('/creators/me/storefront', { method: 'PUT', body: { setupDismissed: true } }),
+    onSuccess: (r) => qc.setQueryData<StorefrontStatus>(STOREFRONT_KEY, (s) => (s ? { ...s, setupDismissedAt: r.setupDismissedAt } : s)),
+  });
 
-  if (!profile.data) return null;
+  // Wait for everything, so a done card doesn't flash up while loading.
+  if (!profile.data || requests.isPending || affiliations.isPending || storefront.isPending) return null;
   // Older Network without the completeness fields: fall back to the
   // handle + bio check this card used before.
   const profileDone =
     profile.data.profileComplete ?? (!!profile.data.handle && !!profile.data.bio && profile.data.bio.length > 0);
   const missing = profile.data.profileMissing ?? [];
-  const hasApplied = (requests.data?.requests ?? []).length > 0;
+  const joined = (requests.data?.requests ?? []).length > 0 || (affiliations.data?.affiliations ?? []).length > 0;
   // An older Network has no review step.
   const review = profile.data.reviewStatus;
   const approved = !review || review === 'approved';
-  if (profileDone && approved && hasApplied) return null;
+  const sf = storefront.data;
+  const offerStorefront = !!sf && sf.setupDismissedAt === null;
+  const storefrontDone = !!sf?.bookingsOpen;
+  if (profileDone && approved && (!offerStorefront || storefrontDone) && joined) return null;
 
-  const items = [
-    { done: true, label: 'Account created', href: null as string | null },
+  const items: Array<{ key: string; done: boolean; label: string; hint: string; action?: ReactNode }> = [
     {
+      key: 'profile',
       done: profileDone,
       label: 'Complete your profile so brands can find you',
-      hint: profileDone
-        ? 'You show up when brands search the Network for creators.'
-        : missing.length > 0
-          ? `Still needed: ${missing.map((m) => m.label.toLowerCase()).join(', ')}.`
-          : 'Add a handle, photo, bio, a category, and a social platform.',
-      href: '/creator/profile',
+      hint: missing.length > 0
+        ? `Still needed: ${missing.map((m) => m.label.toLowerCase()).join(', ')}.`
+        : 'Add a handle, photo, bio, a category, and a social platform.',
+      action: (
+        <Button size="sm" variant="secondary" onClick={() => navigate('/creator/profile')}>
+          Finish profile
+        </Button>
+      ),
     },
     ...(review
       ? [
           {
+            key: 'review',
             done: approved,
             label: 'Get approved by OpenPartner',
-            hint: approved
-              ? 'Your profile is approved.'
-              : review === 'rejected'
+            hint:
+              review === 'rejected'
                 ? 'Your profile wasn’t approved for the OpenPartner Network.'
                 : 'We check every new creator profile before brands see it.',
-            href: null,
+          },
+        ]
+      : []),
+    ...(offerStorefront
+      ? [
+          {
+            key: 'storefront',
+            done: storefrontDone,
+            label: 'Set up your storefront',
+            hint:
+              sf.packages.length === 0
+                ? 'List what you sell to brands, with your prices, so they can book you directly.'
+                : 'Connect Stripe and turn on bookings, and brands can book your packages.',
+            action: (
+              <>
+                <Button size="sm" variant="ghost" onClick={() => noThanks.mutate()} disabled={noThanks.isPending}>
+                  No thanks
+                </Button>
+                <Button size="sm" variant="secondary" onClick={() => navigate('/creator/storefront')}>
+                  Set up
+                </Button>
+              </>
+            ),
           },
         ]
       : []),
     {
-      done: hasApplied,
+      key: 'apply',
+      done: joined,
       label: 'Apply to your first program',
       hint: approved
         ? 'Browse below and click "View & apply" on anything that fits.'
         : 'You can apply once your profile is approved. Browse below in the meantime.',
-      href: null,
     },
   ];
 
@@ -839,23 +898,25 @@ function CreatorOnboarding() {
     <Card style={{ marginBottom: 18 }}>
       <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>Getting started</div>
       <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 14 }}>
-        Brands only see complete profiles when they search for creators. Card disappears when done.
+        Brands only find complete, approved profiles. This card goes away once you&rsquo;re done.
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {items.map((it, i) => (
-          <CreatorStep key={i} done={it.done} label={it.label} hint={it.hint} href={it.href} />
+        {items.map((it) => (
+          <CreatorStep key={it.key} done={it.done} label={it.label} hint={it.hint} action={it.action} />
         ))}
       </div>
+      <ErrorBanner error={noThanks.error} />
     </Card>
   );
 }
 
-function CreatorStep({ done, label, hint, href }: { done: boolean; label: string; hint?: string; href: string | null }) {
-  const inner = (
+function CreatorStep({ done, label, hint, action }: { done: boolean; label: string; hint?: string; action?: ReactNode }) {
+  return (
     <div
       style={{
         display: 'flex',
         alignItems: 'center',
+        flexWrap: 'wrap',
         gap: 12,
         padding: '10px 12px',
         background: done ? theme.successSoft : theme.surface2,
@@ -866,14 +927,13 @@ function CreatorStep({ done, label, hint, href }: { done: boolean; label: string
       <div style={{ color: done ? theme.success : theme.textDim, display: 'inline-flex' }}>
         {done ? <CheckCircle2 size={18} /> : <Circle size={18} />}
       </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ flex: '1 1 220px', minWidth: 0 }}>
         <div style={{ fontSize: 14, fontWeight: 500, color: theme.text, textDecoration: done ? 'line-through' : 'none' }}>
           {label}
         </div>
         {hint && !done && <div style={{ fontSize: 12, color: theme.textDim, marginTop: 2 }}>{hint}</div>}
       </div>
+      {action && !done && <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginLeft: 'auto' }}>{action}</div>}
     </div>
   );
-  if (done || !href) return inner;
-  return <Link to={href} style={{ textDecoration: 'none' }}>{inner}</Link>;
 }
