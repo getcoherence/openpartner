@@ -33,6 +33,7 @@ import * as settings from '../routes/settings.js';
 import * as payouts from '../routes/payouts.js';
 import * as paypal from '../routes/paypal.js';
 import * as referrals from '../routes/referrals.js';
+import * as journey from '../routes/journey.js';
 import { EXPORTABLE_TABLES } from '../export.js';
 import { MAX_IP_ALLOWLIST } from '../conversion-postback.js';
 import type { OperationRegistry } from './registry.js';
@@ -2011,5 +2012,33 @@ Newest referral first: the customer who most recently became the partner's refer
     body: referrals.settingsSchema.openapi('UpdateReferralSettingsRequest'),
     responses: { 200: { description: 'The saved setting.', schema: S.ReferralSettings } },
     errors: { 400: ['duplicate_stage', 'corrective_stage'] },
+  });
+
+  // ------------------------------------------------------- Customer journey
+  r.operation({
+    method: 'get',
+    path: '/events/:id/journey',
+    tag: 'Attribution',
+    operationId: 'getEventJourney',
+    summary: 'Who got credit for a conversion, and why',
+    description:
+      "The journey of the event's customer: every partner touch linked to them (link clicks and codes), oldest first, and their events. `selected` explains this event: what became of each touch (credited, outside its window, a code that gave way to a link…), how the credit was decided, and who each attribution model would credit over the same touches. `recorded` is what was actually written and earned. Only partner touches are recorded, so paid search, organic and direct visits are gaps in the path, not steps.",
+    access: { kind: 'admin' },
+    responses: { 200: { description: 'The journey.', schema: S.Journey } },
+    errors: { 404: ['event_not_found'] },
+  });
+
+  r.operation({
+    method: 'get',
+    path: '/customers/:userId/journey',
+    tag: 'Attribution',
+    operationId: 'getCustomerJourney',
+    summary: "A customer's partner journey",
+    description:
+      'The same journey, looked up by your customer id. `selected` explains `?eventId=`, or without it the customer\'s latest conversion.',
+    access: { kind: 'admin' },
+    query: journey.customerJourneyQuerySchema,
+    responses: { 200: { description: 'The journey.', schema: S.Journey } },
+    errors: { 400: ['invalid_user_id'], 404: ['customer_not_found', 'event_not_found'] },
   });
 }

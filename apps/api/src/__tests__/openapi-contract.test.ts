@@ -466,6 +466,20 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     ]);
     check('listPartnerReferrals', await integration.get(`/partners/${partner.id}/referrals?cursor=nope`));
     check('listPartnerReferrals', await integration.get('/partners/missing/referrals'));
+
+    // --- Who got credit for that customer's conversions, and why.
+    const journey = check<{ userId: string; touches: Array<{ partner: { id: string } }>; events: Array<{ id: string; type: string }>; selected: { status: string } | null }>(
+      'getCustomerJourney',
+      await admin.get('/customers/friend_1/journey'),
+    );
+    expect(journey.userId).toBe('friend_1');
+    expect(journey.touches.map((t) => t.partner.id)).toContain(partner.id);
+    expect(journey.selected?.status).toBe('credited');
+    const paidEvent = journey.events.find((e) => e.type === 'invoice_paid')!;
+    check('getEventJourney', await admin.get(`/events/${paidEvent.id}/journey`));
+    check('getEventJourney', await admin.get('/events/missing/journey'));
+    check('getCustomerJourney', await admin.get(`/customers/friend_1/journey?eventId=${paidEvent.id}`));
+    check('getCustomerJourney', await admin.get('/customers/nobody/journey'));
     // Two-tier recruiting: no program pays a share here, so no link.
     const recruits = check<{ recruitUrl: string | null; recruits: unknown[]; total: number }>(
       'getPartnerRecruits',
