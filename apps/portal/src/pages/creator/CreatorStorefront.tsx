@@ -15,11 +15,13 @@ import { Button, Card, ErrorBanner, Input, Label, Page, Select, StatusPill, Text
 import { theme } from '../../theme.js';
 import { useMediaQuery } from '../../lib/useMediaQuery.js';
 import { MARKETPLACE_CREATORS_URL, publicStorefrontUrl } from '../../lib/public-site.js';
-import type { NetworkProfile } from '../../lib/NetworkProfileEditor.js';
+import { PLATFORMS, VERIFIABLE, VerifyAccountDialog, type NetworkProfile, type Platform } from '../../lib/NetworkProfileEditor.js';
 import { creatorApi } from './creator-api.js';
+import { creatorProfileAdapter } from './CreatorMyProfile.js';
 import { ChannelHeader } from './StorefrontSection.js';
 import { PreviewColumn, StorefrontPreview } from './StorefrontPreview.js';
 import {
+  audienceNoun,
   formatPackagePrice,
   groupByChannel,
   parsePackagePrice,
@@ -69,6 +71,9 @@ type Editing =
   | { kind: 'package'; id: string }
   | { kind: 'new'; platform: string | null; template: PackageTemplate | null }
   | { kind: 'channel'; platform: string }
+  /** Adding a channel here, rather than on the profile (`platform`: one
+   *  picked already, from a block of packages without its account). */
+  | { kind: 'add-channel'; platform: string | null }
   | null;
 
 export function CreatorStorefrontPage() {
@@ -193,15 +198,20 @@ export function CreatorStorefrontPage() {
         error={toggle.error}
         onToggle={() => toggle.mutate(!data.bookingsOpen)}
       />
-      {channels.length === 0 && (
-        <Card>
-          <div style={{ fontSize: 13, color: theme.textMuted }}>
-            Add the channels you publish on so brands can see your audience on each.{' '}
-            <Link to="/creator/profile" style={{ color: theme.accentText }}>Add channels on your profile</Link>
-          </div>
-        </Card>
-      )}
-      {groups.map((g) => (
+      {groups.map((g) => [
+        // New channels go in after the others, before "Across channels".
+        g.key === 'any' && (
+          <AddChannelCard
+            key="add-channel"
+            channels={channels}
+            open={editing?.kind === 'add-channel'}
+            initialPlatform={editing?.kind === 'add-channel' ? editing.platform : null}
+            onOpen={() => setEditing({ kind: 'add-channel', platform: null })}
+            onCancel={() => setEditing(null)}
+            // Straight on to the new channel's pitch.
+            onAdded={(platform) => setEditing({ kind: 'channel', platform })}
+          />
+        ),
         <GroupCard
           key={g.key}
           group={g}
@@ -222,8 +232,8 @@ export function CreatorStorefrontPage() {
                 }
               : null
           }
-        />
-      ))}
+        />,
+      ])}
       {atCap && (
         <p style={{ color: theme.textMuted, fontSize: 13, margin: 0 }}>
           That&rsquo;s the maximum of {data.maxPackages} packages. Delete one to add another.
@@ -367,6 +377,158 @@ function BookingsCard({
 }
 
 /** One channel (or "across channels"): its pitch, its packages, and adding more from templates. */
+/**
+ * Add a channel without leaving the storefront: a platform the creator
+ * hasn't listed, its handle, and (optionally) its audience. Once added the
+ * channel's block opens on its pitch, with its package templates under it.
+ * Counts are self-reported until the account is verified (YouTube, a
+ * website): the block's Verify then badges it, and a verified YouTube
+ * channel's numbers are kept up to date by the Network.
+ */
+function AddChannelCard({
+  channels,
+  open,
+  initialPlatform,
+  onOpen,
+  onCancel,
+  onAdded,
+}: {
+  channels: StorefrontChannel[];
+  open: boolean;
+  initialPlatform: string | null;
+  onOpen: () => void;
+  onCancel: () => void;
+  onAdded: (platform: string) => void;
+}) {
+  const qc = useQueryClient();
+  const remaining = PLATFORMS.filter((p) => !channels.some((c) => c.platform === p.kind));
+  const firstChoice = remaining.find((p) => p.kind === initialPlatform)?.kind ?? remaining[0]?.kind ?? null;
+  const [platform, setPlatform] = useState<Platform | null>(firstChoice);
+  const [handle, setHandle] = useState('');
+  const [followers, setFollowers] = useState('');
+  useEffect(() => {
+    if (open) {
+      setPlatform(firstChoice);
+      setHandle('');
+      setFollowers('');
+    }
+    // Reset each time the form opens, on the platform it was opened for.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialPlatform]);
+
+  const add = useMutation({
+    mutationFn: (p: Platform) =>
+      creatorProfileAdapter.putPlatform(p, { handle: handle.trim(), followerCount: followers.trim() === '' ? null : Number(followers) }),
+    onSuccess: async (_r, p) => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: STOREFRONT_KEY }),
+        qc.invalidateQueries({ queryKey: PLATFORMS_KEY }),
+        // Platforms count toward the profile checklist.
+        qc.invalidateQueries({ queryKey: PROFILE_KEY }),
+      ]);
+      onAdded(p);
+    },
+  });
+
+  if (remaining.length === 0) return null;
+  const choice = PLATFORMS.find((p) => p.kind === platform);
+  const noun = audienceNoun(platform ?? '');
+  const followerCount = Number(followers);
+  const followersValid = followers.trim() === '' || (Number.isInteger(followerCount) && followerCount >= 0);
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={onOpen}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          width: '100%',
+          padding: '14px 18px',
+          border: `1px dashed ${theme.border}`,
+          borderRadius: theme.radiusMd,
+          background: 'transparent',
+          color: theme.text,
+          font: 'inherit',
+          textAlign: 'left',
+          cursor: 'pointer',
+        }}
+      >
+        <Plus size={16} style={{ color: theme.accentText, flexShrink: 0 }} />
+        <span style={{ minWidth: 0 }}>
+          <span style={{ display: 'block', fontSize: 14, fontWeight: 500 }}>Add a channel</span>
+          <span style={{ display: 'block', fontSize: 12.5, color: theme.textMuted, marginTop: 2 }}>
+            {remaining
+              .slice(0, 4)
+              .map((p) => p.label)
+              .join(', ')}
+            {remaining.length > 4 ? ' and more' : ''}: your audience there, then packages for it.
+          </span>
+        </span>
+      </button>
+    );
+  }
+
+  return (
+    <Card>
+      <div style={{ fontSize: 14, fontWeight: 600 }}>Add a channel</div>
+      <div style={{ fontSize: 12.5, color: theme.textMuted, marginTop: 2, marginBottom: 14 }}>
+        Brands see it on your storefront with its audience, above the packages you list for it.
+      </div>
+      {/* Wraps: beside the live preview the editor column is narrow. */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
+        <div style={{ flex: '1 1 140px', maxWidth: 200 }}>
+          <Label>Channel</Label>
+          <Select aria-label="Channel" value={platform ?? ''} onChange={(e) => setPlatform(e.target.value as Platform)}>
+            {remaining.map((p) => (
+              <option key={p.kind} value={p.kind}>
+                {p.label}
+              </option>
+            ))}
+          </Select>
+        </div>
+        <div style={{ flex: '3 1 200px', minWidth: 0 }}>
+          <Label>{platform === 'website' || platform === 'podcast' ? 'Address' : 'Handle'}</Label>
+          <Input
+            aria-label="Handle"
+            // Also brings the form into view when opened from a block above.
+            autoFocus
+            value={handle}
+            onChange={(e) => setHandle(e.target.value)}
+            placeholder={choice?.placeholder}
+            style={{ fontFamily: theme.fontMono, fontSize: 13 }}
+          />
+        </div>
+        <div style={{ flex: '1 1 130px', maxWidth: 180 }}>
+          <Label>
+            {noun[0]!.toUpperCase()}
+            {noun.slice(1)} (optional)
+          </Label>
+          <Input aria-label="Audience" type="number" min={0} value={followers} onChange={(e) => setFollowers(e.target.value)} placeholder="e.g. 12000" />
+        </div>
+      </div>
+      <div style={{ fontSize: 12.5, color: theme.textMuted, marginTop: 10, lineHeight: 1.5 }}>
+        {platform === 'youtube'
+          ? 'Self-reported until you verify it. Once it’s added, Verify gives it a verified badge and keeps your subscribers and views per video up to date.'
+          : platform && VERIFIABLE.has(platform)
+            ? 'Self-reported until you verify it. Once it’s added, Verify gives it a verified badge.'
+            : 'Shown to brands as self-reported.'}
+      </div>
+      <ErrorBanner error={add.error} />
+      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+        <Button onClick={() => platform && add.mutate(platform)} disabled={!platform || !handle.trim() || !followersValid || add.isPending}>
+          {add.isPending ? 'Adding…' : 'Add channel'}
+        </Button>
+        <Button variant="ghost" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
 function GroupCard({
   group,
   editing,
@@ -390,6 +552,8 @@ function GroupCard({
   onMovePackage: (index: number, delta: -1 | 1) => void;
   groupMove: { first: boolean; last: boolean; onMove: (delta: -1 | 1) => void } | null;
 }) {
+  const qc = useQueryClient();
+  const [verifying, setVerifying] = useState(false);
   const label = group.platform ? (PLATFORM_LABELS[group.platform] ?? group.platform) : 'Across channels';
   const editingPitch = editing?.kind === 'channel' && editing.platform === group.platform;
   const adding = editing?.kind === 'new' && editing.platform === group.platform ? editing : null;
@@ -408,7 +572,13 @@ function GroupCard({
                 {group.platform ? (
                   <>
                     You haven&rsquo;t added your {label} account, so brands don&rsquo;t see your audience there.{' '}
-                    <Link to="/creator/profile" style={{ color: theme.accentText }}>Add it on your profile</Link>
+                    <button
+                      type="button"
+                      onClick={() => setEditing({ kind: 'add-channel', platform: group.platform })}
+                      style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', color: theme.accentText, cursor: 'pointer' }}
+                    >
+                      Add your {label} account
+                    </button>
                   </>
                 ) : (
                   'Bundles and work that isn’t tied to one channel.'
@@ -428,6 +598,11 @@ function GroupCard({
               </Button>
             </>
           )}
+          {group.channel && !group.channel.verified && VERIFIABLE.has(group.channel.platform as Platform) && (
+            <Button size="sm" variant="ghost" onClick={() => setVerifying(true)}>
+              Verify
+            </Button>
+          )}
           {group.channel && !editingPitch && (
             <Button size="sm" variant="secondary" onClick={() => setEditing({ kind: 'channel', platform: group.platform! })}>
               {group.channel.description || group.channel.cadence ? 'Edit pitch' : 'Add pitch'}
@@ -435,6 +610,19 @@ function GroupCard({
           )}
         </div>
       </div>
+      {verifying && group.channel && (
+        <VerifyAccountDialog
+          adapter={creatorProfileAdapter}
+          platform={group.channel.platform as Platform}
+          label={label}
+          handle={group.channel.handle}
+          onClose={() => setVerifying(false)}
+          onVerified={() => {
+            void qc.invalidateQueries({ queryKey: STOREFRONT_KEY });
+            void qc.invalidateQueries({ queryKey: PLATFORMS_KEY });
+          }}
+        />
+      )}
 
       {editingPitch && group.channel && (
         <div style={{ marginTop: 14 }}>

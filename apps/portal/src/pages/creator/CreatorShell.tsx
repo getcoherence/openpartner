@@ -243,7 +243,7 @@ function CreatorSidebar({ creator, variant = 'sidebar' }: { creator: NonNullable
           <CreatorNavItem to="/creator/requests" icon={<Inbox size={16} />}>My applications</CreatorNavItem>
         </NavSection>
         <NavSection title="Storefront">
-          <CreatorNavItem to="/creator/storefront" icon={<Store size={16} />}>Packages</CreatorNavItem>
+          <CreatorNavItem to="/creator/storefront" icon={<Store size={16} />}>Setup</CreatorNavItem>
           <CreatorNavItem to="/creator/messages" icon={<MessagesSquare size={16} />}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
               Messages <UnreadDot count={unread} />
