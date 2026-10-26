@@ -507,8 +507,7 @@ function VendorBookingCard({
         )}
         {b.status === 'awaiting_payment' && !b.paymentProcessing && lines && (
           <>
-            You pay <strong style={{ color: theme.text }}>{lines.total}</strong>: {lines.price} to {creatorName} and the {lines.fee} OpenPartner booking fee. The
-            booking is confirmed once you pay, and {creatorName} starts then. Payment goes to {creatorName}&rsquo;s own Stripe account.
+            You pay <strong style={{ color: theme.text }}>{lines.total}</strong>: {lines.price} to {creatorName} and the {lines.fee} OpenPartner booking fee.
           </>
         )}
         {b.status === 'paid' && <>Paid {formatDate(b.paidAt)}. {creatorName} is working on it and marks it delivered once it&rsquo;s live.</>}
