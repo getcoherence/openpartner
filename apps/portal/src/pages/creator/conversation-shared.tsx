@@ -11,7 +11,7 @@
  * http(s) links become links (conversation-media.tsx).
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type ReactNode } from 'react';
-import { ArrowUp, LoaderCircle, Plus, X } from 'lucide-react';
+import { ArrowUp, LoaderCircle, MessagesSquare, Plus, X } from 'lucide-react';
 import { Button } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
 import { useIsMobile } from '../../lib/useMediaQuery.js';
@@ -226,7 +226,8 @@ export function Thread({
 }) {
   const drawn = new Set<string>();
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+    // The gap leaves room for a message's time, shown under it on hover.
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       {hasMore && onLoadEarlier && (
         <div style={{ textAlign: 'center' }}>
           <Button size="sm" variant="ghost" onClick={onLoadEarlier} disabled={loadingEarlier}>
@@ -250,10 +251,16 @@ export function Thread({
         const images = m.attachments ?? [];
         return (
           <div key={m.id} style={{ display: 'flex', justifyContent: mine ? 'flex-end' : 'flex-start' }}>
-            <div style={{ maxWidth: 'min(560px, 85%)', display: 'flex', flexDirection: 'column', gap: 6, alignItems: mine ? 'flex-end' : 'flex-start' }}>
-              <div style={{ fontSize: 11, color: theme.textDim, textAlign: mine ? 'right' : 'left' }}>
-                {mine ? 'You' : who} · {timeLabel(m.createdAt)}
-              </div>
+            {/* The side says whose it is; who exactly (one of several at a
+                brand) is the hover tooltip. The time sits under the message,
+                over the gap, and shows while it's hovered or tapped
+                (.op-msg in global.css), so nothing moves when it appears. */}
+            <div
+              className="op-msg"
+              tabIndex={-1}
+              title={mine ? undefined : who}
+              style={{ position: 'relative', maxWidth: 'min(560px, 85%)', display: 'flex', flexDirection: 'column', gap: 6, alignItems: mine ? 'flex-end' : 'flex-start', outline: 'none' }}
+            >
               {images.length > 0 && <AttachmentGrid attachments={images} load={loadAttachment} align={mine ? 'right' : 'left'} />}
               {m.body && (
                 <div
@@ -271,6 +278,23 @@ export function Thread({
                   <Linkified text={m.body} />
                 </div>
               )}
+              <time
+                className="op-msg-time"
+                dateTime={m.createdAt}
+                style={{
+                  position: 'absolute',
+                  top: '100%',
+                  [mine ? 'right' : 'left']: 4,
+                  marginTop: 1,
+                  fontSize: 11,
+                  lineHeight: '14px',
+                  color: theme.textDim,
+                  whiteSpace: 'nowrap',
+                  pointerEvents: 'none',
+                }}
+              >
+                {timeLabel(m.createdAt)}
+              </time>
             </div>
           </div>
         );
@@ -289,13 +313,164 @@ function EventNote({ text, at }: { text: string; at: string }) {
 
 /** The pane is never shorter than this, however little room the page leaves. */
 const MIN_PANE_HEIGHT = 360;
+/** The conversation reads as one column this wide at most, centred in the
+ *  pane, so the two sides stay close on a wide screen. */
+export const THREAD_MAX_WIDTH = 820;
 /** Within this of the bottom counts as reading the latest messages. */
 const NEAR_BOTTOM_PX = 80;
 
+/** The height that takes `el` from where it starts on the page to `gap`
+ *  above the window's bottom edge (at least MIN_PANE_HEIGHT). Re-measured on
+ *  every render (what's above may have changed) and on resize, including the
+ *  phone keyboard opening. */
+function useFillViewport(el: { current: HTMLElement | null }, gap: number): number | null {
+  const [height, setHeight] = useState<number | null>(null);
+  const measure = useRef(() => {});
+  measure.current = () => {
+    if (!el.current) return;
+    const top = el.current.getBoundingClientRect().top + window.scrollY;
+    const viewport = window.visualViewport?.height ?? window.innerHeight;
+    const next = Math.max(MIN_PANE_HEIGHT, Math.round(viewport - top - gap));
+    setHeight((current) => (current === next ? current : next));
+  };
+  useLayoutEffect(() => measure.current());
+  useEffect(() => {
+    const onResize = () => measure.current();
+    window.addEventListener('resize', onResize);
+    window.visualViewport?.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      window.visualViewport?.removeEventListener('resize', onResize);
+    };
+  }, []);
+  return height;
+}
+
 /**
- * A conversation laid out as a chat: the pane fills the window below what's
- * above it on the page, the messages (`children`) scroll inside it, and
- * `footer` (the message box) stays at its bottom, always in view.
+ * Messages as a chat app lays them out: one panel filling the window, the
+ * conversation list on the left and the open conversation on the right
+ * (`showThread` says whether one is open). On a phone there's room for one:
+ * the list, or the conversation.
+ *
+ * It ends 12px above the window's edge (8 on a phone) and the page around it
+ * has no bottom padding, so the page itself never scrolls; the list and the
+ * messages scroll inside.
+ */
+export function MessagesLayout({ list, thread, showThread }: { list: ReactNode; thread: ReactNode; showThread: boolean }) {
+  const isMobile = useIsMobile();
+  const panel = useRef<HTMLDivElement | null>(null);
+  const height = useFillViewport(panel, isMobile ? 8 : 12);
+  return (
+    <div style={{ padding: isMobile ? '12px 12px 0' : '24px 32px 0', maxWidth: 1280, margin: '0 auto' }}>
+      <div
+        ref={panel}
+        data-testid="messages-panel"
+        style={{
+          height: height ?? undefined,
+          minHeight: MIN_PANE_HEIGHT,
+          display: 'grid',
+          gridTemplateColumns: isMobile ? 'minmax(0, 1fr)' : 'minmax(260px, 340px) minmax(0, 1fr)',
+          gridTemplateRows: 'minmax(0, 1fr)',
+          background: theme.surface,
+          border: `1px solid ${theme.border}`,
+          borderRadius: theme.radiusMd,
+          overflow: 'hidden',
+        }}
+      >
+        {(!isMobile || !showThread) && (
+          <div style={{ minHeight: 0, display: 'flex', flexDirection: 'column', borderRight: isMobile ? 'none' : `1px solid ${theme.borderSubtle}` }}>{list}</div>
+        )}
+        {(!isMobile || showThread) && <div style={{ minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' }}>{thread}</div>}
+      </div>
+    </div>
+  );
+}
+
+/** The left column: a title (and an action), then the conversations,
+ *  scrolling on their own. */
+export function ConversationListPane({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
+  return (
+    <>
+      <div style={{ padding: '16px 16px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, borderBottom: `1px solid ${theme.borderSubtle}` }}>
+        <h1 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>{title}</h1>
+        {action}
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>{children}</div>
+    </>
+  );
+}
+
+/** A row in the conversation list; the open one is highlighted. */
+export function conversationRowStyle(active: boolean): CSSProperties {
+  return {
+    display: 'flex',
+    gap: 12,
+    alignItems: 'center',
+    padding: '12px 16px',
+    textDecoration: 'none',
+    color: theme.text,
+    background: active ? theme.surface2 : 'transparent',
+    boxShadow: active ? `inset 3px 0 0 ${theme.accent}` : 'none',
+    borderBottom: `1px solid ${theme.borderSubtle}`,
+  };
+}
+
+/** The right column when no conversation is open. */
+export function NoConversationOpen({ text }: { text: string }) {
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, padding: 24, textAlign: 'center', color: theme.textMuted }}>
+      <MessagesSquare size={30} strokeWidth={1.25} />
+      <div style={{ fontSize: 15, fontWeight: 500, color: theme.text }}>Choose a conversation</div>
+      <div style={{ fontSize: 13, maxWidth: 360, lineHeight: 1.5 }}>{text}</div>
+    </div>
+  );
+}
+
+/** The open conversation's top bar: who it's with, whether they're online,
+ *  and the actions; `children` (banners) below. `back` is the way to the list
+ *  on a phone. */
+export function ThreadHeader({
+  back,
+  face,
+  title,
+  subtitle,
+  presence,
+  actions,
+  children,
+}: {
+  back?: ReactNode;
+  face: ReactNode;
+  title: string;
+  subtitle?: string;
+  presence?: ReactNode;
+  actions?: ReactNode;
+  children?: ReactNode;
+}) {
+  const isMobile = useIsMobile();
+  return (
+    <div style={{ padding: isMobile ? '10px 12px' : '12px 20px', borderBottom: `1px solid ${theme.borderSubtle}` }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: isMobile ? 'wrap' : 'nowrap' }}>
+        {back}
+        {face}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 16, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</span>
+            {presence}
+          </div>
+          {subtitle && <div style={{ fontSize: 13, color: theme.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{subtitle}</div>}
+        </div>
+        {actions}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/**
+ * The open conversation's messages (`children`), scrolling, with `footer`
+ * (the message box) under them, always in view: it fills what's left of its
+ * column below the ThreadHeader. Both sit in one centred column
+ * (THREAD_MAX_WIDTH).
  *
  * It follows new messages while the reader is at the bottom, or wrote the
  * new one, and otherwise leaves them where they are reading. Earlier
@@ -315,34 +490,9 @@ export function ThreadPane({
   lastIsMine: boolean;
 }) {
   const isMobile = useIsMobile();
-  const pane = useRef<HTMLDivElement | null>(null);
   const scroller = useRef<HTMLDivElement | null>(null);
-  const [height, setHeight] = useState<number | null>(null);
   const atBottom = useRef(true);
   const seen = useRef<{ firstId?: string; lastId?: string; scrollHeight: number }>({ scrollHeight: 0 });
-  // The page's own bottom padding (ui.tsx Page): the pane ends where it does.
-  const bottomGap = isMobile ? 20 : 32;
-
-  const measure = useRef(() => {});
-  measure.current = () => {
-    const el = pane.current;
-    if (!el) return;
-    const top = el.getBoundingClientRect().top + window.scrollY;
-    const viewport = window.visualViewport?.height ?? window.innerHeight;
-    const next = Math.max(MIN_PANE_HEIGHT, Math.round(viewport - top - bottomGap));
-    setHeight((current) => (current === next ? current : next));
-  };
-  // What's above (a banner, the header wrapping) can change on any render.
-  useLayoutEffect(() => measure.current());
-  useEffect(() => {
-    const onResize = () => measure.current();
-    window.addEventListener('resize', onResize);
-    window.visualViewport?.addEventListener('resize', onResize);
-    return () => {
-      window.removeEventListener('resize', onResize);
-      window.visualViewport?.removeEventListener('resize', onResize);
-    };
-  }, []);
 
   useLayoutEffect(() => {
     const el = scroller.current;
@@ -369,19 +519,7 @@ export function ThreadPane({
   }, []);
 
   return (
-    <div
-      ref={pane}
-      style={{
-        height: height ?? undefined,
-        minHeight: MIN_PANE_HEIGHT,
-        display: 'flex',
-        flexDirection: 'column',
-        background: theme.surface,
-        border: `1px solid ${theme.border}`,
-        borderRadius: theme.radiusMd,
-        overflow: 'hidden',
-      }}
-    >
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
       <div
         ref={scroller}
         data-testid="thread-scroll"
@@ -391,9 +529,11 @@ export function ThreadPane({
         }}
         style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: isMobile ? 14 : 20 }}
       >
-        {children}
+        <div style={{ maxWidth: THREAD_MAX_WIDTH, margin: '0 auto' }}>{children}</div>
       </div>
-      <div style={{ borderTop: `1px solid ${theme.borderSubtle}`, padding: isMobile ? '6px 10px 10px' : '6px 16px 14px', background: theme.surface }}>{footer}</div>
+      <div style={{ borderTop: `1px solid ${theme.borderSubtle}`, padding: isMobile ? '8px 10px 6px' : '10px 16px 8px', background: theme.surface }}>
+        <div style={{ maxWidth: THREAD_MAX_WIDTH, margin: '0 auto' }}>{footer}</div>
+      </div>
     </div>
   );
 }
@@ -695,8 +835,8 @@ export function Composer({
         </button>
       </div>
       </div>
-      <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6, padding: '0 4px' }}>
-        {touch ? '' : 'Enter to send, Shift+Enter for a new line. '}Keep payments on OpenPartner: only bookings paid here are covered.
+      <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4, padding: '0 4px' }}>
+        Keep payments on OpenPartner: only bookings paid here are covered.
       </div>
     </div>
   );
@@ -736,11 +876,12 @@ export function PresenceBadge({ online }: { online: boolean | null }) {
   );
 }
 
-/** "Grace at Acme is typing…" under the thread. Keeps its line so the
- *  composer doesn't jump. */
+/** "Grace at Acme is typing…" above the message box. Takes no room while
+ *  nobody is: the box is pinned to the bottom (ThreadPane), so the line
+ *  appearing shrinks the messages, it doesn't move the box. */
 export function TypingNote({ name }: { name: string | null }) {
   return (
-    <div aria-live="polite" style={{ minHeight: 18, fontSize: 12, color: theme.textMuted, fontStyle: 'italic', marginTop: 8 }}>
+    <div aria-live="polite" style={{ fontSize: 12, color: theme.textMuted, fontStyle: 'italic', margin: name != null ? '0 0 6px 4px' : 0 }}>
       {name != null ? `${name || 'They'} ${name ? 'is' : 'are'} typing…` : ''}
     </div>
   );

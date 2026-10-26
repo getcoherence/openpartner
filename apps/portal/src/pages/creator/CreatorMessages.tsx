@@ -11,9 +11,10 @@
 import { useCallback, useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { MessagesSquare } from 'lucide-react';
-import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Textarea, formatDate } from '../../ui.js';
+import { ArrowLeft, MessagesSquare } from 'lucide-react';
+import { Button, EmptyState, ErrorBanner, Input, Label, Select, Textarea, formatDate } from '../../ui.js';
 import { theme } from '../../theme.js';
+import { useIsMobile } from '../../lib/useMediaQuery.js';
 import { creatorApi, creatorApiBlob } from './creator-api.js';
 import { creatorErrorCode, usePayments } from './CreatorPayments.js';
 import { PACKAGE_CURRENCIES, type OwnPackage } from './storefront-shared.js';
@@ -21,12 +22,17 @@ import { useConversationLive, type LiveTicket } from './conversation-live.js';
 import {
   BookingStatusPill,
   Composer,
+  ConversationListPane,
   Face,
+  MessagesLayout,
+  NoConversationOpen,
   PresenceBadge,
   Thread,
+  ThreadHeader,
   ThreadPane,
   TypingNote,
   UnreadDot,
+  conversationRowStyle,
   formatMinor,
   formatWholeAmount,
   previewLine,
@@ -127,39 +133,57 @@ function brandLabel(c: { brand: BrandFace | null; contactName: string | null }):
   return c.contactName ? `${c.contactName} at ${name}` : name;
 }
 
+/**
+ * Storefront → Messages: the conversation list beside the open conversation
+ * (MessagesLayout), at /creator/messages and /creator/messages/:id.
+ */
 export function CreatorMessagesPage() {
+  const { id } = useParams();
+  return (
+    <MessagesLayout
+      showThread={!!id}
+      list={<CreatorConversationList activeId={id} />}
+      thread={
+        id ? (
+          <CreatorThread key={id} id={id} />
+        ) : (
+          <NoConversationOpen text="Brands you’re talking to. Bookings live in the conversation: accept at your price, or send an offer." />
+        )
+      }
+    />
+  );
+}
+
+/** The same page, open on a conversation. */
+export const CreatorThreadPage = CreatorMessagesPage;
+
+function CreatorConversationList({ activeId }: { activeId: string | undefined }) {
   const list = useQuery({
     queryKey: ['creator-conversations'],
     queryFn: () => creatorApi<{ conversations: CreatorConversationSummary[]; unreadTotal: number }>('/creators/me/conversations'),
     refetchInterval: 30_000,
   });
   return (
-    <Page title="Messages" subtitle="Brands you’re talking to. Bookings live in the conversation: accept at your price, or send an offer.">
-      <ErrorBanner error={list.error} />
+    <ConversationListPane title="Messages">
+      {list.error && (
+        <div style={{ padding: 12 }}>
+          <ErrorBanner error={list.error} />
+        </div>
+      )}
       {list.isLoading ? (
-        <Card>Loading…</Card>
+        <div style={{ padding: 16, fontSize: 13, color: theme.textMuted }}>Loading…</div>
       ) : !list.data || list.data.conversations.length === 0 ? (
-        <EmptyState
-          title="No messages yet"
-          hint="When a brand messages you or requests one of your packages, it shows up here."
-          icon={<MessagesSquare size={28} strokeWidth={1.25} />}
-        />
+        <div style={{ padding: 16 }}>
+          <EmptyState
+            title="No messages yet"
+            hint="When a brand messages you or requests one of your packages, it shows up here."
+            icon={<MessagesSquare size={28} strokeWidth={1.25} />}
+          />
+        </div>
       ) : (
-        <Card padded={false}>
-          {list.data.conversations.map((c, i) => (
-            <Link
-              key={c.id}
-              to={`/creator/messages/${c.id}`}
-              style={{
-                display: 'flex',
-                gap: 12,
-                alignItems: 'center',
-                padding: '12px 16px',
-                textDecoration: 'none',
-                color: theme.text,
-                borderTop: i === 0 ? 'none' : `1px solid ${theme.borderSubtle}`,
-              }}
-            >
+        <>
+          {list.data.conversations.map((c) => (
+            <Link key={c.id} to={`/creator/messages/${c.id}`} aria-current={c.id === activeId ? 'page' : undefined} style={conversationRowStyle(c.id === activeId)}>
               <Face name={c.brand?.name ?? '?'} src={c.brand?.logoUrl} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -181,14 +205,15 @@ export function CreatorMessagesPage() {
               </div>
             </Link>
           ))}
-        </Card>
+        </>
       )}
-    </Page>
+    </ConversationListPane>
   );
 }
 
-export function CreatorThreadPage() {
-  const { id = '' } = useParams();
+/** The open conversation: its header, then the thread and the message box. */
+function CreatorThread({ id }: { id: string }) {
+  const isMobile = useIsMobile();
   const qc = useQueryClient();
   const payments = usePayments();
   const [older, setOlder] = useState<ConversationMessage[]>([]);
@@ -241,8 +266,14 @@ export function CreatorThreadPage() {
     },
   });
 
-  if (thread.isLoading) return <Page title="Messages"><Card>Loading…</Card></Page>;
-  if (!thread.data) return <Page title="Messages"><ErrorBanner error={thread.error ?? 'This conversation isn’t available.'} /></Page>;
+  if (thread.isLoading) return <div style={{ padding: 20, fontSize: 13, color: theme.textMuted }}>Loading…</div>;
+  if (!thread.data) {
+    return (
+      <div style={{ padding: 20 }}>
+        <ErrorBanner error={thread.error ?? 'This conversation isn’t available.'} />
+      </div>
+    );
+  }
   const t = thread.data;
   const brand = brandLabel(t.conversation);
   // Messages already carry who at the brand wrote them ("Grace · Notewise").
@@ -252,40 +283,48 @@ export function CreatorThreadPage() {
   const ready = payments.data?.ready ?? false;
 
   return (
-    <Page
-      title={t.conversation.brand?.name ?? 'Conversation'}
-      subtitle={t.conversation.contactName ? `With ${t.conversation.contactName}` : undefined}
-      actions={
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {!t.conversation.blocked && t.conversation.brandActive && (
-            <Button onClick={() => setOffering(true)} disabled={!ready}>
-              Send an offer
+    <>
+      <ThreadHeader
+        back={
+          isMobile ? (
+            <Link to="/creator/messages" aria-label="All messages" style={{ color: theme.accentText, display: 'inline-flex' }}>
+              <ArrowLeft size={20} />
+            </Link>
+          ) : null
+        }
+        face={<Face name={t.conversation.brand?.name ?? '?'} src={t.conversation.brand?.logoUrl} />}
+        title={t.conversation.brand?.name ?? 'Conversation'}
+        subtitle={t.conversation.contactName ? `With ${t.conversation.contactName}` : undefined}
+        presence={<PresenceBadge online={live.otherOnline} />}
+        actions={
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {!t.conversation.blocked && t.conversation.brandActive && (
+              <Button size="sm" onClick={() => setOffering(true)} disabled={!ready}>
+                Send an offer
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={block.isPending}
+              onClick={() => {
+                if (t.conversation.blocked || window.confirm(`Block ${t.conversation.brand?.name ?? 'this brand'}? They won’t be able to message or book you.`)) {
+                  block.mutate(!t.conversation.blocked);
+                }
+              }}
+            >
+              {t.conversation.blocked ? 'Unblock' : 'Block'}
             </Button>
-          )}
-          <Button
-            variant="ghost"
-            disabled={block.isPending}
-            onClick={() => {
-              if (t.conversation.blocked || window.confirm(`Block ${t.conversation.brand?.name ?? 'this brand'}? They won’t be able to message or book you.`)) {
-                block.mutate(!t.conversation.blocked);
-              }
-            }}
-          >
-            {t.conversation.blocked ? 'Unblock' : 'Block'}
-          </Button>
-        </div>
-      }
-    >
-      <div style={{ marginBottom: 10, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <Link to="/creator/messages" style={{ fontSize: 13, color: theme.accentText }}>← All messages</Link>
-        <PresenceBadge online={live.otherOnline} />
-      </div>
-      {payments.data && !ready && (
-        <div style={{ fontSize: 13, color: theme.warn, background: theme.warnSoft, borderRadius: theme.radiusSm, padding: '10px 12px', marginBottom: 12 }}>
-          Connect Stripe to accept bookings and send offers: brands pay you upfront into your own account.{' '}
-          <Link to="/creator/storefront" style={{ color: theme.warn, fontWeight: 600 }}>Set up payments</Link>
-        </div>
-      )}
+          </div>
+        }
+      >
+        {payments.data && !ready && (
+          <div style={{ fontSize: 13, color: theme.warn, background: theme.warnSoft, borderRadius: theme.radiusSm, padding: '10px 12px', marginTop: 10 }}>
+            Connect Stripe to accept bookings and send offers: brands pay you upfront into your own account.{' '}
+            <Link to="/creator/storefront" style={{ color: theme.warn, fontWeight: 600 }}>Set up payments</Link>
+          </div>
+        )}
+      </ThreadHeader>
       <ThreadPane
         firstId={messages[0]?.id}
         lastId={messages.at(-1)?.id}
@@ -330,7 +369,7 @@ export function CreatorThreadPage() {
           }}
         />
       )}
-    </Page>
+    </>
   );
 }
 
