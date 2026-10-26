@@ -49,7 +49,7 @@ import { readPartnerAccessSettings, savePartnerAccessSettings } from '../partner
 import { readStatementSettings, saveStatementSettings } from '../payout-statements.js';
 import { clearNetworkListingSkip } from '../onboarding-settings.js';
 import { createApiKeyRow } from '../auth.js';
-import { getTenancyMode, tenantOf } from '../tenancy.js';
+import { afterCommit, getTenancyMode, tenantOf } from '../tenancy.js';
 import { NETWORK_FEDERATION_SCOPES } from './api-keys.js';
 import { getTenantBillingState, hasActivePlan } from '../billing-plan.js';
 import { bookingFeeBpsFor } from '../booking-fee.js';
@@ -263,6 +263,12 @@ settingsRouter.post('/config/program', requireAuth, requireAdmin, async (req, re
   if (Object.keys(tenantPatch).length > 0) {
     tenantPatch.updatedAt = now;
     await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).update(tenantPatch);
+  }
+  // Push a renamed brand to its Network listing now instead of at the next
+  // hourly heartbeat. After commit, so it reads the saved name; a Network
+  // blip is logged, never fails the save.
+  if (next.programName !== previous.programName) {
+    afterCommit(req, 'network heartbeat', (trx) => sendHeartbeat(trx, tenantId));
   }
   // Re-hydrate so the returned shape matches GET (includes logoUrl + brand fields).
   res.json(await readSettings(db, tenantId));
@@ -874,11 +880,10 @@ settingsRouter.get('/admin/network/me', requireAuth, requireAdmin, async (req, r
   proxy(req, res, async (db, tenantId) => {
     // Fire a heartbeat opportunistically so a brand admin who just
     // updated their logo / added a partner / etc. doesn't have to wait
-    // until the next :07 cron. Fire-and-forget — don't block the page
-    // load on a Network blip.
-    sendHeartbeat(db, tenantId).catch((err) => {
-      console.error('[admin/network/me] opportunistic heartbeat failed', err);
-    });
+    // until the next :07 cron. After commit, in a transaction of its own:
+    // handed `db` without being awaited, it raced the response's commit.
+    // A Network blip is logged, never fails the page.
+    afterCommit(req, 'network heartbeat', (trx) => sendHeartbeat(trx, tenantId));
     // Override the Network's stored partnerCount with the local truth.
     // Network's value updates via the hourly heartbeat job — between
     // ticks (or before the first tick after connecting) it lags reality.
