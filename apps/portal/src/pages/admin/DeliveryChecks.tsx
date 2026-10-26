@@ -41,6 +41,11 @@ const PLATFORM_NAMES: Record<string, string> = {
   facebook: 'Facebook',
   threads: 'Threads',
   twitch: 'Twitch',
+  bluesky: 'Bluesky',
+  pinterest: 'Pinterest',
+  reddit: 'Reddit',
+  snapchat: 'Snapchat',
+  discord: 'Discord',
 };
 
 function Badge({ tone, children, title }: { tone: Tone; children: ReactNode; title?: string }) {
