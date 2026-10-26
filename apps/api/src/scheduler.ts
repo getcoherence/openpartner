@@ -28,6 +28,10 @@
  *                   the first time they're payable, and again at most
  *                   daily (the payouts tick also runs this part first),
  *                   then any brand never screened under its current name.
+ *   - tracking-alerts: daily at 06:40 UTC. Per active tenant, emails the
+ *                   admins each Tracking health flag the first time it
+ *                   appears (tracking-alerts.ts), unless the brand turned
+ *                   the email off.
  *
  * Both jobs are no-ops in selfhost mode for usage-report. Payouts run in
  * every mode (a self-host operator with no approved commissions just gets
@@ -411,6 +415,13 @@ const JOBS: ScheduledJob[] = [
     },
   },
   {
+    name: 'tracking-alerts',
+    cronExpr: '40 6 * * *',
+    description:
+      'Per tenant: compare each browser and partner with its own recent past (tracking-flags.ts) and email the admins each flag the first time it appears, unless the brand turned it off (daily 06:40 UTC)',
+    handler: runTrackingAlertsJob,
+  },
+  {
     name: 'seal-payout-details',
     cronExpr: '35 * * * *',
     description:
@@ -485,6 +496,15 @@ export async function runPerformanceBountiesJob() {
 }
 
 /**
+ * The daily Tracking health alert sweep (tracking-alerts.ts), one tenant
+ * transaction each. Returns counts only.
+ */
+export async function runTrackingAlertsJob() {
+  const { sweepTenantTrackingAlerts } = await import('./tracking-alerts.js');
+  return forEachActiveTenant((trx, tenantId) => sweepTenantTrackingAlerts(trx, tenantId));
+}
+
+/**
  * Tables with a tenantId column that the tenant purge deliberately keeps:
  * compliance records retained for 10 years (OFAC, 31 CFR 501.601; see
  * docs/country-access.md "Records"). They're append-only with no foreign
@@ -525,6 +545,7 @@ export const TENANT_PURGE_ORDER = [
   TABLES.Config,
   TABLES.BrandNotification,
   TABLES.TrackingIssue,
+  TABLES.TrackingAlert,
   TABLES.OperatorRecoveryRequest,
   TABLES.UsageLedger,
   TABLES.UsageFeeShadow,

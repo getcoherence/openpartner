@@ -161,4 +161,5 @@ export const TABLES = {
   HostedBillingProfile: 'HostedBillingProfile',
   UsageFeeShadow: 'UsageFeeShadow',
   TrackingIssue: 'TrackingIssue',
+  TrackingAlert: 'TrackingAlert',
 } as const;

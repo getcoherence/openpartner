@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router';
-import { CheckCircle2, Circle, Globe, HelpCircle } from 'lucide-react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link, useNavigate } from 'react-router';
+import { Circle, Globe, HelpCircle } from 'lucide-react';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
-import { alpha, theme } from '../../theme.js';
+import { theme } from '../../theme.js';
 import { creatorApi } from './creator-api.js';
 import {
   formatCustomerReward,
@@ -136,10 +136,10 @@ export function CreatorDiscoverPage() {
   // they're at least as long as any bounded program, so excluding them
   // would over-hide.
   const [minDuration, setMinDuration] = useState<'any' | '30' | '90' | '365'>('any');
-  // Filters open by default — they're the main way creators narrow the
-  // grid, and an unopened panel hid the most useful affordance behind a
-  // click. Toggle still collapses for users who want a denser view.
-  const [showFilters, setShowFilters] = useState(true);
+  // Filters start collapsed: with only a few programs on the Network they
+  // take more room than they save. The Filters button opens them, and
+  // shows how many are set.
+  const [showFilters, setShowFilters] = useState(false);
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedQ(q.trim()), 250);
@@ -236,6 +236,7 @@ export function CreatorDiscoverPage() {
           </div>
           <button
             type="button"
+            aria-expanded={showFilters}
             onClick={() => setShowFilters((s) => !s)}
             style={{
               background: showFilters ? `${theme.accentA15}` : 'transparent',
@@ -763,19 +764,37 @@ interface CreatorProfile {
   profileMissing?: Array<{ field: string; label: string }>;
   /** Operator review. Absent on an older Network. */
   reviewStatus?: 'pending' | 'approved' | 'rejected';
+  /** Getting started steps the creator dismissed, with when. Absent on an
+   *  older Network, which can't remember them. */
+  checklistDismissed?: Partial<Record<ChecklistStep, string>>;
 }
+
+/** Getting started steps a creator can dismiss. */
+type ChecklistStep = 'storefront' | 'programs';
 
 interface RequestRow {
   id: string;
   status: string;
 }
 
+/** The parts of GET /creators/me/storefront the checklist reads. */
+interface StorefrontStatus {
+  bookingsOpen: boolean;
+  packages: unknown[];
+}
+
+const PROFILE_KEY = ['creator-my-profile'];
+
 /** Nudge for new creators: finish the profile (the Network's discovery
- *  bar, so brands can find them), get approved, and send a first
- *  application. Card disappears once all are done. */
+ *  bar, so brands can find them), get approved, set up a storefront, and
+ *  join a first program. A creator can say no to the last two: some only
+ *  want a storefront, some only programs. Card disappears once all are
+ *  done or dismissed. */
 function CreatorOnboarding() {
+  const navigate = useNavigate();
+  const qc = useQueryClient();
   const profile = useQuery({
-    queryKey: ['creator-my-profile'],
+    queryKey: PROFILE_KEY,
     queryFn: () => creatorApi<CreatorProfile>('/creators/me'),
     staleTime: 30_000,
     retry: false,
@@ -786,94 +805,157 @@ function CreatorOnboarding() {
     staleTime: 30_000,
     retry: false,
   });
+  // A partnership a brand started (an invite, a booking) is a first program too.
+  const affiliations = useQuery({
+    queryKey: ['creator-my-affiliations'],
+    queryFn: () => creatorApi<{ affiliations: unknown[] }>('/creators/me/affiliations'),
+    staleTime: 30_000,
+    retry: false,
+  });
+  const storefront = useQuery({
+    queryKey: ['creator-storefront'],
+    queryFn: () => creatorApi<StorefrontStatus>('/creators/me/storefront'),
+    staleTime: 30_000,
+    retry: false,
+  });
+  // Remembered by the Network, so the step stays gone on every device.
+  const dismiss = useMutation({
+    mutationFn: (step: ChecklistStep) =>
+      creatorApi<Pick<CreatorProfile, 'checklistDismissed'>>('/creators/me', { method: 'PATCH', body: { checklistDismissed: { [step]: true } } }),
+    onSuccess: (r) => qc.setQueryData<CreatorProfile>(PROFILE_KEY, (p) => (p ? { ...p, checklistDismissed: r.checklistDismissed } : p)),
+  });
 
-  if (!profile.data) return null;
+  // Wait for everything, so a done card doesn't flash up while loading.
+  if (!profile.data || requests.isPending || affiliations.isPending || storefront.isPending) return null;
   // Older Network without the completeness fields: fall back to the
   // handle + bio check this card used before.
   const profileDone =
     profile.data.profileComplete ?? (!!profile.data.handle && !!profile.data.bio && profile.data.bio.length > 0);
   const missing = profile.data.profileMissing ?? [];
-  const hasApplied = (requests.data?.requests ?? []).length > 0;
+  const joined = (requests.data?.requests ?? []).length > 0 || (affiliations.data?.affiliations ?? []).length > 0;
   // An older Network has no review step.
   const review = profile.data.reviewStatus;
   const approved = !review || review === 'approved';
-  if (profileDone && approved && hasApplied) return null;
+  const dismissed = profile.data.checklistDismissed;
+  const sf = storefront.data;
+  // An older Network can't remember a "No thanks", so it isn't offered the
+  // storefront step at all (it was never on the checklist there).
+  const offerStorefront = !!sf && !!dismissed && !dismissed.storefront;
+  const storefrontDone = !!sf?.bookingsOpen;
+  const programsDismissed = !!dismissed?.programs;
+  if (profileDone && approved && (!offerStorefront || storefrontDone) && (joined || programsDismissed)) return null;
 
-  const items = [
-    { done: true, label: 'Account created', href: null as string | null },
+  const items: Array<{ key: string; done: boolean; label: string; hint: string; action?: ReactNode }> = [
     {
+      key: 'profile',
       done: profileDone,
       label: 'Complete your profile so brands can find you',
-      hint: profileDone
-        ? 'You show up when brands search the Network for creators.'
-        : missing.length > 0
-          ? `Still needed: ${missing.map((m) => m.label.toLowerCase()).join(', ')}.`
-          : 'Add a handle, photo, bio, a category, and a social platform.',
-      href: '/creator/profile',
+      hint: missing.length > 0
+        ? `Still needed: ${missing.map((m) => m.label.toLowerCase()).join(', ')}.`
+        : 'Add a handle, photo, bio, a category, and a social platform.',
+      action: (
+        <Button size="sm" variant="secondary" onClick={() => navigate('/creator/profile')}>
+          Finish profile
+        </Button>
+      ),
     },
     ...(review
       ? [
           {
+            key: 'review',
             done: approved,
             label: 'Get approved by OpenPartner',
-            hint: approved
-              ? 'Your profile is approved.'
-              : review === 'rejected'
+            hint:
+              review === 'rejected'
                 ? 'Your profile wasn’t approved for the OpenPartner Network.'
                 : 'We check every new creator profile before brands see it.',
-            href: null,
           },
         ]
       : []),
-    {
-      done: hasApplied,
-      label: 'Apply to your first program',
-      hint: approved
-        ? 'Browse below and click "View & apply" on anything that fits.'
-        : 'You can apply once your profile is approved. Browse below in the meantime.',
-      href: null,
-    },
+    ...(offerStorefront
+      ? [
+          {
+            key: 'storefront',
+            done: storefrontDone,
+            label: 'Set up your storefront',
+            hint:
+              sf.packages.length === 0
+                ? 'List what you sell to brands, with your prices, so they can book you directly.'
+                : 'Connect Stripe and turn on bookings, and brands can book your packages.',
+            action: (
+              <>
+                <Button size="sm" variant="ghost" onClick={() => dismiss.mutate('storefront')} disabled={dismiss.isPending}>
+                  No thanks
+                </Button>
+                <Button size="sm" variant="secondary" onClick={() => navigate('/creator/storefront')}>
+                  Set up
+                </Button>
+              </>
+            ),
+          },
+        ]
+      : []),
+    ...(programsDismissed && !joined
+      ? []
+      : [
+          {
+            key: 'apply',
+            done: joined,
+            label: 'Apply to your first program',
+            hint: approved
+              ? 'Browse below and click "View & apply" on anything that fits.'
+              : 'You can apply once your profile is approved. Browse below in the meantime.',
+            // For a creator who's only here for a storefront.
+            action: dismissed && (
+              <Button size="sm" variant="ghost" onClick={() => dismiss.mutate('programs')} disabled={dismiss.isPending}>
+                Not now
+              </Button>
+            ),
+          },
+        ]),
   ];
 
   return (
     <Card style={{ marginBottom: 18 }}>
       <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>Getting started</div>
       <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 14 }}>
-        Brands only see complete profiles when they search for creators. Card disappears when done.
+        Brands only find complete, approved profiles. This card goes away once you&rsquo;re done.
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {items.map((it, i) => (
-          <CreatorStep key={i} done={it.done} label={it.label} hint={it.hint} href={it.href} />
-        ))}
+        {/* Only what's left: a finished step drops off the list. */}
+        {items
+          .filter((it) => !it.done)
+          .map((it) => (
+            <CreatorStep key={it.key} label={it.label} hint={it.hint} action={it.action} />
+          ))}
       </div>
+      <ErrorBanner error={dismiss.error} />
     </Card>
   );
 }
 
-function CreatorStep({ done, label, hint, href }: { done: boolean; label: string; hint?: string; href: string | null }) {
-  const inner = (
+function CreatorStep({ label, hint, action }: { label: string; hint?: string; action?: ReactNode }) {
+  return (
     <div
       style={{
         display: 'flex',
         alignItems: 'center',
+        flexWrap: 'wrap',
         gap: 12,
         padding: '10px 12px',
-        background: done ? theme.successSoft : theme.surface2,
-        border: `1px solid ${done ? alpha(theme.success, 0.267) : theme.borderSubtle}`,
+        background: theme.surface2,
+        border: `1px solid ${theme.borderSubtle}`,
         borderRadius: theme.radiusSm,
       }}
     >
-      <div style={{ color: done ? theme.success : theme.textDim, display: 'inline-flex' }}>
-        {done ? <CheckCircle2 size={18} /> : <Circle size={18} />}
+      <div style={{ color: theme.textDim, display: 'inline-flex' }}>
+        <Circle size={18} />
       </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 14, fontWeight: 500, color: theme.text, textDecoration: done ? 'line-through' : 'none' }}>
-          {label}
-        </div>
-        {hint && !done && <div style={{ fontSize: 12, color: theme.textDim, marginTop: 2 }}>{hint}</div>}
+      <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+        <div style={{ fontSize: 14, fontWeight: 500, color: theme.text }}>{label}</div>
+        {hint && <div style={{ fontSize: 12, color: theme.textDim, marginTop: 2 }}>{hint}</div>}
       </div>
+      {action && <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginLeft: 'auto' }}>{action}</div>}
     </div>
   );
-  if (done || !href) return inner;
-  return <Link to={href} style={{ textDecoration: 'none' }}>{inner}</Link>;
 }

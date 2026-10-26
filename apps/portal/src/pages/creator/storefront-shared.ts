@@ -55,6 +55,14 @@ export const PLATFORM_LABELS: Record<string, string> = {
   twitch: 'Twitch',
   podcast: 'Podcast',
   website: 'Website',
+  threads: 'Threads',
+  bluesky: 'Bluesky',
+  facebook: 'Facebook',
+  pinterest: 'Pinterest',
+  snapchat: 'Snapchat',
+  newsletter: 'Newsletter',
+  reddit: 'Reddit',
+  discord: 'Discord',
 };
 
 /** Currencies offered in the package editor. The Network accepts any ISO
@@ -97,6 +105,20 @@ export interface PackageTemplate {
   description: string;
 }
 
+const NEWSLETTER_TEMPLATES: PackageTemplate[] = [
+  { title: 'Primary sponsor', description: 'Top placement in one issue: your logo, about 100 words and a link, above the main story.' },
+  { title: 'Secondary sponsor', description: 'A shorter mention lower in one issue: about 50 words and a link.' },
+  { title: 'Dedicated email', description: 'A whole issue about your product, sent to my full list.' },
+  { title: 'Classified', description: 'A one-line text ad with a link in the classifieds section.' },
+];
+
+/** X, Threads and Bluesky: short posts. */
+const SHORT_POST_TEMPLATES: PackageTemplate[] = [
+  { title: 'Sponsored post', description: 'A post about your product, with your link.' },
+  { title: 'Thread', description: 'A thread of 5–10 posts going deeper on your product.' },
+  { title: 'Quote post', description: 'A quote of your announcement with my take on it.' },
+];
+
 /**
  * Common sponsorship formats per platform, offered when adding a package.
  * The creator edits the wording and sets their own price. `any` is for
@@ -109,22 +131,41 @@ export const PACKAGE_TEMPLATES: Record<string, PackageTemplate[]> = {
     { title: 'Dedicated video', description: 'A whole video about your product: a review, tutorial or walkthrough, with your link in the description.' },
     { title: 'YouTube Short', description: 'A vertical Short under 60 seconds featuring your product.' },
   ],
-  substack: [
-    { title: 'Primary sponsor', description: 'Top placement in one issue: your logo, about 100 words and a link, above the main story.' },
-    { title: 'Secondary sponsor', description: 'A shorter mention lower in one issue: about 50 words and a link.' },
-    { title: 'Dedicated email', description: 'A whole issue about your product, sent to my full list.' },
-    { title: 'Classified', description: 'A one-line text ad with a link in the classifieds section.' },
-  ],
+  substack: NEWSLETTER_TEMPLATES,
+  newsletter: NEWSLETTER_TEMPLATES,
   linkedin: [
     { title: 'Sponsored post', description: 'A post about your product on my profile, in my own voice, with your link.' },
     { title: 'Carousel post', description: 'A multi-slide document post walking through your product.' },
     { title: 'LinkedIn article', description: 'A long-form article about your product or the problem it solves.' },
     { title: 'Repost with comment', description: 'A repost of your company’s post with my take on it.' },
   ],
-  twitter: [
-    { title: 'Sponsored post', description: 'A post about your product, with your link.' },
-    { title: 'Thread', description: 'A thread of 5–10 posts going deeper on your product.' },
-    { title: 'Quote post', description: 'A quote of your announcement with my take on it.' },
+  twitter: SHORT_POST_TEMPLATES,
+  threads: SHORT_POST_TEMPLATES,
+  bluesky: SHORT_POST_TEMPLATES,
+  facebook: [
+    { title: 'Sponsored post', description: 'A post about your product on my page, with your link.' },
+    { title: 'Reel', description: 'A short vertical video featuring your product.' },
+    { title: 'Group post', description: 'A post about your product in the group I run, with your link.' },
+    { title: 'Live stream', description: 'A live session using or talking about your product.' },
+  ],
+  pinterest: [
+    { title: 'Sponsored Pin', description: 'A Pin featuring your product, linking to your site.' },
+    { title: 'Video Pin', description: 'A short vertical video Pin featuring your product.' },
+    { title: 'Board feature', description: 'Your products pinned to one of my themed boards.' },
+  ],
+  snapchat: [
+    { title: 'Story set', description: 'Snaps featuring your product in my Story, with a link to your site.' },
+    { title: 'Spotlight video', description: 'A Spotlight video featuring your product.' },
+  ],
+  reddit: [
+    { title: 'Sponsored post', description: 'A post about your product in my community, flaired as sponsored, with your link.' },
+    { title: 'Pinned post', description: 'A sponsored post pinned to the top of my community for a week.' },
+    { title: 'AMA', description: 'An Ask Me Anything in my community with someone from your team.' },
+  ],
+  discord: [
+    { title: 'Announcement', description: 'A post about your product in my server’s announcements channel, with your link.' },
+    { title: 'Sponsored channel', description: 'A channel in my server for your product, for a month.' },
+    { title: 'Community event', description: 'A live event or Q&A in my server with someone from your team.' },
   ],
   instagram: [
     { title: 'Feed post', description: 'A photo or carousel post featuring your product, with your account tagged.' },
@@ -166,8 +207,12 @@ export function templatesFor(platform: string | null): PackageTemplate[] {
 const AUDIENCE_NOUNS: Record<string, string> = {
   youtube: 'subscribers',
   substack: 'subscribers',
+  newsletter: 'subscribers',
+  snapchat: 'subscribers',
   podcast: 'listeners',
   website: 'readers',
+  reddit: 'members',
+  discord: 'members',
 };
 
 export function audienceNoun(platform: string): string {

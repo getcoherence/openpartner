@@ -9,9 +9,14 @@
  * nobody and why, input OpenPartner had to drop, and when each integration
  * last delivered anything. It says plainly what it can't see: a sale that
  * left no trace at all.
+ *
+ * Flags come first (GET /admin/tracking-health/flags,
+ * apps/api/src/tracking-flags.ts): a browser or a partner that changed
+ * against its own recent past, which one window can't show. The checkbox
+ * beside them is the `tracking_alerts` setting that emails new ones.
  */
 import type { ReactNode } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router';
 import { api } from '../../api.js';
 import { theme } from '../../theme.js';
@@ -98,6 +103,50 @@ export type StripeReconciliationReport =
       }>;
     }
   | { available: false; reason: 'not_connected' | 'reconnect_needed' | 'missing_permissions' | 'stripe_error'; detail?: string };
+
+interface LinkageRate {
+  clicks: number;
+  hits: number;
+  rate: number;
+}
+
+interface SalesTiming {
+  sales: number;
+  medianSeconds: number;
+  /** Sales within a minute of the click. */
+  fast: number;
+  fastShare: number;
+}
+
+export type TrackingFlag =
+  | {
+      kind: 'linkage_drop';
+      subject: string;
+      browser: string;
+      device: string;
+      metric: 'landed' | 'linked';
+      recent: LinkageRate;
+      baseline: LinkageRate;
+    }
+  | {
+      kind: 'fast_sales';
+      subject: string;
+      partnerId: string;
+      partnerName: string;
+      reason: 'collapsed' | 'mostly_instant';
+      recent: SalesTiming;
+      baseline: SalesTiming | null;
+    };
+
+/** GET /admin/tracking-health/flags (apps/api/src/tracking-flags.ts). */
+export interface TrackingFlagsReport {
+  computedAt: string;
+  windows: {
+    linkage: { baselineSince: string; recentSince: string; until: string };
+    sales: { baselineSince: string; recentSince: string; until: string };
+  };
+  flags: TrackingFlag[];
+}
 
 const SIGNALS: Record<PartnerSignal, string> = {
   linked_customer: 'customer came from a partner click',
@@ -267,6 +316,8 @@ export function AdminTrackingHealth() {
         </>
       }
     >
+      <FlagsSection />
+
       {report.error && <ErrorBanner error={report.error} />}
       {report.isLoading && <Muted>Loading…</Muted>}
 
@@ -476,6 +527,113 @@ export function AdminTrackingHealth() {
         </>
       )}
     </Page>
+  );
+}
+
+/** "12 seconds", "4 minutes", "2.5 hours", "3 days" (formatDuration in tracking-flags.ts). */
+function duration(seconds: number): string {
+  const unit = (n: number, word: string) => {
+    const v = n >= 10 ? Math.round(n) : Math.round(n * 10) / 10;
+    return `${v} ${word}${v === 1 ? '' : 's'}`;
+  };
+  if (seconds < 90) return unit(Math.max(0, Math.round(seconds)), 'second');
+  if (seconds < 90 * 60) return unit(seconds / 60, 'minute');
+  if (seconds < 36 * 3600) return unit(seconds / 3600, 'hour');
+  return unit(seconds / 86_400, 'day');
+}
+
+function flagText(flag: TrackingFlag): { headline: string; detail: string } {
+  if (flag.kind === 'linkage_drop') {
+    const sample = `Clicks one to eight days old (${flag.recent.clicks.toLocaleString()}) against the four weeks before (${flag.baseline.clicks.toLocaleString()}).`;
+    if (flag.metric === 'landed') {
+      return {
+        headline: `${flag.browser} (${flag.device}): ${pct(flag.recent.hits, flag.recent.clicks)} of clicks reached a page running the script within a day, down from ${pct(flag.baseline.hits, flag.baseline.clicks)}`,
+        detail: `${sample} A fall like this usually follows a change on your site: a new cookie banner or consent setup, a redirect that drops ?cref=, or a page that lost the script tag.`,
+      };
+    }
+    return {
+      headline: `${flag.browser} (${flag.device}): ${pct(flag.recent.hits, flag.recent.clicks)} of clicks were linked to a customer within a day, down from ${pct(flag.baseline.hits, flag.baseline.clicks)}`,
+      detail: `${sample} A click is linked by identify(), a Stripe checkout or a conversion call. If landings held up, look at what changed between the visit and the signup: identify() called later, a new signup flow, or storage this browser now clears sooner.`,
+    };
+  }
+  const r = flag.recent;
+  const headline =
+    flag.reason === 'collapsed' && flag.baseline
+      ? `${flag.partnerName}: half of their sales now come within ${duration(r.medianSeconds)} of the click, against ${duration(flag.baseline.medianSeconds)} before`
+      : `${flag.partnerName}: ${r.fast} of ${r.sales} sales in the last two weeks came within a minute of the click`;
+  const sample = flag.baseline
+    ? `The first sale through each of the partner's link clicks: ${r.sales} in the last two weeks against ${flag.baseline.sales} in the three months before.`
+    : `The first sale through each of the partner's link clicks, in the last two weeks.`;
+  return {
+    headline,
+    detail: `${sample} Real buyers rarely pay that fast. A browser extension or a coupon site that clicks the link at checkout takes the credit without bringing the customer. Look at where their clicks come from before you approve their commissions.`,
+  };
+}
+
+/**
+ * Each browser and partner against its own recent past, with the setting
+ * that emails new flags to the admins. Loads on its own: the flags read a
+ * few months of sales.
+ */
+function FlagsSection() {
+  const qc = useQueryClient();
+  const flags = useQuery({
+    queryKey: ['tracking-health-flags'],
+    queryFn: () => api<TrackingFlagsReport>('/admin/tracking-health/flags'),
+  });
+  const alerts = useQuery({
+    queryKey: ['tracking-alerts'],
+    queryFn: () => api<{ email: boolean }>('/config/tracking-alerts'),
+  });
+  const save = useMutation({
+    mutationFn: (email: boolean) => api<{ email: boolean }>('/config/tracking-alerts', { method: 'POST', body: { email } }),
+    onSuccess: (next) => qc.setQueryData(['tracking-alerts'], next),
+  });
+  const list = flags.data?.flags ?? [];
+
+  return (
+    <>
+      <SectionHeading
+        actions={
+          alerts.data ? (
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, color: theme.textMuted, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={alerts.data.email}
+                disabled={save.isPending}
+                onChange={(e) => save.mutate(e.target.checked)}
+                style={{ accentColor: theme.accent, margin: 0 }}
+              />
+              Email admins about new flags
+            </label>
+          ) : undefined
+        }
+      >
+        Flags
+      </SectionHeading>
+      {flags.error && <ErrorBanner error={flags.error} />}
+      {save.error && <ErrorBanner error={save.error} />}
+      {flags.isLoading && <Muted>Comparing with recent weeks…</Muted>}
+      {flags.data && list.length === 0 && (
+        <Card>
+          <Muted>
+            Nothing unusual. Each browser&rsquo;s landing and linking rates, and each partner&rsquo;s time from click to
+            sale, are in line with their own recent past.
+          </Muted>
+        </Card>
+      )}
+      {list.map((flag) => {
+        const { headline, detail } = flagText(flag);
+        return (
+          <Card key={`${flag.kind}|${flag.subject}`} style={{ marginTop: 12, borderColor: theme.warn }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: theme.text, lineHeight: 1.4 }}>{headline}</div>
+            <div style={{ marginTop: 6 }}>
+              <Muted>{detail}</Muted>
+            </div>
+          </Card>
+        );
+      })}
+    </>
   );
 }
 

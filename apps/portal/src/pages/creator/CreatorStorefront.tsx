@@ -490,7 +490,15 @@ function AddChannelCard({
           </Select>
         </div>
         <div style={{ flex: '3 1 200px', minWidth: 0 }}>
-          <Label>{platform === 'website' || platform === 'podcast' ? 'Address' : 'Handle'}</Label>
+          <Label>
+            {platform === 'website' || platform === 'podcast' || platform === 'newsletter'
+              ? 'Address'
+              : platform === 'discord'
+                ? 'Invite link'
+                : platform === 'reddit'
+                  ? 'Community or user'
+                  : 'Handle'}
+          </Label>
           <Input
             aria-label="Handle"
             // Also brings the form into view when opened from a block above.

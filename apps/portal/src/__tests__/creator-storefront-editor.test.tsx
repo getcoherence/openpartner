@@ -15,6 +15,7 @@ import { CreatorPublicProfilePage } from '../pages/creator/CreatorPublicProfile.
 import { NetworkCreatorStorefrontPage } from '../pages/admin/NetworkCreatorStorefront.js';
 import { CreatorStorefrontPage } from '../pages/creator/CreatorStorefront.js';
 import { CreatorStorefrontSetupPage } from '../pages/creator/CreatorStorefrontSetup.js';
+import { PLATFORMS } from '../lib/NetworkProfileEditor.js';
 import {
   groupByChannel,
   parsePackagePrice,
@@ -159,7 +160,7 @@ describe('storefront helpers', () => {
   });
 
   it('has templates for every platform and for bundles, never with prices', () => {
-    for (const p of ['youtube', 'substack', 'linkedin', 'twitter', 'instagram', 'tiktok', 'podcast', 'twitch', 'website', null]) {
+    for (const p of [...PLATFORMS.map((x) => x.kind), null]) {
       const t = templatesFor(p);
       expect(t.length).toBeGreaterThan(1);
       for (const x of t) expect(Object.keys(x).sort()).toEqual(['description', 'title']);
@@ -263,8 +264,10 @@ describe('storefront editor', () => {
   });
 
   it('hides Add a channel once every platform is listed', async () => {
-    const all = ['tiktok', 'instagram', 'youtube', 'twitter', 'linkedin', 'substack', 'twitch', 'podcast', 'website'];
-    storefront = { ...storefront, platforms: all.map((p) => ({ ...SUBSTACK, id: `cpf_${p}`, platform: p, description: null, cadence: null })) };
+    storefront = {
+      ...storefront,
+      platforms: PLATFORMS.map((p) => ({ ...SUBSTACK, id: `cpf_${p.kind}`, platform: p.kind, description: null, cadence: null })),
+    };
     renderAt('/creator/storefront', '/creator/storefront', <CreatorStorefrontPage />);
     await screen.findAllByRole('button', { name: 'Add pitch' });
     expect(screen.queryByRole('button', { name: /Add a channel/ })).toBeNull();
