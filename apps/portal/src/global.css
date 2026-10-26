@@ -232,3 +232,18 @@ a:focus-visible {
   outline: 2px solid var(--op-accent, var(--op-accent-default));
   outline-offset: 1px;
 }
+
+/* A spinning icon (an image uploading in the message box). */
+@keyframes op-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.op-spin {
+  animation: op-spin 0.9s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .op-spin {
+    animation: none;
+  }
+}

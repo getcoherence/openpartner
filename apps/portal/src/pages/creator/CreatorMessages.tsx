@@ -8,13 +8,13 @@
  *   /creator/messages        the list
  *   /creator/messages/:id    one conversation
  */
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { MessagesSquare } from 'lucide-react';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Textarea, formatDate } from '../../ui.js';
 import { theme } from '../../theme.js';
-import { creatorApi } from './creator-api.js';
+import { creatorApi, creatorApiBlob } from './creator-api.js';
 import { creatorErrorCode, usePayments } from './CreatorPayments.js';
 import { PACKAGE_CURRENCIES, type OwnPackage } from './storefront-shared.js';
 import { useConversationLive, type LiveTicket } from './conversation-live.js';
@@ -33,6 +33,7 @@ import {
   type BookingStatus,
   type ConversationMessage,
   type LastMessage,
+  type MessageAttachment,
 } from './conversation-shared.js';
 
 interface BrandFace {
@@ -210,9 +211,23 @@ export function CreatorThreadPage() {
     refetchInterval: live.connected ? 60_000 : 10_000,
   });
   const send = useMutation({
-    mutationFn: (body: string) => creatorApi(`/creators/me/conversations/${encodeURIComponent(id)}/messages`, { method: 'POST', body: { body } }),
+    mutationFn: (m: { body: string; attachmentIds: string[] }) =>
+      creatorApi(`/creators/me/conversations/${encodeURIComponent(id)}/messages`, {
+        method: 'POST',
+        body: { ...(m.body ? { body: m.body } : {}), ...(m.attachmentIds.length ? { attachmentIds: m.attachmentIds } : {}) },
+      }),
     onSuccess: refresh,
   });
+  const uploadImage = useCallback(
+    async (image: Blob) =>
+      (await creatorApi<{ attachment: MessageAttachment }>(`/creators/me/conversations/${encodeURIComponent(id)}/attachments`, { method: 'POST', body: image }))
+        .attachment,
+    [id],
+  );
+  const loadImage = useCallback(
+    (attachmentId: string) => creatorApiBlob(`/creators/me/conversations/${encodeURIComponent(id)}/attachments/${encodeURIComponent(attachmentId)}`),
+    [id],
+  );
   const block = useMutation({
     mutationFn: (blocked: boolean) => creatorApi(`/creators/me/conversations/${encodeURIComponent(id)}/${blocked ? 'block' : 'unblock'}`, { method: 'POST', body: {} }),
     onSuccess: refresh,
@@ -278,6 +293,7 @@ export function CreatorThreadPage() {
           hasMore={olderHasMore ?? t.hasMore}
           loadingEarlier={earlier.isPending}
           onLoadEarlier={() => messages[0] && earlier.mutate(messages[0].id)}
+          loadAttachment={loadImage}
           renderBooking={(bookingId) => {
             const b = bookings.get(bookingId);
             return b ? <CreatorBookingCard booking={b} brand={brand} brandName={names.brand} canAccept={ready} onChanged={refresh} /> : null;
@@ -287,7 +303,8 @@ export function CreatorThreadPage() {
         <div style={{ marginTop: 8, borderTop: `1px solid ${theme.borderSubtle}`, paddingTop: 14 }}>
           <ErrorBanner error={send.error ? errText(send.error) : block.error} />
           <Composer
-            onSend={(body) => send.mutateAsync(body)}
+            onSend={(m) => send.mutateAsync(m)}
+            onUpload={uploadImage}
             pending={send.isPending}
             disabledReason={!t.conversation.brandActive ? 'This brand isn’t on the Network any more.' : null}
             placeholder={`Message ${t.conversation.brand?.name ?? 'the brand'}`}

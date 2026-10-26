@@ -281,7 +281,9 @@ GET  /vendors/me/conversations                    → 200 { conversations[], unr
 POST /vendors/me/conversations                    { creatorId, body, authorName?, authorEmail? }
                                                   → 201 { conversationId, message }
 GET  /vendors/me/conversations/:id?before=<msgId> → 200 { conversation, messages[], hasMore, bookings[] }
-POST /vendors/me/conversations/:id/messages       { body, authorName?, authorEmail? } → 201 { message }
+POST /vendors/me/conversations/:id/messages       { body?, attachmentIds?, authorName?, authorEmail? } → 201 { message }
+POST /vendors/me/conversations/:id/attachments    raw image body (PNG, JPEG, WebP, GIF; 5 MB) → 201 { attachment }
+GET  /vendors/me/conversations/:id/attachments/:attachmentId   → 200 the image   (images, below)
 POST /vendors/me/conversations/:id/realtime       { authorName? } → 200 { ticket, expiresAt }   (live socket, below)
 
 POST /vendors/me/bookings
@@ -377,6 +379,20 @@ re-checked every 20 seconds, so a brand that's blocked is muted and one
 that's suspended is closed. The portal keeps polling, every 60 seconds while
 the socket is up and every 10 otherwise.
 
+**Images.** A message carries text, images or both. Each image is uploaded
+first, then sent by listing its id on the message (`attachmentIds`, up to
+four, in order; a conversation's opening message is text only). The Network
+reads what an image is from its bytes, stores it privately and serves it
+only to the conversation's two sides. A message's `attachments` are
+`{ id, contentType, width, height, size, removed }`; `removed` is an image
+OpenPartner took down, whose file answers `410`. The lists carry
+`lastMessage.images`. The creator's side is the same under
+`/creators/me/conversations/:id/…` (through `/creator-api`). This repo's
+proxies relay a file only as one of the four image types, with
+`Cache-Control: no-store` and a sandboxing CSP; anything else is a `502`.
+The portal fetches each file with the viewer's own credentials and shows it
+from a blob URL, so an API-key session sees images too.
+
 **Who receives the brand's mail.** The Network asks the brand's instance,
 with the federation key, before every conversation or booking email to the
 brand:
@@ -398,7 +414,9 @@ errors gets no email that time.
 proxies in `routes/settings.ts`, which add `authorName` / `authorEmail`
 and the fee rate:
 - `GET|POST /admin/network/conversations`, `GET /admin/network/conversations/:id`,
-  `POST /admin/network/conversations/:id/messages`;
+  `POST /admin/network/conversations/:id/messages`,
+  `POST /admin/network/conversations/:id/attachments` (raw image, 5 MB),
+  `GET /admin/network/conversations/:id/attachments/:attachmentId`;
 - `GET|POST /admin/network/bookings`, `POST /admin/network/bookings/claim`;
 - `POST /admin/network/bookings/:id/{checkout,sync,cancel,track,approve,recheck}`.
 
