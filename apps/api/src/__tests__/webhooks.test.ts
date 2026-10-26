@@ -200,11 +200,16 @@ describe.skipIf(skipIntegration)('webhooks', () => {
     expect(envelope.data.partnerId).toBe(partnerId);
     expect(Number(envelope.data.amount)).toBe(20); // 20% of 100
 
-    // Delivery row is marked delivered.
-    const deliveries = await request(app)
-      .get(`/webhooks/${endpointId}/deliveries`)
-      .set('Authorization', `Bearer ${ADMIN_KEY}`);
-    const paid = deliveries.body.deliveries.find((d: { eventType: string }) => d.eventType === 'commission.paid');
+    // Delivery row is marked delivered. The receiver records the capture
+    // before it answers, and the dispatcher writes the row only once that
+    // answer arrives, so poll the row instead of reading it once.
+    const paid = await waitFor(async () => {
+      const deliveries = await request(app)
+        .get(`/webhooks/${endpointId}/deliveries`)
+        .set('Authorization', `Bearer ${ADMIN_KEY}`);
+      const d = deliveries.body.deliveries.find((x: { eventType: string }) => x.eventType === 'commission.paid');
+      return d?.status === 'delivered' ? d : null;
+    });
     expect(paid.status).toBe('delivered');
     expect(paid.httpStatus).toBe(200);
   });
