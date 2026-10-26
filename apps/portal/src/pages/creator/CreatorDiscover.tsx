@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router';
-import { CheckCircle2, Circle, Globe, HelpCircle } from 'lucide-react';
+import { Circle, Globe, HelpCircle } from 'lucide-react';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
-import { alpha, theme } from '../../theme.js';
+import { theme } from '../../theme.js';
 import { creatorApi } from './creator-api.js';
 import {
   formatCustomerReward,
@@ -922,16 +922,19 @@ function CreatorOnboarding() {
         Brands only find complete, approved profiles. This card goes away once you&rsquo;re done.
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {items.map((it) => (
-          <CreatorStep key={it.key} done={it.done} label={it.label} hint={it.hint} action={it.action} />
-        ))}
+        {/* Only what's left: a finished step drops off the list. */}
+        {items
+          .filter((it) => !it.done)
+          .map((it) => (
+            <CreatorStep key={it.key} label={it.label} hint={it.hint} action={it.action} />
+          ))}
       </div>
       <ErrorBanner error={dismiss.error} />
     </Card>
   );
 }
 
-function CreatorStep({ done, label, hint, action }: { done: boolean; label: string; hint?: string; action?: ReactNode }) {
+function CreatorStep({ label, hint, action }: { label: string; hint?: string; action?: ReactNode }) {
   return (
     <div
       style={{
@@ -940,21 +943,19 @@ function CreatorStep({ done, label, hint, action }: { done: boolean; label: stri
         flexWrap: 'wrap',
         gap: 12,
         padding: '10px 12px',
-        background: done ? theme.successSoft : theme.surface2,
-        border: `1px solid ${done ? alpha(theme.success, 0.267) : theme.borderSubtle}`,
+        background: theme.surface2,
+        border: `1px solid ${theme.borderSubtle}`,
         borderRadius: theme.radiusSm,
       }}
     >
-      <div style={{ color: done ? theme.success : theme.textDim, display: 'inline-flex' }}>
-        {done ? <CheckCircle2 size={18} /> : <Circle size={18} />}
+      <div style={{ color: theme.textDim, display: 'inline-flex' }}>
+        <Circle size={18} />
       </div>
       <div style={{ flex: '1 1 220px', minWidth: 0 }}>
-        <div style={{ fontSize: 14, fontWeight: 500, color: theme.text, textDecoration: done ? 'line-through' : 'none' }}>
-          {label}
-        </div>
-        {hint && !done && <div style={{ fontSize: 12, color: theme.textDim, marginTop: 2 }}>{hint}</div>}
+        <div style={{ fontSize: 14, fontWeight: 500, color: theme.text }}>{label}</div>
+        {hint && <div style={{ fontSize: 12, color: theme.textDim, marginTop: 2 }}>{hint}</div>}
       </div>
-      {action && !done && <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginLeft: 'auto' }}>{action}</div>}
+      {action && <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginLeft: 'auto' }}>{action}</div>}
     </div>
   );
 }

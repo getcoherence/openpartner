@@ -150,12 +150,14 @@ describe('Getting started', () => {
     expect(screen.queryByText('Getting started')).toBeNull();
   });
 
-  it('shows a finished storefront step ticked, without buttons', async () => {
+  it('lists only what’s left: a finished step drops off', async () => {
+    me = { ...me, reviewStatus: 'approved' };
     storefront = { bookingsOpen: true, packages: [{ id: 'pkg_1' }] };
     renderDiscover();
-    await screen.findByText('Set up your storefront');
-    expect(screen.queryByRole('button', { name: 'Set up' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'No thanks' })).toBeNull();
+    await screen.findByText('Complete your profile so brands can find you');
+    expect(screen.queryByText('Get approved by OpenPartner')).toBeNull();
+    expect(screen.queryByText('Set up your storefront')).toBeNull();
+    expect(screen.getByText('Apply to your first program')).toBeTruthy();
   });
 
   it('offers neither the storefront step nor Not now on a Network that can’t remember them', async () => {
