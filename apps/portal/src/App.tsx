@@ -108,6 +108,7 @@ import { CreatorResetPasswordPage } from './pages/creator/CreatorResetPassword.j
 import { CreatorShell } from './pages/creator/CreatorShell.js';
 import { CreatorPublicProfilePage } from './pages/creator/CreatorPublicProfile.js';
 import { BookingConfirmPage } from './pages/creator/BookingConfirm.js';
+import { clearAttachmentCache } from './pages/creator/conversation-media.js';
 import { FraudReviewPage } from './pages/FraudReview.js';
 import { ResetPasswordPage, TenantResetPasswordPage } from './pages/auth/ResetPassword.js';
 import { AccountPage, TenantAccountPage } from './pages/Account.js';
@@ -588,6 +589,8 @@ export function Sidebar({ principal, variant = 'sidebar' }: { principal: Princip
           } catch {
             /* ignore */
           }
+          // Conversation images are kept in memory; nobody else gets them.
+          clearAttachmentCache();
           nav(`${tenantBase}/login`);
         }}
         style={{

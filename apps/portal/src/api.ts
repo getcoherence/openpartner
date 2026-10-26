@@ -99,6 +99,17 @@ export async function apiDownload(path: string, filename: string): Promise<void>
   saveBlob(await res.blob(), filename);
 }
 
+/** A file (a conversation image) with api()'s credentials, as a Blob: an
+ *  <img> can't carry a pasted API key. */
+export async function apiBlob(path: string): Promise<Blob> {
+  const key = getApiKey();
+  const headers = new Headers();
+  if (key) headers.set('Authorization', `Bearer ${key}`);
+  const res = await fetch(apiHref(path), { headers, credentials: 'include' });
+  if (!res.ok) throw new ApiError(res.status, `${res.status}`);
+  return res.blob();
+}
+
 /** Where the API serves `path` for the current tenant, for a plain link. A
  *  link carries the session cookie, but not a pasted API key: open those
  *  with apiOpen. */

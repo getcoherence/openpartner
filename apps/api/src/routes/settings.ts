@@ -9,7 +9,7 @@
  * lives here so admins can update it without a redeploy.
  */
 
-import { Router } from 'express';
+import express, { Router, type RequestHandler } from 'express';
 import type { Knex } from 'knex';
 import { z } from '../zod.js';
 import {
@@ -43,6 +43,7 @@ import {
   signupWithNetwork,
 } from '../network-client.js';
 import { isNetworkOfferedToPartners, resyncConsentedPartners, summarizeNetworkConsent } from '../network-consent.js';
+import { CONVERSATION_IMAGE_MAX_BYTES, CONVERSATION_IMAGE_TYPES } from '../conversation-images.js';
 import { readPartnerAccessSettings, savePartnerAccessSettings } from '../partner-portal-access.js';
 import { readStatementSettings, saveStatementSettings } from '../payout-statements.js';
 import { clearNetworkListingSkip } from '../onboarding-settings.js';
@@ -1061,10 +1062,67 @@ settingsRouter.post('/admin/network/conversations/:id/messages', requireAuth, re
     req,
     res,
     async (db, tenantId) =>
-      networkProxy.postConversationMessage(db, tenantId, req.params.id!, { body: bodyOf(req).body, ...(await actingAdmin(req)) }),
+      networkProxy.postConversationMessage(db, tenantId, req.params.id!, {
+        body: bodyOf(req).body,
+        // Images uploaded below, in the order they're shown.
+        attachmentIds: bodyOf(req).attachmentIds,
+        ...(await actingAdmin(req)),
+      }),
     201,
   ),
 );
+
+/** An image body, raw. Too big or not an image answers here, as JSON, once
+ *  the rest has been read (and thrown away): the browser gets the answer
+ *  rather than a reset connection. */
+const rawConversationImage: RequestHandler = (req, res, next) => {
+  express.raw({ type: CONVERSATION_IMAGE_TYPES, limit: CONVERSATION_IMAGE_MAX_BYTES })(req, res, (err?: unknown) => {
+    const refuse = (status: number, body: Record<string, unknown>) => {
+      const answer = () => {
+        if (!res.headersSent) res.status(status).json(body);
+      };
+      if (req.complete) return answer();
+      req.once('end', answer);
+      req.resume();
+    };
+    if (err) {
+      const e = err as { status?: number; type?: string };
+      if (e.status === 413 || e.type === 'entity.too.large') return refuse(413, { error: 'payload_too_large', maxBytes: CONVERSATION_IMAGE_MAX_BYTES });
+      return refuse(400, { error: 'invalid_body' });
+    }
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) return refuse(415, { error: 'unsupported_content_type', allowed: CONVERSATION_IMAGE_TYPES });
+    next();
+  });
+};
+
+// An image to send in the thread: uploaded first, then sent by listing its
+// id on the message. The Network checks what it is from its bytes.
+settingsRouter.post('/admin/network/conversations/:id/attachments', requireAuth, requireAdmin, rawConversationImage, async (req, res) => {
+  const contentType = String(req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase();
+  const image = req.body as Buffer;
+  return proxy(req, res, (db, tenantId) => networkProxy.uploadConversationAttachment(db, tenantId, req.params.id!, image, contentType), 201);
+});
+
+// An image's file, for the thread. Only ever an image: the Network's type
+// is checked (network-client.ts fetchNetworkFile) and pinned here. Never
+// cached, so signing out or a takedown takes effect at once.
+settingsRouter.get('/admin/network/conversations/:id/attachments/:attachmentId', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  try {
+    const file = await networkProxy.conversationAttachmentFile(db, tenantId, req.params.id!, req.params.attachmentId!);
+    res.setHeader('Content-Type', file.contentType);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+    res.setHeader('Content-Disposition', 'inline');
+    res.send(file.body);
+  } catch (err) {
+    if (err instanceof NetworkProxyError) {
+      res.status(err.status).json({ error: 'network_call_failed', detail: err.message });
+      return;
+    }
+    throw err;
+  }
+});
 
 // A ticket for the thread's live socket, and where to open it (the
 // Network's realtime.ts). The signed-in admin's name is what the creator

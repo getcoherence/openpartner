@@ -74,7 +74,14 @@ beforeAll(async () => {
       const chunks: Buffer[] = [];
       req.on('data', (c) => chunks.push(c));
       req.on('end', () => {
-        const body = chunks.length ? (JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>) : null;
+        // Image uploads arrive raw: record their size and type instead.
+        const raw = Buffer.concat(chunks);
+        const jsonBody = (req.headers['content-type'] ?? '').startsWith('application/json');
+        const body = !chunks.length
+          ? null
+          : jsonBody
+            ? (JSON.parse(raw.toString('utf8')) as Record<string, unknown>)
+            : { bytes: raw.length, contentType: req.headers['content-type'] };
         const path = req.url ?? '';
         calls.push({ method: req.method ?? '', path, auth: req.headers.authorization, body });
         const json = (status: number, payload: unknown) => {
@@ -105,6 +112,19 @@ beforeAll(async () => {
         if (path === '/vendors/me/conversations' && req.method === 'POST') return json(201, { conversationId: 'cnv_new', message: {} });
         if (/^\/vendors\/me\/conversations\/[^/]+\/messages$/.test(path)) return json(201, { message: {} });
         if (/^\/vendors\/me\/conversations\/[^/]+\/realtime$/.test(path)) return json(200, { ticket: 'tkt_v', expiresAt: '2026-10-25T21:00:00.000Z' });
+        if (/^\/vendors\/me\/conversations\/[^/]+\/attachments$/.test(path) && req.method === 'POST') {
+          return json(201, { attachment: { id: 'cna_1', contentType: 'image/png', width: 1, height: 1, size: raw.length, removed: false } });
+        }
+        if (path === '/vendors/me/conversations/cnv_1/attachments/cna_png') {
+          res.writeHead(200, { 'content-type': 'image/png' });
+          return res.end(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+        }
+        // A Network answering with something that isn't an image.
+        if (path === '/vendors/me/conversations/cnv_1/attachments/cna_html') {
+          res.writeHead(200, { 'content-type': 'text/html' });
+          return res.end('<script>alert(1)</script>');
+        }
+        if (path === '/vendors/me/conversations/cnv_1/attachments/cna_gone') return json(410, { error: 'attachment_removed' });
         if (/^\/vendors\/me\/bookings\/[^/]+\/checkout$/.test(path)) return json(200, { url: 'https://checkout.stripe.test/cs_1' });
         if (path === '/vendors/me/bookings' && req.method === 'POST') return json(201, { booking: { id: 'bkr_2' }, conversationId: 'cnv_new' });
         json(404, { error: 'not_found' });
@@ -350,6 +370,41 @@ describe.skipIf(skipIntegration)('brand proxies', () => {
     expect(tracked).toMatchObject({ status: 402, body: { error: 'plan_required' } });
     const track = await request(app).post(`/t/${b.slug}/admin/network/bookings/bkr_1/track`).set('Cookie', b.cookie).send({ offeringId: 'off_1' });
     expect(track.status).toBe(402);
+  });
+
+  it('uploads, sends and shows conversation images, only ever as images', async () => {
+    const b = await brand();
+    const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47]), Buffer.alloc(3 * 1024 * 1024, 1)]);
+    const up = await request(app).post(`/t/${b.slug}/admin/network/conversations/cnv_1/attachments`).set('Cookie', b.cookie).set('Content-Type', 'image/png').send(png);
+    expect(up.status).toBe(201);
+    expect(up.body.attachment).toMatchObject({ id: 'cna_1', size: png.length });
+    expect(last(/\/attachments$/)!.body).toEqual({ bytes: png.length, contentType: 'image/png' });
+    expect(last(/\/attachments$/)!.auth).toMatch(/^Bearer vntok_/);
+
+    const text = await request(app).post(`/t/${b.slug}/admin/network/conversations/cnv_1/attachments`).set('Cookie', b.cookie).set('Content-Type', 'text/html').send('<b>x</b>');
+    expect(text.status).toBe(415);
+    const big = await request(app)
+      .post(`/t/${b.slug}/admin/network/conversations/cnv_1/attachments`)
+      .set('Cookie', b.cookie)
+      .set('Content-Type', 'image/png')
+      .send(Buffer.alloc(5 * 1024 * 1024 + 1, 1));
+    expect(big).toMatchObject({ status: 413, body: { error: 'payload_too_large' } });
+    expect((await request(app).post(`/t/${b.slug}/admin/network/conversations/cnv_1/attachments`).set('Content-Type', 'image/png').send(Buffer.from([0x89, 0x50]))).status).toBe(401);
+
+    await request(app).post(`/t/${b.slug}/admin/network/conversations/cnv_1/messages`).set('Cookie', b.cookie).send({ attachmentIds: ['cna_1'] });
+    expect(last(/\/vendors\/me\/conversations\/cnv_1\/messages$/)!.body).toEqual({ attachmentIds: ['cna_1'], authorName: 'Owen Owner', authorEmail: b.email });
+
+    const file = await request(app).get(`/t/${b.slug}/admin/network/conversations/cnv_1/attachments/cna_png`).set('Cookie', b.cookie);
+    expect(file.status).toBe(200);
+    expect(file.headers['content-type']).toBe('image/png');
+    expect(file.headers['content-security-policy']).toContain('sandbox');
+    expect(file.headers['cache-control']).toBe('no-store');
+    const html = await request(app).get(`/t/${b.slug}/admin/network/conversations/cnv_1/attachments/cna_html`).set('Cookie', b.cookie);
+    expect(html.status).toBe(502);
+    expect(html.headers['content-type']).toContain('application/json');
+    const gone = await request(app).get(`/t/${b.slug}/admin/network/conversations/cnv_1/attachments/cna_gone`).set('Cookie', b.cookie);
+    expect(gone.status).toBe(410);
+    expect((await request(app).get(`/t/${b.slug}/admin/network/conversations/cnv_1/attachments/cna_png`)).status).toBe(401);
   });
 
   it('an API key acts with no person behind it', async () => {

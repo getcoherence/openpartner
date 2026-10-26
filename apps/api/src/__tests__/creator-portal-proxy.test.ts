@@ -33,8 +33,27 @@ beforeAll(async () => {
     network = createServer((req, res) => {
       calls.push({ method: req.method ?? '', path: req.url ?? '', cookie: req.headers.cookie });
       clientIpHeaders.push(req.headers['x-openpartner-client-ip'] as string | undefined);
-      req.resume();
+      let bytes = 0;
+      req.on('data', (c: Buffer) => {
+        bytes += c.length;
+      });
       req.on('end', () => {
+        if (req.url === '/creators/me/conversations/cnv_1/attachments' && req.method === 'POST') {
+          res.writeHead(201, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ attachment: { id: 'cna_1', size: bytes, contentType: req.headers['content-type'] } }));
+        }
+        if (req.url === '/creators/me/conversations/cnv_1/attachments/cna_png') {
+          res.writeHead(200, { 'content-type': 'image/png' });
+          return res.end(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+        }
+        if (req.url === '/creators/me/conversations/cnv_1/attachments/cna_html') {
+          res.writeHead(200, { 'content-type': 'text/html' });
+          return res.end('<script>alert(1)</script>');
+        }
+        if (req.url === '/creators/me/conversations/cnv_1/attachments/cna_gone') {
+          res.writeHead(410, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'attachment_removed' }));
+        }
         if (req.url === '/creators/me/export') {
           if (!req.headers.cookie) {
             res.writeHead(401, { 'content-type': 'application/json' });
@@ -120,6 +139,42 @@ describe('creator-api proxy: live conversations', () => {
       url: `${process.env.NETWORK_URL!.replace(/^http/, 'ws')}/realtime`,
     });
     expect(calls).toEqual([{ method: 'POST', path: '/creators/me/conversations/cnv_1/realtime', cookie: 'op_network_creator_session=abc' }]);
+  });
+});
+
+describe('creator-api proxy: conversation images', () => {
+  it('forwards an image up to 5 MB, GIFs included, and answers a bigger one itself', async () => {
+    const image = Buffer.concat([Buffer.from('GIF89a'), Buffer.alloc(3 * 1024 * 1024, 1)]);
+    const up = await request(app)
+      .post('/creator-api/creators/me/conversations/cnv_1/attachments')
+      .set('Cookie', 'op_network_creator_session=abc')
+      .set('Content-Type', 'image/gif')
+      .send(image);
+    expect(up.status).toBe(201);
+    expect(up.body.attachment).toEqual({ id: 'cna_1', size: image.length, contentType: 'image/gif' });
+
+    const big = await request(app)
+      .post('/creator-api/creators/me/conversations/cnv_1/attachments')
+      .set('Cookie', 'op_network_creator_session=abc')
+      .set('Content-Type', 'image/png')
+      .send(Buffer.alloc(5 * 1024 * 1024 + 1, 1));
+    expect(big).toMatchObject({ status: 413, body: { error: 'payload_too_large' } });
+    expect(calls.filter((c) => c.path.endsWith('/attachments'))).toHaveLength(1);
+  });
+
+  it('relays an image file as an image, and nothing else as a page', async () => {
+    const file = await request(app).get('/creator-api/creators/me/conversations/cnv_1/attachments/cna_png').set('Cookie', 'op_network_creator_session=abc');
+    expect(file.status).toBe(200);
+    expect(file.headers['content-type']).toBe('image/png');
+    expect(file.headers['content-security-policy']).toContain('sandbox');
+    expect(file.headers['cache-control']).toBe('no-store');
+    expect(calls.at(-1)).toEqual({ method: 'GET', path: '/creators/me/conversations/cnv_1/attachments/cna_png', cookie: 'op_network_creator_session=abc' });
+
+    const html = await request(app).get('/creator-api/creators/me/conversations/cnv_1/attachments/cna_html').set('Cookie', 'op_network_creator_session=abc');
+    expect(html.status).toBe(502);
+    expect(html.headers['content-type']).toContain('application/json');
+    const gone = await request(app).get('/creator-api/creators/me/conversations/cnv_1/attachments/cna_gone').set('Cookie', 'op_network_creator_session=abc');
+    expect(gone).toMatchObject({ status: 410, body: { error: 'attachment_removed' } });
   });
 });
 
