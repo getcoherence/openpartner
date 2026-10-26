@@ -2,9 +2,10 @@
 /**
  * The creator's Getting started checklist on Discover: the profile and
  * storefront steps have buttons that go there, the storefront step can be
- * declined ("No thanks", remembered by the Network), a partnership a brand
- * started counts as a first program, and the card goes away when every
- * step is done or declined.
+ * declined ("No thanks") and the programs step put off ("Not now"), both
+ * remembered by the Network; a partnership a brand started counts as a
+ * first program; and the card goes away when every step is done or
+ * dismissed. Plus the program filters, which start collapsed.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -33,8 +34,9 @@ beforeEach(() => {
     profileComplete: false,
     profileMissing: [{ field: 'bio', label: 'Write a bio' }],
     reviewStatus: 'pending',
+    checklistDismissed: {},
   };
-  storefront = { bookingsOpen: false, packages: [], setupDismissedAt: null };
+  storefront = { bookingsOpen: false, packages: [] };
   applications = [];
   affiliations = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -44,13 +46,16 @@ beforeEach(() => {
     const path = url.pathname.replace('/api/creator-api', '');
     requests.push({ method, path, body });
     if (path === '/creators/me' && method === 'GET') return json(200, me);
+    if (path === '/creators/me' && method === 'PATCH') {
+      const steps = (body?.checklistDismissed ?? {}) as Record<string, boolean>;
+      const next = { ...(me.checklistDismissed as Record<string, string>) };
+      for (const [k, v] of Object.entries(steps)) if (v) next[k] ??= '2026-10-26T10:00:00.000Z';
+      me = { ...me, checklistDismissed: next };
+      return json(200, { id: me.id, name: me.name, checklistDismissed: next });
+    }
     if (path === '/creators/me/requests') return json(200, { requests: applications });
     if (path === '/creators/me/affiliations') return json(200, { affiliations });
-    if (path === '/creators/me/storefront' && method === 'GET') return json(200, storefront);
-    if (path === '/creators/me/storefront' && method === 'PUT') {
-      storefront = { ...storefront, setupDismissedAt: body?.setupDismissed ? '2026-10-26T10:00:00.000Z' : null };
-      return json(200, { bookingsOpen: storefront.bookingsOpen, setupDismissedAt: storefront.setupDismissedAt });
-    }
+    if (path === '/creators/me/storefront') return json(200, storefront);
     if (path === '/offerings') return json(200, { offerings: [] });
     return json(404, { error: 'not_found' });
   }) as typeof fetch;
@@ -71,6 +76,11 @@ function renderDiscover() {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+}
+
+async function settled() {
+  await waitFor(() => expect(requests.some((r) => r.path === '/creators/me/storefront')).toBe(true));
+  await new Promise((r) => setTimeout(r, 20));
 }
 
 describe('Getting started', () => {
@@ -97,7 +107,7 @@ describe('Getting started', () => {
     renderDiscover();
     fireEvent.click(await screen.findByRole('button', { name: 'No thanks' }));
     await waitFor(() => expect(screen.queryByText('Set up your storefront')).toBeNull());
-    expect(requests.find((r) => r.method === 'PUT')).toMatchObject({ path: '/creators/me/storefront', body: { setupDismissed: true } });
+    expect(requests.find((r) => r.method === 'PATCH')).toMatchObject({ path: '/creators/me', body: { checklistDismissed: { storefront: true } } });
     // Still there for the rest.
     expect(screen.getByText('Getting started')).toBeTruthy();
 
@@ -107,38 +117,65 @@ describe('Getting started', () => {
     expect(screen.queryByText('Set up your storefront')).toBeNull();
   });
 
+  it('drops the programs step on Not now, for a creator who only wants a storefront', async () => {
+    renderDiscover();
+    fireEvent.click(await screen.findByRole('button', { name: 'Not now' }));
+    await waitFor(() => expect(screen.queryByText('Apply to your first program')).toBeNull());
+    expect(requests.find((r) => r.method === 'PATCH')).toMatchObject({ body: { checklistDismissed: { programs: true } } });
+    expect(screen.getByText('Set up your storefront')).toBeTruthy();
+  });
+
+  it('goes away for a storefront-only creator once the storefront is live', async () => {
+    me = { ...me, profileComplete: true, profileMissing: [], reviewStatus: 'approved', checklistDismissed: { programs: '2026-10-20T00:00:00.000Z' } };
+    storefront = { bookingsOpen: true, packages: [{ id: 'pkg_1' }] };
+    renderDiscover();
+    await settled();
+    expect(screen.queryByText('Getting started')).toBeNull();
+  });
+
   it('goes away once everything is done; a partnership a brand started counts as a first program', async () => {
     me = { ...me, profileComplete: true, profileMissing: [], reviewStatus: 'approved' };
-    storefront = { ...storefront, bookingsOpen: true, packages: [{ id: 'pkg_1' }] };
+    storefront = { bookingsOpen: true, packages: [{ id: 'pkg_1' }] };
     affiliations = [{ id: 'aff_1' }];
     renderDiscover();
-    await waitFor(() => expect(requests.some((r) => r.path === '/creators/me/storefront')).toBe(true));
-    await new Promise((r) => setTimeout(r, 20));
+    await settled();
     expect(screen.queryByText('Getting started')).toBeNull();
   });
 
   it('goes away when the storefront was declined and the rest is done', async () => {
-    me = { ...me, profileComplete: true, profileMissing: [], reviewStatus: 'approved' };
-    storefront = { ...storefront, setupDismissedAt: '2026-10-20T00:00:00.000Z' };
+    me = { ...me, profileComplete: true, profileMissing: [], reviewStatus: 'approved', checklistDismissed: { storefront: '2026-10-20T00:00:00.000Z' } };
     applications = [{ id: 'req_1', status: 'pending' }];
     renderDiscover();
-    await waitFor(() => expect(requests.some((r) => r.path === '/creators/me/storefront')).toBe(true));
-    await new Promise((r) => setTimeout(r, 20));
+    await settled();
     expect(screen.queryByText('Getting started')).toBeNull();
   });
 
-  it('shows the storefront step ticked while other steps remain', async () => {
-    storefront = { ...storefront, bookingsOpen: true, packages: [{ id: 'pkg_1' }] };
+  it('shows a finished storefront step ticked, without buttons', async () => {
+    storefront = { bookingsOpen: true, packages: [{ id: 'pkg_1' }] };
     renderDiscover();
     await screen.findByText('Set up your storefront');
     expect(screen.queryByRole('button', { name: 'Set up' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'No thanks' })).toBeNull();
   });
 
-  it('doesn’t offer the storefront step on a Network that can’t remember No thanks', async () => {
-    storefront = { bookingsOpen: false, packages: [] };
+  it('offers neither the storefront step nor Not now on a Network that can’t remember them', async () => {
+    const { checklistDismissed: _gone, ...older } = me;
+    me = older;
     renderDiscover();
-    await screen.findByText('Getting started');
+    await screen.findByText('Apply to your first program');
     expect(screen.queryByText('Set up your storefront')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Not now' })).toBeNull();
+  });
+});
+
+describe('program filters', () => {
+  it('start collapsed, and open from the Filters button', async () => {
+    renderDiscover();
+    const toggle = await screen.findByRole('button', { name: 'Filters' });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText('Attribution model')).toBeNull();
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText('Attribution model')).toBeTruthy();
   });
 });

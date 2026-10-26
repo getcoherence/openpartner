@@ -136,10 +136,10 @@ export function CreatorDiscoverPage() {
   // they're at least as long as any bounded program, so excluding them
   // would over-hide.
   const [minDuration, setMinDuration] = useState<'any' | '30' | '90' | '365'>('any');
-  // Filters open by default — they're the main way creators narrow the
-  // grid, and an unopened panel hid the most useful affordance behind a
-  // click. Toggle still collapses for users who want a denser view.
-  const [showFilters, setShowFilters] = useState(true);
+  // Filters start collapsed: with only a few programs on the Network they
+  // take more room than they save. The Filters button opens them, and
+  // shows how many are set.
+  const [showFilters, setShowFilters] = useState(false);
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedQ(q.trim()), 250);
@@ -236,6 +236,7 @@ export function CreatorDiscoverPage() {
           </div>
           <button
             type="button"
+            aria-expanded={showFilters}
             onClick={() => setShowFilters((s) => !s)}
             style={{
               background: showFilters ? `${theme.accentA15}` : 'transparent',
@@ -763,7 +764,13 @@ interface CreatorProfile {
   profileMissing?: Array<{ field: string; label: string }>;
   /** Operator review. Absent on an older Network. */
   reviewStatus?: 'pending' | 'approved' | 'rejected';
+  /** Getting started steps the creator dismissed, with when. Absent on an
+   *  older Network, which can't remember them. */
+  checklistDismissed?: Partial<Record<ChecklistStep, string>>;
 }
+
+/** Getting started steps a creator can dismiss. */
+type ChecklistStep = 'storefront' | 'programs';
 
 interface RequestRow {
   id: string;
@@ -774,22 +781,20 @@ interface RequestRow {
 interface StorefrontStatus {
   bookingsOpen: boolean;
   packages: unknown[];
-  /** "No thanks" to the storefront step. Absent on an older Network,
-   *  which can't remember it, so the step isn't offered there. */
-  setupDismissedAt?: string | null;
 }
 
-const STOREFRONT_KEY = ['creator-storefront'];
+const PROFILE_KEY = ['creator-my-profile'];
 
 /** Nudge for new creators: finish the profile (the Network's discovery
- *  bar, so brands can find them), get approved, set up a storefront or
- *  say no thanks, and join a first program. Card disappears once all are
- *  done. */
+ *  bar, so brands can find them), get approved, set up a storefront, and
+ *  join a first program. A creator can say no to the last two: some only
+ *  want a storefront, some only programs. Card disappears once all are
+ *  done or dismissed. */
 function CreatorOnboarding() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const profile = useQuery({
-    queryKey: ['creator-my-profile'],
+    queryKey: PROFILE_KEY,
     queryFn: () => creatorApi<CreatorProfile>('/creators/me'),
     staleTime: 30_000,
     retry: false,
@@ -808,14 +813,16 @@ function CreatorOnboarding() {
     retry: false,
   });
   const storefront = useQuery({
-    queryKey: STOREFRONT_KEY,
+    queryKey: ['creator-storefront'],
     queryFn: () => creatorApi<StorefrontStatus>('/creators/me/storefront'),
     staleTime: 30_000,
     retry: false,
   });
-  const noThanks = useMutation({
-    mutationFn: () => creatorApi<{ setupDismissedAt: string | null }>('/creators/me/storefront', { method: 'PUT', body: { setupDismissed: true } }),
-    onSuccess: (r) => qc.setQueryData<StorefrontStatus>(STOREFRONT_KEY, (s) => (s ? { ...s, setupDismissedAt: r.setupDismissedAt } : s)),
+  // Remembered by the Network, so the step stays gone on every device.
+  const dismiss = useMutation({
+    mutationFn: (step: ChecklistStep) =>
+      creatorApi<Pick<CreatorProfile, 'checklistDismissed'>>('/creators/me', { method: 'PATCH', body: { checklistDismissed: { [step]: true } } }),
+    onSuccess: (r) => qc.setQueryData<CreatorProfile>(PROFILE_KEY, (p) => (p ? { ...p, checklistDismissed: r.checklistDismissed } : p)),
   });
 
   // Wait for everything, so a done card doesn't flash up while loading.
@@ -829,10 +836,14 @@ function CreatorOnboarding() {
   // An older Network has no review step.
   const review = profile.data.reviewStatus;
   const approved = !review || review === 'approved';
+  const dismissed = profile.data.checklistDismissed;
   const sf = storefront.data;
-  const offerStorefront = !!sf && sf.setupDismissedAt === null;
+  // An older Network can't remember a "No thanks", so it isn't offered the
+  // storefront step at all (it was never on the checklist there).
+  const offerStorefront = !!sf && !!dismissed && !dismissed.storefront;
   const storefrontDone = !!sf?.bookingsOpen;
-  if (profileDone && approved && (!offerStorefront || storefrontDone) && joined) return null;
+  const programsDismissed = !!dismissed?.programs;
+  if (profileDone && approved && (!offerStorefront || storefrontDone) && (joined || programsDismissed)) return null;
 
   const items: Array<{ key: string; done: boolean; label: string; hint: string; action?: ReactNode }> = [
     {
@@ -873,7 +884,7 @@ function CreatorOnboarding() {
                 : 'Connect Stripe and turn on bookings, and brands can book your packages.',
             action: (
               <>
-                <Button size="sm" variant="ghost" onClick={() => noThanks.mutate()} disabled={noThanks.isPending}>
+                <Button size="sm" variant="ghost" onClick={() => dismiss.mutate('storefront')} disabled={dismiss.isPending}>
                   No thanks
                 </Button>
                 <Button size="sm" variant="secondary" onClick={() => navigate('/creator/storefront')}>
@@ -884,14 +895,24 @@ function CreatorOnboarding() {
           },
         ]
       : []),
-    {
-      key: 'apply',
-      done: joined,
-      label: 'Apply to your first program',
-      hint: approved
-        ? 'Browse below and click "View & apply" on anything that fits.'
-        : 'You can apply once your profile is approved. Browse below in the meantime.',
-    },
+    ...(programsDismissed && !joined
+      ? []
+      : [
+          {
+            key: 'apply',
+            done: joined,
+            label: 'Apply to your first program',
+            hint: approved
+              ? 'Browse below and click "View & apply" on anything that fits.'
+              : 'You can apply once your profile is approved. Browse below in the meantime.',
+            // For a creator who's only here for a storefront.
+            action: dismissed && (
+              <Button size="sm" variant="ghost" onClick={() => dismiss.mutate('programs')} disabled={dismiss.isPending}>
+                Not now
+              </Button>
+            ),
+          },
+        ]),
   ];
 
   return (
@@ -905,7 +926,7 @@ function CreatorOnboarding() {
           <CreatorStep key={it.key} done={it.done} label={it.label} hint={it.hint} action={it.action} />
         ))}
       </div>
-      <ErrorBanner error={noThanks.error} />
+      <ErrorBanner error={dismiss.error} />
     </Card>
   );
 }
