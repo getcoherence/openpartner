@@ -340,6 +340,7 @@ platformAuthRouter.post('/me/brands', addBrandLimit, async (req, res) => {
   // op_ref cookie from openpartner.dev (house-program.ts).
   await recordHouseSignup({
     brandTenantId: tenantId,
+    adminId,
     brandSlug: slug,
     displayName: body.data.displayName,
     crefs: signupCrefs(undefined, req.cookies),

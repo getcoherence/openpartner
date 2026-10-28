@@ -221,6 +221,7 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
   // signup there (house-program.ts). Best-effort; never fails the signup.
   await recordHouseSignup({
     brandTenantId: tenantId,
+    adminId,
     brandSlug: slug,
     displayName: body.data.displayName,
     crefs: signupCrefs(body.data.cref, req.cookies),

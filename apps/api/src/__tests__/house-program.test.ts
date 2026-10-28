@@ -205,10 +205,11 @@ async function setHouse(slug: string | null) {
   return request(app).put('/platform-admin/house-program').set('Cookie', await operatorCookie('admin')).send({ slug });
 }
 
-/** POST /signup as the portal's form does, with what the browser carries. */
-async function signup(o: { cookie?: string; cref?: string } = {}) {
-  const slug = `brand${rnd()}`;
-  slugs.push(slug);
+/** POST /signup as the portal's form does, with what the browser carries.
+ *  `user` is the brand's house-program user for this signup. */
+async function signup(o: { cookie?: string; cref?: string; slug?: string } = {}) {
+  const slug = o.slug ?? `brand${rnd()}`;
+  if (!o.slug) slugs.push(slug);
   let req = request(app).post('/signup');
   if (o.cookie) req = req.set('Cookie', o.cookie);
   const res = await req.send({
@@ -221,7 +222,9 @@ async function signup(o: { cookie?: string; cref?: string } = {}) {
     ...(o.cref ? { cref: o.cref } : {}),
   });
   expect([201, 202]).toContain(res.status);
-  return { tenantId: res.body.tenant.id as string, slug };
+  const tenantId = res.body.tenant.id as string;
+  const admin = await db(TABLES.Admin).where({ tenantId }).first('id');
+  return { tenantId, slug, user: `${tenantId}:${admin.id}` };
 }
 
 async function brandAdminCookie(tenantId: string): Promise<string> {
@@ -334,9 +337,9 @@ describe.skipIf(skipIntegration)('OpenPartner’s own program: click → signup 
     const brand = await signup({ cookie: `op_ref=${house.clickId}` });
 
     const [signupEvent] = await eventsOf(house.tenantId);
-    expect(signupEvent).toMatchObject({ type: 'signup', userId: brand.tenantId, externalEventId: `brand_signup:${brand.tenantId}` });
-    expect(signupEvent.metadata).toMatchObject({ source: 'brand_signup', brandSlug: brand.slug });
-    expect(await db(TABLES.Identity).where({ tenantId: house.tenantId, userId: brand.tenantId }).pluck('clickId')).toEqual([house.clickId]);
+    expect(signupEvent).toMatchObject({ type: 'signup', userId: brand.user, externalEventId: `brand_signup:${brand.user}` });
+    expect(signupEvent.metadata).toMatchObject({ source: 'brand_signup', brandTenantId: brand.tenantId, brandSlug: brand.slug });
+    expect(await db(TABLES.Identity).where({ tenantId: house.tenantId, userId: brand.user }).pluck('clickId')).toEqual([house.clickId]);
     expect(await db(TABLES.Attribution).where({ eventId: signupEvent.id }).first()).toMatchObject({ partnerId: house.partnerId });
     // Nothing is recorded in the new brand's own tenant.
     expect(await eventsOf(brand.tenantId)).toEqual([]);
@@ -348,7 +351,7 @@ describe.skipIf(skipIntegration)('OpenPartner’s own program: click → signup 
     expect(customer.metadata).toEqual({
       openpartner_role: 'merchant_self_subscription',
       openpartner_tenant_id: brand.tenantId,
-      openpartner_user_id: brand.tenantId,
+      openpartner_user_id: brand.user,
     });
     const [session] = stripeApi.calls.filter((c) => c.method === 'checkout.sessions.create');
     expect(session!.args[0]).not.toHaveProperty('client_reference_id');
@@ -396,9 +399,9 @@ describe.skipIf(skipIntegration)('OpenPartner’s own program: click → signup 
 
     const events = await eventsOf(house.tenantId);
     expect(events.map((e) => [e.type, e.userId])).toEqual([
-      ['signup', brand.tenantId],
-      ['subscription_created', brand.tenantId],
-      ['invoice_paid', brand.tenantId],
+      ['signup', brand.user],
+      ['subscription_created', brand.user],
+      ['invoice_paid', brand.user],
     ]);
     const invoice = events.find((e) => e.type === 'invoice_paid')!;
     expect(invoice).toMatchObject({ value: '49.00', currency: 'USD', externalEventId: invoiceId });
@@ -432,7 +435,7 @@ describe.skipIf(skipIntegration)('OpenPartner’s own program: click → signup 
       ts: new Date(Date.now() - 86_400_000),
     });
     const brand = await signup({ cookie: `op_ref=${other}`, cref: house.clickId });
-    expect(await db(TABLES.Identity).where({ tenantId: house.tenantId, userId: brand.tenantId }).pluck('clickId')).toEqual([house.clickId]);
+    expect(await db(TABLES.Identity).where({ tenantId: house.tenantId, userId: brand.user }).pluck('clickId')).toEqual([house.clickId]);
   });
 
   it('credits nobody without a house click, for another brand’s click, or with no program brand set', async () => {
@@ -465,21 +468,40 @@ describe.skipIf(skipIntegration)('OpenPartner’s own program: click → signup 
     expect(customer.metadata).toEqual({
       openpartner_role: 'merchant_self_subscription',
       openpartner_tenant_id: brand.tenantId,
-      openpartner_user_id: brand.tenantId,
+      openpartner_user_id: brand.user,
     });
   });
 
-  it('records a reclaimed signup once', async () => {
+  it('credits a reclaimed slug to the signup that reclaimed it, never the abandoned one', async () => {
     const house = await seedHouse();
     await setHouse(house.slug);
-    const first = await signup({ cookie: `op_ref=${house.clickId}` });
-    // The abandoned signup is reclaimed under the same slug.
-    const again = await request(app)
-      .post('/signup')
-      .set('Cookie', `op_ref=${house.clickId}`)
-      .send({ slug: first.slug, displayName: 'Referred Brand', adminEmail: `admin-${rnd()}@example.test`, adminName: 'Brand Admin', plan: 'flex', country: 'US' });
-    expect(again.body.tenant.id).toBe(first.tenantId);
-    expect(await eventsOf(house.tenantId)).toHaveLength(1);
+    const squatterClick = house.clickId;
+    const ownerClick = ulid();
+    const otherPartner = ulid();
+    await db(TABLES.Partner).insert({ id: otherPartner, tenantId: house.tenantId, name: 'Owner’s partner', email: `p-${otherPartner}@x.test` });
+    await db(TABLES.Click).insert({
+      id: ownerClick,
+      tenantId: house.tenantId,
+      partnerId: otherPartner,
+      programId: house.programId,
+      landingUrl: 'https://openpartner.test',
+      ipHash: 'h',
+      ts: new Date(),
+    });
+
+    // A partner squats two likely slugs with their own click and never
+    // confirms either. The owners reclaim them: one through another
+    // partner's link, one with no partner at all.
+    const squatA = await signup({ cookie: `op_ref=${squatterClick}` });
+    const squatB = await signup({ cookie: `op_ref=${squatterClick}` });
+    const ownerA = await signup({ slug: squatA.slug, cookie: `op_ref=${ownerClick}` });
+    const ownerB = await signup({ slug: squatB.slug });
+    expect([ownerA.tenantId, ownerB.tenantId]).toEqual([squatA.tenantId, squatB.tenantId]);
+
+    expect((await checkout(ownerA)).metadata.openpartner_user_id).toBe(ownerA.user);
+    expect(await db(TABLES.Identity).where({ tenantId: house.tenantId, userId: ownerA.user }).pluck('clickId')).toEqual([ownerClick]);
+    stripeApi.calls.length = 0;
+    expect((await checkout(ownerB)).metadata).not.toHaveProperty('openpartner_user_id');
   });
 });
 

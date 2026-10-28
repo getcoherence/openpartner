@@ -5,7 +5,8 @@
  * picked nothing here runs.
  *
  * A brand a partner referred is one user in the house tenant, keyed on the
- * brand's own tenant id:
+ * brand and the signup that created it (houseUserId: `<tenantId>:<adminId>`,
+ * the admin that signup created):
  *   - At signup (POST /signup, POST /me/brands) the partner click the
  *     visitor carries is stitched to that user and a `signup` Event is
  *     recorded (recordHouseSignup). The click comes from the signup page's
@@ -14,10 +15,18 @@
  *     router's `_cref` cookie is not read: every brand's clicks share it.
  *   - The brand's billing Customer (billing.ts, invoice-billing.ts) names
  *     that user in metadata.openpartner_user_id (houseCustomerMetadata), the
- *     link every connected brand uses. The house tenant's Stripe App
+ *     link every connected brand uses, while that signup's admin is still
+ *     one of the brand's. The house tenant's Stripe App
  *     connection to OpenPartner's billing account then records the brand's
  *     subscription and invoices as that user's, and credits the partner,
  *     exactly as for any brand's customers.
+ *
+ * Why the admin is in the key: /signup lets someone reclaim a slug whose
+ * signup was never activated, and the brand keeps its tenant id. The
+ * reclaim deletes the abandoned signup's admin, so whoever left a click on
+ * that attempt (squatting a likely slug, say) isn't credited for the brand
+ * that is eventually activated. The abandoned attempt's rows stay, as raw
+ * data does, crediting a signup that never paid.
  *
  * /webhooks/stripe sees the same Customers as OpenPartner's own billing,
  * resolved to the brand's own tenant, where the id names nobody; it ignores
@@ -25,11 +34,13 @@
  *
  * Only a referred brand leaves a trace: without a house click there is no
  * Identity, no Event and no metadata. Everything here is best-effort and
- * never fails a signup or a checkout.
+ * never fails a signup or a checkout. Billing's lookup reads through the
+ * privileged pool, with every query naming its tenant, so it never waits on
+ * a second app-pool connection while the request holds one.
  */
 
 import type { Knex } from 'knex';
-import { TABLES, type ClickRow, type IdentityRow, type PlatformSettingRow } from '@openpartner/db';
+import { TABLES, type AdminRow, type ClickRow, type IdentityRow, type PlatformSettingRow } from '@openpartner/db';
 import { recordClickConversion } from './conversion-ingest.js';
 import { db as platformDb } from './db.js';
 import { withTenantTransaction } from './tenancy.js';
@@ -66,6 +77,11 @@ export async function setHouseProgramSettings(
   return value;
 }
 
+/** The house-program user for a brand as one signup created it. */
+export function houseUserId(brandTenantId: string, adminId: string): string {
+  return `${brandTenantId}:${adminId}`;
+}
+
 /** The click ids a signup request carries, best first: the signup page's
  *  `?cref=` (sent in the body), then the op_ref cookie. */
 export function signupCrefs(bodyCref: unknown, cookies: Record<string, unknown> | undefined): string[] {
@@ -82,12 +98,13 @@ export type HouseSignupResult =
 
 /**
  * Credit a new brand's signup to the house program partner whose click the
- * visitor carries. Idempotent on the brand (externalEventId
- * `brand_signup:<tenantId>`), so an abandoned signup reclaimed under the
- * same slug replays rather than recording twice. Never throws.
+ * visitor carries. Idempotent on the signup (externalEventId
+ * `brand_signup:<tenantId>:<adminId>`). Never throws.
  */
 export async function recordHouseSignup(input: {
   brandTenantId: string;
+  /** The admin this signup created. */
+  adminId: string;
   brandSlug: string;
   displayName: string;
   crefs: string[];
@@ -109,14 +126,20 @@ export async function recordHouseSignup(input: {
       const clickId = input.crefs.find((c) => ids.has(c));
       if (!clickId) return { status: 'skipped', reason: 'no_click' } as const;
 
+      const userId = houseUserId(input.brandTenantId, input.adminId);
       const result = await recordClickConversion(trx, houseTenantId, {
         clickId,
-        userId: input.brandTenantId,
+        userId,
         type: 'signup',
-        externalEventId: `brand_signup:${input.brandTenantId}`,
+        externalEventId: `brand_signup:${userId}`,
         // customerLabel shows only if the house program turns customer
         // labels on for its partners (referrals.ts).
-        metadata: { source: 'brand_signup', brandSlug: input.brandSlug, customerLabel: input.displayName },
+        metadata: {
+          source: 'brand_signup',
+          brandTenantId: input.brandTenantId,
+          brandSlug: input.brandSlug,
+          customerLabel: input.displayName,
+        },
       });
       if (!result.ok) {
         console.warn('[house-program] signup not recorded', { brandTenantId: input.brandTenantId, error: result.error });
@@ -132,17 +155,22 @@ export async function recordHouseSignup(input: {
 
 /**
  * Metadata for a brand's new billing Customer: openpartner_user_id naming
- * the brand in the house program, when a partner referred it there. Empty
- * otherwise, and on any failure: billing never waits on the house program.
+ * the brand in the house program, when a partner referred the signup that
+ * created one of its current admins. Empty otherwise, and on any failure:
+ * billing never waits on the house program.
  */
 export async function houseCustomerMetadata(brandTenantId: string): Promise<{ openpartner_user_id?: string }> {
   try {
     const { tenantId: houseTenantId } = await getHouseProgramSettings(platformDb);
     if (!houseTenantId || houseTenantId === brandTenantId) return {};
-    const referred = await withTenantTransaction(houseTenantId, (trx) =>
-      trx<IdentityRow>(TABLES.Identity).where({ tenantId: houseTenantId, userId: brandTenantId }).first('id'),
-    );
-    return referred ? { openpartner_user_id: brandTenantId } : {};
+    const adminIds = (await platformDb<AdminRow>(TABLES.Admin).where({ tenantId: brandTenantId }).pluck('id')) as string[];
+    if (adminIds.length === 0) return {};
+    const referred = await platformDb<IdentityRow>(TABLES.Identity)
+      .where({ tenantId: houseTenantId })
+      .whereIn('userId', adminIds.map((id) => houseUserId(brandTenantId, id)))
+      .orderBy('stitchedAt', 'asc')
+      .first('userId');
+    return referred ? { openpartner_user_id: referred.userId } : {};
   } catch (err) {
     console.error('[house-program] referral lookup failed', { brandTenantId, err });
     return {};
