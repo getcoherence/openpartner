@@ -66,6 +66,7 @@ import {
   adminReleaseStorefrontImport,
   adminRemindCreator,
   adminRunCreatorReminders,
+  adminRunStorefrontNudge,
   adminSendCreatorMessage,
   adminSetCreatorReview,
   adminSetFeaturedVendors,
@@ -1305,13 +1306,14 @@ platformAdminRouter.post(
 );
 
 // --------------------------------------------------------------------------
-// Notifications — setup reminders to brands + profile reminders to creators
+// Notifications — setup reminders to brands, profile reminders and the
+// storefront nudge to creators
 // --------------------------------------------------------------------------
 //
-// Both sweeps are OFF until an operator turns them on here (they email real
+// Every sweep is OFF until an operator turns it on here (they email real
 // people). The console previews exactly who the next run would email
 // (dryRun), can run one now, and can nudge a single brand/creator. Brand
-// reminders run in openpartner; creator reminders run on the Network (which
+// reminders run in openpartner; creator emails run on the Network (which
 // owns creators + the unsubscribe flow) and are triggered from here.
 
 platformAdminRouter.get('/platform-admin/notifications', requirePlatformAdmin, async (_req, res) => {
@@ -1331,6 +1333,7 @@ const notificationSettingsSchema = z
   .object({
     brandSetupReminders: z.boolean().optional(),
     creatorProfileReminders: z.boolean().optional(),
+    creatorStorefrontNudge: z.boolean().optional(),
   })
   .strict();
 
@@ -1386,6 +1389,40 @@ platformAdminRouter.post('/platform-admin/notifications/creator-profile/run', re
     await writeAudit(db, {
       actor,
       action: 'notifications.creator_profile.run',
+      targetType: 'platform',
+      detail: { sent: result.sent, failed: result.failed },
+    });
+  }
+  res.json(result);
+});
+
+platformAdminRouter.post('/platform-admin/notifications/creator-storefront/run', requirePlatformAdmin, async (req, res) => {
+  const body = runSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const actor = req.platformAdminActor!;
+  if (!body.data.dryRun && actor.role !== 'admin') return res.status(403).json({ error: 'read_only_operator' });
+  const networkUrl = networkOr503(res);
+  if (!networkUrl) return;
+  let result;
+  try {
+    result = await adminRunStorefrontNudge(networkUrl, { dryRun: body.data.dryRun });
+  } catch (err) {
+    // A live run that timed out may still be sending: record that it was
+    // started.
+    if (!body.data.dryRun) {
+      await writeAudit(db, {
+        actor,
+        action: 'notifications.creator_storefront.run',
+        targetType: 'platform',
+        detail: { error: networkErrorBody(err).detail.slice(0, 200) },
+      });
+    }
+    return res.status(502).json(networkErrorBody(err));
+  }
+  if (!body.data.dryRun) {
+    await writeAudit(db, {
+      actor,
+      action: 'notifications.creator_storefront.run',
       targetType: 'platform',
       detail: { sent: result.sent, failed: result.failed },
     });

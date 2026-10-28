@@ -320,7 +320,7 @@ describe.skipIf(skipIntegration)('one-click unsubscribe', () => {
 
 describe.skipIf(skipIntegration)('ops console — notifications', () => {
   it('switches default off; only admin operators change them', async () => {
-    expect(await getNotificationSettings(db)).toEqual({ brandSetupReminders: false, creatorProfileReminders: false });
+    expect(await getNotificationSettings(db)).toEqual({ brandSetupReminders: false, creatorProfileReminders: false, creatorStorefrontNudge: false });
     const support = await makeOperator('support');
     const denied = await request(app).put('/platform-admin/notifications').set('Cookie', support).send({ brandSetupReminders: true });
     expect(denied.status).toBe(403);
@@ -328,7 +328,7 @@ describe.skipIf(skipIntegration)('ops console — notifications', () => {
     const admin = await makeOperator('admin');
     const ok = await request(app).put('/platform-admin/notifications').set('Cookie', admin).send({ brandSetupReminders: true });
     expect(ok.status).toBe(200);
-    expect(ok.body.settings).toEqual({ brandSetupReminders: true, creatorProfileReminders: false });
+    expect(ok.body.settings).toEqual({ brandSetupReminders: true, creatorProfileReminders: false, creatorStorefrontNudge: false });
     const read = await request(app).get('/platform-admin/notifications').set('Cookie', support);
     expect(read.body.settings.brandSetupReminders).toBe(true);
   });
@@ -397,6 +397,59 @@ describe.skipIf(skipIntegration)('ops console — notifications', () => {
     const audit = await db(TABLES.PlatformAuditLog).where({ action: 'creator.profile_reminder', targetId: 'crt_1' }).first();
     expect(audit).toBeDefined();
     await db(TABLES.PlatformAuditLog).where({ targetId: 'crt_1' }).del();
+  });
+
+  it('the storefront email previews and sends through the Network, sends by admins only, audited', async () => {
+    process.env.NETWORK_URL = netUrl;
+    process.env.NETWORK_ADMIN_API_KEY = 'netadm_test_key_0123456789abcdef';
+    const support = await makeOperator('support');
+    const admin = await makeOperator('admin');
+    const row = {
+      creatorId: 'crt_1',
+      email: 'c@x.test',
+      name: 'C',
+      handle: 'c',
+      audience: { platform: 'youtube', count: 31400 },
+      packages: 0,
+      publishedPackages: 0,
+      bookingsOpen: false,
+      paymentsReady: false,
+    };
+
+    netReply = { status: 200, body: { dryRun: true, eligible: [row], sent: 0, failed: 0 } };
+    const preview = await request(app).post('/platform-admin/notifications/creator-storefront/run').set('Cookie', support).send({ dryRun: true });
+    expect(preview.status).toBe(200);
+    expect(preview.body.eligible).toEqual([row]);
+    expect(netCalls.at(-1)).toMatchObject({
+      method: 'POST',
+      path: '/admin/storefront-nudge/run',
+      body: { dryRun: true, limit: 100, publicUrl: netUrl },
+    });
+
+    const denied = await request(app).post('/platform-admin/notifications/creator-storefront/run').set('Cookie', support).send({ dryRun: false });
+    expect(denied.status).toBe(403);
+
+    netReply = { status: 200, body: { dryRun: false, eligible: [row], sent: 1, failed: 0 } };
+    const sent = await request(app).post('/platform-admin/notifications/creator-storefront/run').set('Cookie', admin).send({ dryRun: false });
+    expect(sent.body).toMatchObject({ sent: 1, failed: 0 });
+    expect(netCalls.at(-1)).toMatchObject({ path: '/admin/storefront-nudge/run', body: { dryRun: false } });
+    expect(await db(TABLES.PlatformAuditLog).where({ action: 'notifications.creator_storefront.run' }).first()).toBeDefined();
+    await db(TABLES.PlatformAuditLog).where({ action: 'notifications.creator_storefront.run' }).del();
+
+    // A live run whose call fails may still be sending: it's audited anyway.
+    netReply = { status: 500, body: { error: 'internal_error' } };
+    const broken = await request(app).post('/platform-admin/notifications/creator-storefront/run').set('Cookie', admin).send({ dryRun: false });
+    expect(broken.status).toBe(502);
+    const failedAudit = await db(TABLES.PlatformAuditLog).where({ action: 'notifications.creator_storefront.run' }).first();
+    expect(String((failedAudit?.detail as { error?: string } | undefined)?.error)).toContain('500');
+    await db(TABLES.PlatformAuditLog).where({ action: 'notifications.creator_storefront.run' }).del();
+
+    const on =await request(app).put('/platform-admin/notifications').set('Cookie', admin).send({ creatorStorefrontNudge: true });
+    expect(on.body.settings.creatorStorefrontNudge).toBe(true);
+
+    delete process.env.NETWORK_URL;
+    const offline = await request(app).post('/platform-admin/notifications/creator-storefront/run').set('Cookie', admin).send({ dryRun: true });
+    expect(offline.status).toBe(503);
   });
 
   it('releases a storefront import claim on the Network, admins only, audited', async () => {

@@ -311,6 +311,22 @@ const JOBS: ScheduledJob[] = [
     },
   },
   {
+    name: 'creator-storefront-nudge',
+    cronExpr: '45 15 * * *',
+    description:
+      'Hosted multi-tenant, when switched on in the ops console: trigger the Network to email creators a week in who have no storefront, once each (daily 15:45 UTC)',
+    handler: async () => {
+      if (getTenancyMode() !== 'multi') return { skipped: 'single_tenant' };
+      const { getNotificationSettings } = await import('./platform-settings.js');
+      if (!(await getNotificationSettings(db)).creatorStorefrontNudge) return { skipped: 'disabled' };
+      const { adminRunStorefrontNudge, platformNetworkUrl } = await import('./network-client.js');
+      const networkUrl = platformNetworkUrl();
+      if (!networkUrl || !process.env.NETWORK_ADMIN_API_KEY) return { skipped: 'network_admin_not_configured' };
+      const r = await adminRunStorefrontNudge(networkUrl, { dryRun: false });
+      return { sent: r.sent, failed: r.failed, eligible: r.eligible.length };
+    },
+  },
+  {
     name: 'funding-collector',
     cronExpr: '*/5 * * * *',
     description:

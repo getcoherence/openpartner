@@ -15,13 +15,17 @@ export interface NotificationSettings {
   brandSetupReminders: boolean;
   /** Daily trigger of the Network's creator profile-completion reminders. */
   creatorProfileReminders: boolean;
+  /** Daily trigger of the Network's storefront nudge: one email to
+   *  creators a week in with no storefront. */
+  creatorStorefrontNudge: boolean;
 }
 
-/** Off until an operator turns them on — both sweeps email real people,
+/** Off until an operator turns them on — every sweep emails real people,
  *  so the first run should be a deliberate act after a preview. */
 const NOTIFICATION_DEFAULTS: NotificationSettings = {
   brandSetupReminders: false,
   creatorProfileReminders: false,
+  creatorStorefrontNudge: false,
 };
 
 const NOTIFICATIONS_KEY = 'notifications';
@@ -33,6 +37,8 @@ export async function getNotificationSettings(db: Knex): Promise<NotificationSet
     brandSetupReminders: typeof v.brandSetupReminders === 'boolean' ? v.brandSetupReminders : NOTIFICATION_DEFAULTS.brandSetupReminders,
     creatorProfileReminders:
       typeof v.creatorProfileReminders === 'boolean' ? v.creatorProfileReminders : NOTIFICATION_DEFAULTS.creatorProfileReminders,
+    creatorStorefrontNudge:
+      typeof v.creatorStorefrontNudge === 'boolean' ? v.creatorStorefrontNudge : NOTIFICATION_DEFAULTS.creatorStorefrontNudge,
   };
 }
 

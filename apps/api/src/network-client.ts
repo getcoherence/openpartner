@@ -891,6 +891,7 @@ async function callNetworkAdmin<T = void>(
   path: string,
   body?: Record<string, unknown>,
   extraHeaders: Record<string, string> = {},
+  timeoutMs = 10_000,
 ): Promise<T> {
   const adminKey = process.env.NETWORK_ADMIN_API_KEY;
   if (!adminKey) throw new Error('NETWORK_ADMIN_API_KEY not set — cannot moderate on the Network');
@@ -904,7 +905,7 @@ async function callNetworkAdmin<T = void>(
       'user-agent': 'OpenPartner-Vendor/1',
     },
     body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const text = await res.text();
   if (!res.ok) {
@@ -1397,6 +1398,50 @@ export async function adminRunCreatorReminders(
     // same URL we reach it on, including any ingress path prefix.
     publicUrl: networkUrl,
   });
+}
+
+// The storefront nudge: one email to creators a week in with no open
+// storefront. Same split as the profile reminders. See the Network's
+// src/storefront-nudge.ts.
+
+export interface StorefrontNudgePreview {
+  creatorId: string;
+  email: string;
+  name: string;
+  handle: string | null;
+  /** Their biggest channel, when it has 1,000 or more followers. */
+  audience: { platform: string; count: number } | null;
+  /** Packages saved, drafts included, and how many are published. */
+  packages: number;
+  publishedPackages: number;
+  bookingsOpen: boolean;
+  paymentsReady: boolean;
+}
+
+export interface StorefrontNudgeRunResult {
+  dryRun: boolean;
+  eligible: StorefrontNudgePreview[];
+  sent: number;
+  failed: number;
+}
+
+/** Creators per run. The Network sends one at a time, so this keeps a run
+ *  well inside the timeout below; the rest go out the next day. */
+const STOREFRONT_NUDGE_RUN_LIMIT = 100;
+
+export async function adminRunStorefrontNudge(
+  networkUrl: string,
+  opts: { dryRun: boolean },
+): Promise<StorefrontNudgeRunResult> {
+  return callNetworkAdmin<StorefrontNudgeRunResult>(
+    networkUrl,
+    'POST',
+    '/admin/storefront-nudge/run',
+    { dryRun: opts.dryRun, limit: STOREFRONT_NUDGE_RUN_LIMIT, publicUrl: networkUrl },
+    {},
+    // A run's sends happen before the Network answers.
+    90_000,
+  );
 }
 
 /** Send one creator their next reminder now. Throws NetworkAdminError with
