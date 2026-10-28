@@ -85,7 +85,7 @@ While consent is pending, the SDK keeps the click from the URL in memory and doe
 
 Clicks from visitors who never consent can't be credited, and Admin → Tracking health counts them among the clicks that never landed.
 
-**Regional consent.** `consent: 'regional'` asks only where the law asks first. The SDK starts as `'pending'` and asks OpenPartner which rule applies where the visitor is (`GET /consent-region`, by IP address, nothing stored). In the EU, the rest of the EEA, the UK and Switzerland, and whenever the country is unknown or the answer takes over 1.5 seconds, it waits for `setConsent('granted')`. Everywhere else it starts as if granted, unless `setConsent()` came first or the browser sends Global Privacy Control or Do Not Track (`privacySignals: 'ignore'` starts anyway). `op.consentRegion()` resolves to `{ rule: 'opt_in' | 'opt_out', country }`, so your banner can ask first in one place and show a notice with a Decline in the other. Call `setConsent('denied')` on load for a visitor who declined before. Script tag: `data-consent="regional"`, and `data-gpc="ignore"`.
+**Regional consent.** `consent: 'regional'` asks only where the law asks first. The SDK starts as `'pending'` and asks OpenPartner which rule applies where the visitor is (`GET /consent-region`, by IP address, nothing stored). In the EU, the rest of the EEA, the UK and Switzerland, and whenever the country is unknown or the answer takes over 1.5 seconds, it waits for `setConsent('granted')`. Everywhere else it starts as if granted, unless `setConsent()` came first or the browser sends Global Privacy Control or Do Not Track (`privacySignals: 'ignore'` starts anyway). `op.consentRegion()` resolves to `{ rule: 'opt_in' | 'opt_out', country }`, so your banner can ask first in one place and show a notice with a Decline in the other. Call `setConsent('denied')` right after `init()` for a visitor who declined before. Script tag: `data-consent="pending" data-consent-region="on"` (an older `op.js` then just waits), plus `data-gpc="ignore"` to start despite a privacy signal; set `window.openpartnerConsent = 'denied'` (or `'granted'`) before the tag runs for a saved answer.
 
 ### Landing report
 
@@ -113,8 +113,9 @@ An OpenPartner portal serves a self-starting build of this SDK at `/op.js`. Past
 **Admin → Integrations** shows the exact tag for your program. It does everything above, keeps the referral in an `op_ref` cookie on your domain, and exposes `window.openpartner` (`openpartner.identify(userId)`, `openpartner.getReferral()`, `openpartner.setConsent('granted')`). Optional attributes:
 - `data-stripe-hosts="pay.yourbrand.com"`: a custom Payment Link domain.
 - `data-cookie-domain=".yourbrand.com"`: share `op_ref` across subdomains.
-- `data-consent="pending"`: wait for `openpartner.setConsent()` (see [Consent](#consent)). `"regional"`: wait only where the visitor's country needs consent first.
-- `data-gpc="ignore"`: with `data-consent="regional"`, start in an opt-out country even when the browser sends Global Privacy Control.
+- `data-consent="pending"`: wait for `openpartner.setConsent()` (see [Consent](#consent)).
+- `data-consent-region="on"`, with `data-consent="pending"`: wait only where the visitor's country needs consent first (see [Consent](#consent)).
+- `data-gpc="ignore"`: with `data-consent-region="on"`, start in an opt-out country even when the browser sends Global Privacy Control.
 - `data-stripe="off"`, `data-cookie="off"`, `data-landing="off"`: turn any of them off.
 
 The npm package carries the same file at `dist-global/openpartner.js`.

@@ -88,13 +88,16 @@ describe("consent: 'regional'", () => {
     expect(stored()).toBe(CLICK);
   });
 
-  it('counts a failed or malformed answer as opt-in', async () => {
+  it('counts a failed or malformed answer, or an opt-out without a country, as opt-in', async () => {
     const failures = [
       async () => {
         throw new TypeError('Failed to fetch');
       },
       answer({ error: 'rate_limited' }, 429),
       answer({ rule: 'maybe', country: 'US' }),
+      answer({ rule: 'opt_out' }),
+      answer({ rule: 'opt_out', country: null }),
+      answer({ rule: 'opt_out', country: 'United States' }),
     ];
     for (const failure of failures) {
       localStorage.clear();
@@ -114,6 +117,20 @@ describe("consent: 'regional'", () => {
     await vi.advanceTimersByTimeAsync(1500);
     expect(await op.consentRegion()).toEqual({ rule: 'opt_in', country: null });
     expect(stored()).toBeNull();
+  });
+
+  it('keeps the 1.5-second limit without AbortController, and ignores a late answer', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('AbortController', undefined);
+    let late: (r: Response) => void = () => {};
+    region = () => new Promise<Response>((resolve) => (late = resolve));
+    const op = init();
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(await op.consentRegion()).toEqual({ rule: 'opt_in', country: null });
+    late(new Response(JSON.stringify({ rule: 'opt_out', country: 'US' }), { status: 200 }));
+    await vi.advanceTimersByTimeAsync(10);
+    expect(stored()).toBeNull();
+    expect(op.getReferral()).toBeNull();
   });
 
   it('keeps a decline made before the answer, in an opt-out country', async () => {
@@ -153,5 +170,41 @@ describe("consent: 'regional'", () => {
     const op = init({ consent: 'pending' });
     expect(await op.consentRegion()).toBeNull();
     expect(calls('/consent-region')).toHaveLength(0);
+  });
+});
+
+describe('the script tag (auto.ts)', () => {
+  async function loadTag(dataset: Record<string, string>) {
+    const tag = document.createElement('script');
+    tag.src = 'https://op.test/op.js';
+    Object.assign(tag.dataset, { apiUrl: 'https://op.test', ...dataset });
+    Object.defineProperty(document, 'currentScript', { value: tag, configurable: true });
+    delete window.openpartner;
+    vi.resetModules();
+    await import('../auto.js');
+    instances.push(window.openpartner!);
+    return window.openpartner!;
+  }
+
+  afterEach(() => {
+    Object.defineProperty(document, 'currentScript', { value: null, configurable: true });
+    delete window.openpartnerConsent;
+    delete window.openpartner;
+  });
+
+  it('applies a decline the page queued before it ran, ahead of an opt-out answer', async () => {
+    window.openpartnerConsent = 'denied';
+    const op = await loadTag({ consent: 'pending', consentRegion: 'on' });
+    expect((await op.consentRegion())!.rule).toBe('opt_out');
+    await flush();
+    expect(stored()).toBeNull();
+    expect(document.cookie).not.toContain('op_ref=');
+    expect(calls('/attribution/landing')).toHaveLength(0);
+  });
+
+  it('starts in an opt-out country with data-consent-region="on" and nothing queued', async () => {
+    const op = await loadTag({ consent: 'pending', consentRegion: 'on' });
+    await op.consentRegion();
+    expect(stored()).toBe(CLICK);
   });
 });

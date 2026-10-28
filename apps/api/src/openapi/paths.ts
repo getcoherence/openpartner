@@ -615,7 +615,7 @@ Unauthenticated by design, like identify: any origin (CORS), 120 requests per mi
     operationId: 'getConsentRegion',
     summary: 'The consent rule for this visitor',
     description: `
-The browser SDK calls this on page load in \`consent: 'regional'\` mode (script tag: \`data-consent="regional"\`), before it reads or writes anything. Where the answer is \`opt_in\`, or when the call fails or takes longer than 1.5 seconds, the SDK waits for \`setConsent('granted')\` as in \`'pending'\` mode. Where it's \`opt_out\`, the SDK starts tracking unless \`setConsent('denied')\` came first, or the browser sends a Global Privacy Control or Do Not Track signal (unless the SDK was told to ignore those: \`privacySignals: 'ignore'\`, script tag \`data-gpc="ignore"\`).
+The browser SDK calls this on page load in \`consent: 'regional'\` mode (script tag: \`data-consent="pending" data-consent-region="on"\`), before it reads or writes anything. Where the answer is \`opt_in\`, or when the call fails or takes longer than 1.5 seconds, the SDK waits for \`setConsent('granted')\` as in \`'pending'\` mode. Where it's \`opt_out\`, the SDK starts tracking unless \`setConsent('denied')\` came first, or the browser sends a Global Privacy Control or Do Not Track signal (unless the SDK was told to ignore those: \`privacySignals: 'ignore'\`, script tag \`data-gpc="ignore"\`).
 
 The country comes from the client IP address. Nothing is stored, and the response isn't cacheable. Unauthenticated: any origin (CORS), no credentials, 300 requests per minute per client IP.`,
     access: { kind: 'public' },

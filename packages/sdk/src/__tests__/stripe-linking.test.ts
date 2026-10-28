@@ -157,9 +157,12 @@ describe('the script-tag build', () => {
     expect(configFromScript({ src: 'https://x.test/op.js', dataset: { consent: 'denied' } })).toMatchObject({
       consent: 'denied',
     });
-    expect(configFromScript({ src: 'https://x.test/op.js', dataset: { consent: 'regional', gpc: 'ignore' } })).toMatchObject({
-      consent: 'regional',
-      privacySignals: 'ignore',
+    expect(
+      configFromScript({ src: 'https://x.test/op.js', dataset: { consent: 'pending', consentRegion: 'on', gpc: 'ignore' } }),
+    ).toMatchObject({ consent: 'regional', privacySignals: 'ignore' });
+    // The region switch needs pending: an op.js that predates it then waits.
+    expect(configFromScript({ src: 'https://x.test/op.js', dataset: { consentRegion: 'on' } })).toMatchObject({
+      consent: 'granted',
     });
     // Anything else is the default, never a value the SDK doesn't know.
     expect(configFromScript({ src: 'https://x.test/op.js', dataset: { consent: 'yes' } })).toMatchObject({

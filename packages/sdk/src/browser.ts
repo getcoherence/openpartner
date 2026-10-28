@@ -73,6 +73,7 @@ export interface ConsentRegion {
 /** How long `consent: 'regional'` waits for its answer before treating the
  *  visitor as opt-in. */
 const REGION_TIMEOUT_MS = 1500;
+const COUNTRY_RE = /^[A-Z]{2}$/;
 
 export interface OpenPartnerConfig {
   /** Base URL of your OpenPartner API, e.g. "https://openpartner.example.com". */
@@ -406,24 +407,35 @@ export class OpenPartner {
     return region;
   }
 
-  /** GET /consent-region, with no credentials. Any failure, a slow answer
-   *  or a malformed one is opt-in. */
+  /** GET /consent-region, with no credentials. Any failure, a malformed
+   *  answer, an opt-out without a country, or no answer within the timeout
+   *  (with or without AbortController) is opt-in; a late answer is ignored. */
   private async fetchRegion(): Promise<ConsentRegion> {
-    if (typeof fetch === 'undefined') return { rule: 'opt_in', country: null };
+    const optIn: ConsentRegion = { rule: 'opt_in', country: null };
+    if (typeof fetch === 'undefined') return optIn;
     const abort = typeof AbortController === 'undefined' ? null : new AbortController();
-    const timer = abort ? setTimeout(() => abort.abort(), REGION_TIMEOUT_MS) : null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<ConsentRegion>((resolve) => {
+      timer = setTimeout(() => {
+        abort?.abort();
+        resolve(optIn);
+      }, REGION_TIMEOUT_MS);
+    });
+    const lookup = requestJson<Partial<ConsentRegion>>(`${this.config.apiUrl}/consent-region`, {
+      method: 'GET',
+      credentials: 'omit',
+      ...(abort ? { signal: abort.signal } : {}),
+    }).then(
+      (res): ConsentRegion => {
+        const country = typeof res?.country === 'string' && COUNTRY_RE.test(res.country) ? res.country : null;
+        return res?.rule === 'opt_out' && country ? { rule: 'opt_out', country } : { rule: 'opt_in', country };
+      },
+      () => optIn,
+    );
     try {
-      const res = await requestJson<Partial<ConsentRegion>>(`${this.config.apiUrl}/consent-region`, {
-        method: 'GET',
-        credentials: 'omit',
-        ...(abort ? { signal: abort.signal } : {}),
-      });
-      const country = typeof res?.country === 'string' ? res.country : null;
-      return { rule: res?.rule === 'opt_out' ? 'opt_out' : 'opt_in', country };
-    } catch {
-      return { rule: 'opt_in', country: null };
+      return await Promise.race([lookup, timeout]);
     } finally {
-      if (timer) clearTimeout(timer);
+      clearTimeout(timer);
     }
   }
 
