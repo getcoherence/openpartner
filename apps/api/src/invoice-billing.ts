@@ -259,6 +259,10 @@ export async function startInvoiceSubscription(
   input: StartInvoiceSubscription,
 ): Promise<{ subscription: Stripe.Subscription; invoice: Stripe.Invoice | null; adopted: boolean }> {
   const { tenantId, terms } = input;
+  // As at card Checkout (billing.ts): a referred brand's house-program user
+  // id rides along on a new Customer. Looked up before the Tenant row lock
+  // below, which it doesn't need.
+  const houseMetadata = await houseCustomerMetadata(tenantId);
 
   const customerId = await withTenantTransaction(tenantId, async (trx) => {
     const tenant = await trx<TenantRow>(TABLES.Tenant)
@@ -273,13 +277,7 @@ export async function startInvoiceSubscription(
     const customer = await stripe.customers.create({
       email: input.billingEmail ?? input.adminEmail ?? undefined,
       name: input.legalName ?? tenant?.displayName ?? undefined,
-      // As at card Checkout (billing.ts): a referred brand's house-program
-      // user id rides along.
-      metadata: {
-        openpartner_role: BILLING_CUSTOMER_ROLE,
-        openpartner_tenant_id: tenantId,
-        ...(await houseCustomerMetadata(tenantId)),
-      },
+      metadata: { openpartner_role: BILLING_CUSTOMER_ROLE, openpartner_tenant_id: tenantId, ...houseMetadata },
     });
     await trx<TenantRow>(TABLES.Tenant).where({ id: tenantId }).update({ stripeCustomerId: customer.id, updatedAt: new Date() });
     return customer.id;

@@ -77,6 +77,17 @@ vi.mock('stripe', async () => {
       collection_method: 'charge_automatically',
       items: { data: [] },
     }),
+    // Pay-by-invoice (invoice-billing.ts startInvoiceSubscription).
+    'subscriptions.list': async () => ({ object: 'list', data: [], has_more: false }),
+    'subscriptions.create': async (p: unknown) => ({
+      id: `sub_${ulid()}`,
+      object: 'subscription',
+      status: 'active',
+      collection_method: 'send_invoice',
+      items: { data: (p as { items: Array<{ price: string }> }).items.map((i) => ({ price: { id: i.price } })) },
+      latest_invoice: null,
+    }),
+    'invoices.list': async () => ({ object: 'list', data: [], has_more: false }),
     'promotionCodes.retrieve': missing('promotion code'),
     'promotionCodes.list': async () => ({ object: 'list', data: [] }),
     'coupons.retrieve': missing('coupon'),
@@ -97,9 +108,13 @@ vi.mock('stripe', async () => {
         retrieve: call('checkout.sessions.retrieve'),
       },
     };
-    instance.invoices = { retrieve: call('invoices.retrieve') };
+    instance.invoices = { retrieve: call('invoices.retrieve'), list: call('invoices.list') };
     instance.invoicePayments = { list: call('invoicePayments.list') };
-    instance.subscriptions = { retrieve: call('subscriptions.retrieve') };
+    instance.subscriptions = {
+      retrieve: call('subscriptions.retrieve'),
+      list: call('subscriptions.list'),
+      create: call('subscriptions.create'),
+    };
     instance.promotionCodes = { retrieve: call('promotionCodes.retrieve'), list: call('promotionCodes.list') };
     instance.coupons = { retrieve: call('coupons.retrieve') };
     return instance;
@@ -209,15 +224,23 @@ async function signup(o: { cookie?: string; cref?: string } = {}) {
   return { tenantId: res.body.tenant.id as string, slug };
 }
 
-/** The brand's admin starts card Checkout; returns the Customer it created. */
-async function checkout(brand: { tenantId: string; slug: string }) {
+async function brandAdminCookie(tenantId: string): Promise<string> {
   const adminId = ulid();
-  await db(TABLES.Admin).insert({ id: adminId, tenantId: brand.tenantId, email: `billing-${adminId}@x.test`, name: 'Billing', activatedAt: new Date() });
-  const { plaintext } = await createSession(db, { tenantId: brand.tenantId, principalKind: 'admin', principalId: adminId });
-  const res = await request(app)
-    .post(`/t/${brand.slug}/billing/checkout`)
-    .set('Cookie', `op_session=${plaintext}`)
-    .send({ successUrl: 'https://app.openpartner.test/ok', cancelUrl: 'https://app.openpartner.test/no' });
+  await db(TABLES.Admin).insert({ id: adminId, tenantId, email: `billing-${adminId}@x.test`, name: 'Billing', activatedAt: new Date() });
+  const { plaintext } = await createSession(db, { tenantId, principalKind: 'admin', principalId: adminId });
+  return `op_session=${plaintext}`;
+}
+
+/** The brand's admin starts card Checkout (or, `byInvoice`, a pay-by-invoice
+ *  subscription); returns the Customer it created. */
+async function checkout(brand: { tenantId: string; slug: string }, o: { byInvoice?: boolean } = {}) {
+  const cookie = await brandAdminCookie(brand.tenantId);
+  const res = o.byInvoice
+    ? await request(app).post(`/t/${brand.slug}/billing/invoice-subscription`).set('Cookie', cookie).send({})
+    : await request(app)
+        .post(`/t/${brand.slug}/billing/checkout`)
+        .set('Cookie', cookie)
+        .send({ successUrl: 'https://app.openpartner.test/ok', cancelUrl: 'https://app.openpartner.test/no' });
   expect(res.status).toBe(200);
   const created = stripeApi.calls.filter((c) => c.method === 'customers.create');
   expect(created).toHaveLength(1);
@@ -431,6 +454,19 @@ describe.skipIf(skipIntegration)('OpenPartner’s own program: click → signup 
       const customer = await checkout(brand);
       expect(customer.metadata).not.toHaveProperty('openpartner_user_id');
     }
+  });
+
+  it('names the referred brand on a pay-by-invoice billing Customer too', async () => {
+    const house = await seedHouse();
+    await setHouse(house.slug);
+    const brand = await signup({ cookie: `op_ref=${house.clickId}` });
+    await db(TABLES.HostedBillingProfile).insert({ tenantId: brand.tenantId, collectionMethod: 'send_invoice' });
+    const customer = await checkout(brand, { byInvoice: true });
+    expect(customer.metadata).toEqual({
+      openpartner_role: 'merchant_self_subscription',
+      openpartner_tenant_id: brand.tenantId,
+      openpartner_user_id: brand.tenantId,
+    });
   });
 
   it('records a reclaimed signup once', async () => {
