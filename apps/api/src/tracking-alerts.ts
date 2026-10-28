@@ -10,11 +10,9 @@
  * program id (or `account`) as its subject; a check that passes, waits or
  * can't be checked has no open episode. So a check is emailed when it goes
  * from anything else to failing, not every day it stays failing. The first
- * run that evaluates a brand's checks records a `setup_baseline` row. If the
- * brand is older than BASELINE_QUIET_AFTER_DAYS by then, it predates the
- * checks: whatever fails on that run was failing already, so its episodes
- * open without an email, and only a change after that is news. A newer
- * brand's first run emails what fails, as any later run would.
+ * run to check a brand finds no episode for anything, so it emails one list
+ * of whatever fails then, and after that only a check that turns failing is
+ * news.
  *
  * Each flag or check is emailed once per episode, kept in TrackingAlert:
  *   - a flag with no open episode opens one and goes in the email, unless
@@ -53,9 +51,6 @@ export const TRACKING_ALERTS_CONFIG_KEY = 'tracking_alerts';
 export const RENOTIFY_COOLDOWN_DAYS = 7;
 /** An open episode not seen for this long closes. */
 export const RESOLVE_AFTER_DAYS = 3;
-/** A brand this old at its first setup-check run predates the checks: what
- *  fails on that run opens quietly. */
-export const BASELINE_QUIET_AFTER_DAYS = 2;
 
 const DAY = 86_400_000;
 
@@ -86,9 +81,6 @@ export type TrackingAlertSweep =
       /** Setup checks failing on this run. */
       failingChecks: number;
       flags: number;
-      /** This run was the brand's first setup-check run: `quiet` when what
-       *  failed on it opened without an email. */
-      baseline?: 'quiet' | 'emailed';
       opened: number;
       notified: number;
       resolved: number;
@@ -124,7 +116,6 @@ export async function sweepTenantTrackingAlerts(
     console.error('[tracking-alerts] setup checks failed', { tenantId, error: err instanceof Error ? err.message : String(err) });
   }
   const failing = (checks ?? []).filter((c) => c.status === 'fail');
-  const baseline = checks ? await firstSetupRun(db, tenantId, now, failing.length) : null;
 
   const alerts: Alert[] = [
     ...failing.map((c) => ({ kind: `setup_${c.id}`, subject: c.subject, detail: c, line: describeSetupCheck(c), check: true })),
@@ -146,7 +137,6 @@ export async function sweepTenantTrackingAlerts(
       .where({ tenantId, kind: alert.kind, subject: alert.subject })
       .where('notifiedAt', '>', cooldownSince)
       .first('id');
-    const quiet = !!recentlySent || (alert.check && baseline === 'quiet');
     const id = ulid();
     // The partial unique index allows one open episode per flag or check:
     // a second run racing this one opens nothing.
@@ -155,11 +145,11 @@ export async function sweepTenantTrackingAlerts(
        values (?, ?, ?, ?, ?, ?, ?, ?::jsonb)
        on conflict ("tenantId", kind, subject) where "resolvedAt" is null do nothing
        returning id`,
-      [TABLES.TrackingAlert, id, tenantId, alert.kind, alert.subject, now, now, quiet ? null : now, JSON.stringify(alert.detail)],
+      [TABLES.TrackingAlert, id, tenantId, alert.kind, alert.subject, now, now, recentlySent ? null : now, JSON.stringify(alert.detail)],
     );
     if (rows.length === 0) continue;
     opened += 1;
-    if (!quiet) fresh.push({ id, alert });
+    if (!recentlySent) fresh.push({ id, alert });
   }
 
   const resolved = await db(TABLES.TrackingAlert)
@@ -228,7 +218,6 @@ export async function sweepTenantTrackingAlerts(
   return {
     failingChecks: failing.length,
     flags: flags.length,
-    ...(baseline ? { baseline } : {}),
     opened,
     notified: emailed ? fresh.length : 0,
     resolved,
@@ -248,32 +237,3 @@ interface Alert {
   check: boolean;
 }
 
-/**
- * Is this the brand's first setup-check run? Records that it was, so the
- * next one isn't. `quiet` for a brand older than BASELINE_QUIET_AFTER_DAYS:
- * it predates the checks, and what fails now was failing before.
- */
-async function firstSetupRun(
-  db: Knex,
-  tenantId: string,
-  now: Date,
-  failing: number,
-): Promise<'quiet' | 'emailed' | null> {
-  const seen = await db(TABLES.TrackingAlert).where({ tenantId, kind: 'setup_baseline' }).first('id');
-  if (seen) return null;
-  // Opened and closed at once: a record, not an episode.
-  await db(TABLES.TrackingAlert).insert({
-    id: ulid(),
-    tenantId,
-    kind: 'setup_baseline',
-    subject: 'account',
-    openedAt: now,
-    lastSeenAt: now,
-    notifiedAt: null,
-    resolvedAt: now,
-    detail: { failing },
-  });
-  const tenant = await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first('createdAt');
-  const age = tenant ? now.getTime() - new Date(tenant.createdAt).getTime() : 0;
-  return age > BASELINE_QUIET_AFTER_DAYS * DAY ? 'quiet' : 'emailed';
-}

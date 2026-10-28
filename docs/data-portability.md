@@ -680,8 +680,7 @@ and codes (plus a fresh fetch of each destination and a Stripe read), so a
 restored instance shows the same ones, with two exceptions: it quotes no
 Stripe refusal for a partner code until one happens again (that's kept in
 `TrackingIssue`), and it compares Stripe payments with events only from when
-its own event log began. Its first alert run is a first setup-check run like
-any other.
+its own event log began. Its first alert run emails what fails then, once.
 
 `StripeEventLog` lists the brand Stripe events this deployment's attribution
 pipeline processed, so the Stripe catch-up ([stripe-app.md](stripe-app.md#missed-events--the-catch-up))

@@ -8,8 +8,7 @@
  *   - a setup check is emailed when it turns failing, and again only once
  *     it has passed for three days and fails anew; one that waits or can't
  *     be checked never is
- *   - a brand's first setup-check run opens what already fails quietly if
- *     the brand predates the checks, and emails it if the brand is new
+ *   - a brand's first run emails one list of whatever fails then
  *   - one email carries both: failing checks, then flags
  *   - checks that can't be computed don't hold the flags back, and their
  *     open episodes stay open
@@ -115,8 +114,6 @@ let sent: Message[] = [];
 let failSends: boolean | Set<string> = false;
 const adminIds: string[] = [];
 
-let tenantCreatedAt: Date;
-
 async function cleanup() {
   await db(TABLES.TrackingAlert).where({ tenantId: T }).del();
   await db(TABLES.Config).where({ tenantId: T, key: TRACKING_ALERTS_CONFIG_KEY }).del();
@@ -145,23 +142,7 @@ const setup = (...checks: SetupCheck[]) => {
   stub.checks = checks;
 };
 const episodes = () =>
-  db<TrackingAlertRow>(TABLES.TrackingAlert)
-    .where({ tenantId: T })
-    .whereNot({ kind: 'setup_baseline' })
-    .orderBy('openedAt')
-    .orderBy('id');
-/** This brand has had its first setup-check run. */
-const pastBaseline = () =>
-  db(TABLES.TrackingAlert).insert({
-    id: ulid(),
-    tenantId: T,
-    kind: 'setup_baseline',
-    subject: 'account',
-    openedAt: day(-30),
-    lastSeenAt: day(-30),
-    resolvedAt: day(-30),
-    detail: {},
-  });
+  db<TrackingAlertRow>(TABLES.TrackingAlert).where({ tenantId: T }).orderBy('openedAt').orderBy('id');
 
 beforeAll(async () => {
   __setMailerForTests({
@@ -170,18 +151,12 @@ beforeAll(async () => {
       sent.push(msg);
     },
   });
-  if (!skipIntegration) {
-    await cleanup();
-    tenantCreatedAt = (await db(TABLES.Tenant).where({ id: T }).first('createdAt')).createdAt;
-  }
+  if (!skipIntegration) await cleanup();
 });
 
 afterAll(async () => {
   __setMailerForTests(null);
-  if (!skipIntegration) {
-    await cleanup();
-    await db(TABLES.Tenant).where({ id: T }).update({ createdAt: tenantCreatedAt });
-  }
+  if (!skipIntegration) await cleanup();
   await db.destroy();
 });
 
@@ -193,7 +168,6 @@ beforeEach(async () => {
   stub.checksFail = false;
   if (skipIntegration) return;
   await cleanup();
-  await pastBaseline();
   await admin('owner@brand.test');
   await admin('ops@brand.test');
   await admin('gone@brand.test', { revoked: true });
@@ -376,36 +350,6 @@ describe.skipIf(skipIntegration)('setup checks', () => {
     expect(text).toContain('You get one email when a check fails or a flag first appears');
   });
 
-  it("opens what already fails quietly on the first run of a brand that predates the checks; a later failure emails", async () => {
-    await db(TABLES.TrackingAlert).where({ tenantId: T, kind: 'setup_baseline' }).del();
-    await db(TABLES.Tenant).where({ id: T }).update({ createdAt: day(-60) });
-    setup(DESTINATION);
-    flag(SAFARI);
-    expect(await sweepTenantTrackingAlerts(db, T, { now: D0 })).toEqual({
-      failingChecks: 1,
-      flags: 1,
-      baseline: 'quiet',
-      opened: 2,
-      notified: 1,
-      resolved: 0,
-      emailed: true,
-    });
-    // The flag is news; the check was failing before anyone looked.
-    expect(sent[0]!.subject).toBe('Tracking health flagged a change');
-    expect((await episodes()).map((e) => [e.kind, e.notifiedAt?.toISOString() ?? null])).toEqual([
-      ['setup_destination', null],
-      ['linkage_drop', D0.toISOString()],
-    ]);
-
-    sent = [];
-    flag();
-    setup(DESTINATION, CODES);
-    expect(await sweepTenantTrackingAlerts(db, T, { now: day(1) })).toMatchObject({ opened: 1, notified: 1, emailed: true });
-    expect(sent[0]!.subject).toBe('Tracking health: a setup check failing');
-    expect(sent[0]!.text).toContain(describeSetupCheck(CODES));
-    expect(sent[0]!.text).not.toContain(describeSetupCheck(DESTINATION));
-  });
-
   it("still emails new flags when the checks can't be computed, and keeps their open episodes", async () => {
     setup(DESTINATION);
     await sweepTenantTrackingAlerts(db, T, { now: D0 });
@@ -421,12 +365,16 @@ describe.skipIf(skipIntegration)('setup checks', () => {
     ]);
   });
 
-  it("emails what fails on a new brand's first run", async () => {
-    await db(TABLES.TrackingAlert).where({ tenantId: T, kind: 'setup_baseline' }).del();
-    await db(TABLES.Tenant).where({ id: T }).update({ createdAt: day(-1) });
-    setup(DESTINATION);
-    expect(await sweepTenantTrackingAlerts(db, T, { now: D0 })).toMatchObject({ baseline: 'emailed', notified: 1, emailed: true });
-    expect(await sweepTenantTrackingAlerts(db, T, { now: day(1) })).not.toHaveProperty('baseline');
+  it("emails a brand's first run with everything that fails then, once, and later only what turns failing", async () => {
+    setup(DESTINATION, CODES);
+    expect(await sweepTenantTrackingAlerts(db, T, { now: D0 })).toMatchObject({ failingChecks: 2, opened: 2, notified: 2, emailed: true });
+    expect(sent[0]!.subject).toBe('Tracking health: 2 setup checks failing');
+    expect(sent[0]!.text).toContain(describeSetupCheck(DESTINATION));
+    expect(sent[0]!.text).toContain(describeSetupCheck(CODES));
+
+    sent = [];
+    expect(await sweepTenantTrackingAlerts(db, T, { now: day(1) })).toMatchObject({ opened: 0, emailed: false });
+    expect(sent).toEqual([]);
   });
 });
 

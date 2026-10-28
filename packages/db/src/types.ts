@@ -949,15 +949,14 @@ export interface TrackingIssueRow {
 export type TrackingFlagKind = 'linkage_drop' | 'fast_sales';
 
 /** A setup check (apps/api/src/setup-checks.ts), as the alert job records
- *  it: `setup_<check id>`. `setup_baseline` marks a brand's first run. */
+ *  it: `setup_<check id>`. */
 export type SetupAlertKind =
   | 'setup_destination'
   | 'setup_script'
   | 'setup_linking'
   | 'setup_stripe'
   | 'setup_codes'
-  | 'setup_partners'
-  | 'setup_baseline';
+  | 'setup_partners';
 
 /** One episode of a flag the alert job has seen, so it emails each once
  *  (apps/api/src/tracking-alerts.ts). Not exported. */

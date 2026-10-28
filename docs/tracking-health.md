@@ -134,11 +134,8 @@ whose email failed aren't sent it again, and it stays on the page. A check or
 flag nobody has seen fail for three days closes; if it comes back after that,
 it's emailed again, unless it was emailed in the last seven days.
 
-The first run that checks an account's setup records that it did. If the
-account was more than two days old by then, it existed before setup checks
-did, and what fails on that run was failing already: it shows on the page
-without an email, and only a check that fails after that is emailed. A newer
-account's first run emails what fails, like any other run.
+The first run that checks an account's setup emails one list of whatever
+fails then. After that, a check is emailed only when it turns failing.
 
 The job needs the scheduler (`OPENPARTNER_ENABLE_SCHEDULER=1` on a
 self-host).
