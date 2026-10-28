@@ -918,6 +918,29 @@ export interface ClickLandingRow {
   host: string | null;
 }
 
+/** An admin's test of a program's tracking chain (migration
+ *  20261028010000_test_click, apps/api/src/test-clicks.ts). Never a Click:
+ *  nothing that reads clicks can see it. Not exported. */
+export interface TestClickRow {
+  id: string;
+  tenantId: string;
+  programId: string;
+  /** sha256 hex of the single-use token in the test link. */
+  tokenHash: string;
+  createdAt: Date;
+  /** The link must be opened by then. */
+  expiresAt: Date;
+  /** The click id the router sent to the destination; null until opened. */
+  clickId: string | null;
+  clickedAt: Date | null;
+  /** The URL the router redirected to, click id included. */
+  destination: string | null;
+  landedAt: Date | null;
+  /** The landing page's hostname only. */
+  landingHost: string | null;
+  identifiedAt: Date | null;
+}
+
 /** What a TrackingIssue counts (apps/api/src/tracking-issues.ts). */
 export type TrackingIssueKind =
   | 'identify_unknown_click'

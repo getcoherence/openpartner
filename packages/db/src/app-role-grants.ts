@@ -88,6 +88,10 @@ export const RESTRICTED_GRANTS: ReadonlyArray<{ table: string; grant: string }> 
   // The alert job opens, refreshes and closes flag episodes in place
   // (tracking-alerts.ts); only the tenant purge deletes one.
   { table: 'TrackingAlert', grant: 'select, insert, update' },
+  // An admin's test click (test-clicks.ts): created, then its steps are
+  // filled in; the retention sweep and the tenant purge delete it on the
+  // privileged pool.
+  { table: 'TestClick', grant: 'select, insert, update' },
   // Retiring a postback token is an UPDATE of revokedAt; no request
   // deletes one.
   { table: 'ConversionPostbackToken', grant: 'select, insert, update' },

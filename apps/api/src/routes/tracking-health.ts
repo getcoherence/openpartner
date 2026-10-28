@@ -27,6 +27,13 @@
  *
  *   ?refresh=1      read them again
  *
+ * POST /admin/tracking-health/test-click — `{ programId }`: a single-use
+ * test link for one program (test-clicks.ts). Returns `{ id, path,
+ * expiresAt }`; the portal opens the share-link base + `path`.
+ *
+ * GET /admin/tracking-health/test-click/:id — how far that test got: the
+ * link opened, the script reported it, a signup was linked to it.
+ *
  * GET|POST /config/tracking-alerts — `{ email }`: whether failing checks
  * and new flags are emailed to the admins (tracking-alerts.ts). On by
  * default.
@@ -43,6 +50,7 @@ import { tenantOf } from '../tenancy.js';
 import { TRACKING_HEALTH_MAX_DAYS, trackingHealth } from '../tracking-health.js';
 import { computeTrackingFlags } from '../tracking-flags.js';
 import { computeSetupChecks } from '../setup-checks.js';
+import { createTestClick, testClickResult } from '../test-clicks.js';
 import { readTrackingAlertSettings, saveTrackingAlertSettings } from '../tracking-alerts.js';
 import {
   RECONCILE_MAX_DAYS,
@@ -84,6 +92,28 @@ trackingHealthRouter.get('/admin/tracking-health/setup', requireAuth, requireAdm
   if (!parsed.success) return res.status(400).json({ error: 'invalid_query', detail: parsed.error.flatten() });
   const { db, tenantId } = tenantOf(req);
   res.json(await computeSetupChecks(db, tenantId, { refresh: parsed.data.refresh === '1' }));
+});
+
+export const testClickSchema = z.object({
+  programId: z.string().min(1).max(64),
+});
+
+trackingHealthRouter.post('/admin/tracking-health/test-click', requireAuth, requireAdmin, async (req, res) => {
+  const body = testClickSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const { db, tenantId } = tenantOf(req);
+  const result = await createTestClick(db, tenantId, body.data.programId);
+  if (!result.ok) return res.status(result.status).json({ error: result.error });
+  res.status(201).json({ id: result.id, path: result.path, expiresAt: result.expiresAt });
+});
+
+trackingHealthRouter.get('/admin/tracking-health/test-click/:id', requireAuth, requireAdmin, async (req, res) => {
+  const id = String(req.params.id);
+  if (id.length > 64) return res.status(404).json({ error: 'test_click_not_found' });
+  const { db, tenantId } = tenantOf(req);
+  const result = await testClickResult(db, tenantId, id);
+  if (!result) return res.status(404).json({ error: 'test_click_not_found' });
+  res.json(result);
 });
 
 export const trackingAlertSettingsSchema = z.object({

@@ -1,12 +1,16 @@
 import { Hono, type Context } from 'hono';
 import { ulid } from 'ulid';
 import { createHash } from 'node:crypto';
-import { clickDestination, createDb, TABLES, type LinkRow } from '@openpartner/db';
+import { clickDestination, createDb, TABLES, type LinkRow, type TestClickRow } from '@openpartner/db';
 import { checkIpCap, checkVelocity } from './velocity.js';
 
 type Db = Awaited<ReturnType<typeof createDb>>;
 
 const COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 90; // 90 days
+
+/** A test link's token: 32 random bytes, base64url (the API's test-clicks.ts). */
+const TEST_TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
+const TEST_LINK_GONE = 'This test link has expired or was already used. Send a new test click from Tracking health.';
 
 /** The Tenant columns {@link servesClicks} needs. */
 const TENANT_GATE_COLUMNS = ['id', 'status', 'approvalStatus', 'pendingDeletionAt'];
@@ -96,12 +100,67 @@ export function createRouterApp(db: Db): Hono {
     return resolveLink(c, link);
   }
 
+  // An admin's test click (Admin → Tracking health → Send a test click;
+  // the API's test-clicks.ts). The token is single-use and expires, and
+  // only the admin API creates TestClick rows, so a partner can't mark a
+  // click of their own as a test. It goes to the program's destination
+  // exactly as a partner's click would, but it is recorded on its TestClick
+  // row, never in Click, so nothing that reads clicks (attribution,
+  // payouts, counts, fraud review) can see it.
+  //
+  // No tenant slug in the URL: the token names the brand. Registered before
+  // the link shapes, which would otherwise read `_test` as a slug (tenant
+  // slugs are [a-z0-9-], so none is `_test`).
+  async function handleTestClick(c: Context): Promise<Response> {
+    const token = c.req.param('token') ?? '';
+    if (!TEST_TOKEN_RE.test(token)) return c.text('Link not found', 404);
+    const test = (await db<TestClickRow>(TABLES.TestClick)
+      .where({ tokenHash: createHash('sha256').update(token).digest('hex') })
+      .first()) as TestClickRow | undefined;
+    if (!test) return c.text('Link not found', 404);
+    if (test.clickedAt || new Date(test.expiresAt).getTime() <= Date.now()) return c.text(TEST_LINK_GONE, 410);
+
+    const tenant = (await db('Tenant').where({ id: test.tenantId }).first(TENANT_GATE_COLUMNS)) as
+      | TenantGate
+      | undefined;
+    if (!servesClicks(tenant)) return c.text('Tenant not found', 404);
+    const program = (await db(TABLES.Program)
+      .where({ id: test.programId, tenantId: test.tenantId })
+      .first(['destinationUrl', 'blockedAt'])) as { destinationUrl: string; blockedAt: Date | null } | undefined;
+    if (!program) return c.text('Program not found', 410);
+    if (program.blockedAt) return c.text('Link unavailable', 410);
+
+    if (process.env.NODE_ENV !== 'test' && checkIpCap(clientIpHash(c))) {
+      c.header('Retry-After', '60');
+      return c.text('Rate limited', 429);
+    }
+
+    const clickId = ulid();
+    const destination = clickDestination(program.destinationUrl, clickId);
+    // Claimed at most once: a second open, even a racing one, finds it used.
+    const claimed = await db(TABLES.TestClick)
+      .where({ id: test.id, clickedAt: null })
+      .where('expiresAt', '>', new Date())
+      .update({ clickId, clickedAt: new Date(), destination });
+    if (!claimed) return c.text(TEST_LINK_GONE, 410);
+
+    c.header('Set-Cookie', clickCookie(clickId));
+    return c.redirect(destination, 302);
+  }
+
+  app.get('/r/_test/:token', handleTestClick);
   app.get('/r/:slug/:linkKey', handleSlugKey);
   app.get('/r/:linkKey', handleKeyOnly);
   // Prefix-stripped variants (DO ingress). Registered after /health, and
   // Hono prefers static routes over params, so /health stays unaffected.
+  app.get('/_test/:token', handleTestClick);
   app.get('/:slug/:linkKey', handleSlugKey);
   app.get('/:linkKey', handleKeyOnly);
+
+  /** The first-party cookie a click sets, holding its id. */
+  function clickCookie(clickId: string): string {
+    return `_cref=${clickId}; Domain=${cookieDomain}; Path=/; Max-Age=${COOKIE_MAX_AGE_SECONDS}; SameSite=Lax`;
+  }
 
   async function resolveLink(c: Context, link: LinkRow | undefined) {
     if (!link) {
@@ -139,18 +198,7 @@ export function createRouterApp(db: Db): Hono {
     const clickId = ulid();
     const destination = clickDestination(destinationUrl, clickId);
 
-    // Prefer proxy headers when they're present (we run behind Caddy /
-    // DO's edge), but fall back to the node socket so an attacker who
-    // reaches the router directly and omits headers doesn't land on
-    // ipHash=null and bypass the cap.
-    const socketIp =
-      (c.env as { incoming?: { socket?: { remoteAddress?: string | null } } }).incoming?.socket
-        ?.remoteAddress ?? '';
-    const ipHash = hashIp(
-      c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ??
-        c.req.header('x-real-ip') ??
-        socketIp,
-    );
+    const ipHash = clientIpHash(c);
 
     // Hard per-IP cap — refuse before we hit the DB. Unlike velocity this
     // rejects outright; a real user clicking 300 links in a minute doesn't
@@ -206,15 +254,24 @@ export function createRouterApp(db: Db): Hono {
       fraudFlag,
     });
 
-    c.header(
-      'Set-Cookie',
-      `_cref=${clickId}; Domain=${cookieDomain}; Path=/; Max-Age=${COOKIE_MAX_AGE_SECONDS}; SameSite=Lax`,
-    );
+    c.header('Set-Cookie', clickCookie(clickId));
 
     return c.redirect(destination, 302);
   }
 
   return app;
+}
+
+/**
+ * The visitor's IP, hashed. Prefer proxy headers when they're present (we
+ * run behind Caddy / DO's edge), but fall back to the node socket so an
+ * attacker who reaches the router directly and omits headers doesn't land
+ * on ipHash=null and bypass the cap.
+ */
+function clientIpHash(c: Context): string | null {
+  const socketIp =
+    (c.env as { incoming?: { socket?: { remoteAddress?: string | null } } }).incoming?.socket?.remoteAddress ?? '';
+  return hashIp(c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? c.req.header('x-real-ip') ?? socketIp);
 }
 
 function hashIp(ip: string): string | null {

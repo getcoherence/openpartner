@@ -17,15 +17,22 @@
  * read "Nothing unusual". The checkbox beside them is the `tracking_alerts`
  * setting that emails a check turning failing and a new flag.
  *
+ * Each program there can send a test click (POST and GET
+ * /admin/tracking-health/test-click, apps/api/src/test-clicks.ts): a
+ * single-use link opened in a new tab, followed until the brand's site has
+ * reported it landing and linked it to a signup. A test click is never a
+ * Click, so it's credited, paid and counted nowhere.
+ *
  * Flags follow (GET /admin/tracking-health/flags,
  * apps/api/src/tracking-flags.ts): a browser or a partner that changed
  * against its own recent past, which one window can't show.
  */
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router';
-import { api } from '../../api.js';
+import { ApiError, api } from '../../api.js';
 import { theme } from '../../theme.js';
+import { useShareUrlRoot } from '../../lib/shareUrl.js';
 import { useIsMobile } from '../../lib/useMediaQuery.js';
 import { Button, Card, ErrorBanner, Page, SectionHeading, Select, Stat, Table, formatDate, money } from '../../ui.js';
 import { TenantLink } from '../../tenant-link.js';
@@ -164,6 +171,26 @@ export interface SetupChecksReport {
     subject: string;
     program: { id: string; name: string } | null;
     status: SetupCheckStatus;
+    summary: string;
+    fix: string | null;
+  }>;
+}
+
+export type TestClickStepStatus = 'done' | 'waiting' | 'missing' | 'pending';
+
+/** GET /admin/tracking-health/test-click/:id (apps/api/src/test-clicks.ts). */
+export interface TestClickReport {
+  id: string;
+  program: { id: string; name: string };
+  createdAt: string;
+  expiresAt: string;
+  state: 'waiting' | 'passed' | 'expired';
+  destination: string | null;
+  steps: Array<{
+    id: 'click' | 'landing' | 'identify';
+    title: string;
+    status: TestClickStepStatus;
+    at: string | null;
     summary: string;
     fix: string | null;
   }>;
@@ -672,13 +699,55 @@ function SetupChecksSection() {
     mutationFn: (email: boolean) => api<{ email: boolean }>('/config/tracking-alerts', { method: 'POST', body: { email } }),
     onSuccess: (next) => qc.setQueryData(['tracking-alerts'], next),
   });
+  const testRoot = useShareUrlRoot();
+  // The latest test click per program, while its panel is open.
+  const [tests, setTests] = useState<Record<string, { id: string; url: string }>>({});
+  const [testErrors, setTestErrors] = useState<Record<string, string>>({});
+  // Programs whose test link is being made. Each press is its own request,
+  // so starting a second program's test doesn't drop the first's.
+  const [making, setMaking] = useState<ReadonlySet<string>>(new Set());
+  const startTest = async (programId: string) => {
+    if (!testRoot) return;
+    // Opened now, inside the click, so the browser doesn't block it as a
+    // popup; it's sent to the link once the API has made it.
+    const tab = window.open('', '_blank');
+    setTestErrors(({ [programId]: _dropped, ...rest }) => rest);
+    setMaking((prev) => new Set(prev).add(programId));
+    try {
+      const made = await api<{ id: string; path: string; expiresAt: string }>('/admin/tracking-health/test-click', {
+        method: 'POST',
+        body: { programId },
+      });
+      const url = `${testRoot}${made.path}`;
+      if (tab) {
+        // The brand's page gets no handle on this one.
+        tab.opener = null;
+        tab.location.href = url;
+      }
+      setTests((prev) => ({ ...prev, [programId]: { id: made.id, url } }));
+    } catch (err) {
+      tab?.close();
+      setTestErrors((prev) => ({ ...prev, [programId]: testClickErrorMessage(err) }));
+    } finally {
+      setMaking((prev) => {
+        const next = new Set(prev);
+        next.delete(programId);
+        return next;
+      });
+    }
+  };
+
   const r = query.data;
-  const groups: Array<{ name: string; checks: SetupChecksReport['checks'] }> = [];
+  // Grouped by program id, not name: two programs may share a name.
+  const groups: Array<{ key: string; name: string; programId: string | null; testable: boolean; checks: SetupChecksReport['checks'] }> = [];
   for (const c of r?.checks ?? []) {
-    const name = c.program?.name ?? 'Whole account';
+    const key = c.program?.id ?? 'account';
     const last = groups[groups.length - 1];
-    if (last && last.name === name) last.checks.push(c);
-    else groups.push({ name, checks: [c] });
+    if (last && last.key === key) last.checks.push(c);
+    else groups.push({ key, name: c.program?.name ?? 'Whole account', programId: c.program?.id ?? null, testable: false, checks: [c] });
+    // A program without a script check sends partners to Stripe's own
+    // checkout, where nothing lands to test.
+    if (c.id === 'script') groups[groups.length - 1]!.testable = true;
   }
   const failing = r?.checks.filter((c) => c.status === 'fail').length ?? 0;
 
@@ -730,10 +799,41 @@ function SetupChecksSection() {
             </div>
           )}
           {groups.map((g) => (
-            <div key={g.name} style={{ marginTop: 16 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                {g.name}
+            <div key={g.key} style={{ marginTop: 16 }} data-group={g.key}>
+              <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  {g.name}
+                </div>
+                {g.programId && g.testable && (
+                  <span title={testRoot ? undefined : 'Set your router’s public URL in Settings first.'}>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={!testRoot || making.has(g.programId)}
+                      onClick={() => void startTest(g.programId!)}
+                    >
+                      {making.has(g.programId) ? 'Making a test link…' : 'Send a test click'}
+                    </Button>
+                  </span>
+                )}
               </div>
+              {g.programId && testErrors[g.programId] && (
+                <div style={{ marginTop: 8 }}>
+                  <ErrorBanner error={testErrors[g.programId]} />
+                </div>
+              )}
+              {g.programId && tests[g.programId] && (
+                <TestClickPanel
+                  test={tests[g.programId]!}
+                  onClose={() =>
+                    setTests((prev) => {
+                      const next = { ...prev };
+                      delete next[g.programId!];
+                      return next;
+                    })
+                  }
+                />
+              )}
               {g.checks.map((c) => (
                 <div
                   key={`${c.id}|${c.subject}`}
@@ -771,6 +871,141 @@ function SetupChecksSection() {
         </Card>
       )}
     </>
+  );
+}
+
+const TEST_CLICK_ERRORS: Record<string, string> = {
+  links_paused:
+    'Your partner links don’t record clicks right now (the account is waiting for approval, or is being deleted), so a test click can’t either.',
+  program_not_active: 'This program isn’t running, so its links record no clicks.',
+  stripe_checkout_destination:
+    'This program sends partners straight to a Stripe checkout, where nothing lands to test. The destination check covers it.',
+  too_many_test_clicks: 'That’s as many test clicks as one day allows. Try again tomorrow.',
+};
+
+function testClickErrorMessage(err: unknown): string {
+  const code = err instanceof ApiError ? (err.detail as { error?: string } | undefined)?.error : undefined;
+  return (code && TEST_CLICK_ERRORS[code]) ?? (err instanceof Error ? err.message : String(err));
+}
+
+const STEP_STATUS: Record<TestClickStepStatus, { label: string; bg: string; fg: string }> = {
+  done: { label: 'done', bg: theme.successSoft, fg: theme.success },
+  waiting: { label: 'waiting', bg: theme.surface2, fg: theme.textMuted },
+  missing: { label: 'not seen', bg: theme.warnSoft, fg: theme.warn },
+  pending: { label: 'next', bg: theme.surface2, fg: theme.textDim },
+};
+
+const timeOf = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+
+/**
+ * One test click, followed every two seconds until it passes or expires:
+ * the link opened, the brand's script reporting it, a signup linked to it.
+ * The first step that didn't happen says what to fix. Until the link is
+ * opened it can be opened here or copied (to try a phone, or a private
+ * window); it works once.
+ */
+function TestClickPanel({ test, onClose }: { test: { id: string; url: string }; onClose: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const query = useQuery({
+    queryKey: ['tracking-health-test-click', test.id],
+    queryFn: () => api<TestClickReport>(`/admin/tracking-health/test-click/${test.id}`),
+    refetchInterval: (q) => (q.state.data && q.state.data.state !== 'waiting' ? false : 2_000),
+  });
+  const t = query.data;
+  const opened = t?.steps[0]?.status === 'done';
+  const headline = !t
+    ? 'Test click'
+    : t.state === 'passed'
+      ? 'Test click passed: a partner’s click reaches your site and is linked to the customer who signs up.'
+      : t.state === 'expired'
+        ? 'Test click expired.'
+        : opened
+          ? 'Test click in progress.'
+          : `Test click: open the link by ${timeOf(t.expiresAt)}.`;
+
+  return (
+    <div
+      data-test-click={test.id}
+      style={{
+        marginTop: 10,
+        padding: '12px 14px',
+        background: theme.surface2,
+        borderRadius: theme.radiusSm,
+        border: `1px solid ${t?.state === 'passed' ? theme.success : theme.borderSubtle}`,
+      }}
+    >
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', justifyContent: 'space-between' }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: theme.text, lineHeight: 1.5 }}>{headline}</div>
+        <Button variant="ghost" size="sm" onClick={onClose}>
+          Close
+        </Button>
+      </div>
+      {query.error && <ErrorBanner error={query.error} />}
+      {t && !opened && t.state === 'waiting' && (
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginTop: 6, fontSize: 13 }}>
+          <a href={test.url} target="_blank" rel="noopener noreferrer" style={{ color: theme.accentText }}>
+            Open the test link
+          </a>
+          <button
+            type="button"
+            onClick={() => {
+              void navigator.clipboard.writeText(test.url).then(() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              });
+            }}
+            style={{ background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', fontSize: 13, color: theme.accentText }}
+          >
+            {copied ? 'Copied' : 'Copy it'}
+          </button>
+          <Muted>It works once.</Muted>
+        </div>
+      )}
+      {t?.destination && (
+        <div style={{ marginTop: 6, fontSize: 12, color: theme.textMuted, overflowWrap: 'anywhere' }}>
+          Sent to <code style={{ fontFamily: theme.fontMono }}>{t.destination}</code>
+        </div>
+      )}
+      {t?.steps.map((s) => (
+        <div
+          key={s.id}
+          data-step={s.id}
+          style={{ display: 'flex', gap: 12, alignItems: 'flex-start', padding: '8px 0', borderTop: `1px solid ${theme.borderSubtle}`, marginTop: 8 }}
+        >
+          <div style={{ width: 92, flexShrink: 0 }}>
+            <span
+              style={{
+                display: 'inline-block',
+                background: STEP_STATUS[s.status].bg,
+                color: STEP_STATUS[s.status].fg,
+                padding: '3px 9px',
+                borderRadius: 999,
+                fontSize: 11,
+                fontWeight: 600,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {STEP_STATUS[s.status].label}
+            </span>
+          </div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: theme.text }}>
+              {s.title}
+              {s.at && <span style={{ fontWeight: 400, color: theme.textMuted }}> · {timeOf(s.at)}</span>}
+            </div>
+            <div style={{ fontSize: 13, color: theme.text, marginTop: 2, lineHeight: 1.5 }}>{s.summary}</div>
+            {s.fix && (
+              <div style={{ marginTop: 4 }}>
+                <Muted>{s.fix}</Muted>
+              </div>
+            )}
+          </div>
+        </div>
+      ))}
+      <div style={{ marginTop: 8 }}>
+        <Muted>A test click is never credited, paid or counted, and needs no partner.</Muted>
+      </div>
+    </div>
   );
 }
 

@@ -55,6 +55,53 @@ The fetches and the Stripe read are kept for ten minutes; **Check again**
 runs them afresh. Every threshold is in `SETUP_THRESHOLDS`
 (`apps/api/src/setup-checks.ts`).
 
+### Send a test click
+
+The checks above judge your chain from real partner clicks, so until a
+partner sends one they can only wait. **Send a test click**, beside each
+program, proves the chain yourself: it opens a new tab on a single-use test
+link, and follows that click as it travels:
+
+| Step | Done when |
+|---|---|
+| Link opened | the router sent the click to the program's destination, with its click id where a partner's click would carry it (`?cref=`, or your `{click_id}`), and set the same cookie. |
+| Reached the script | the OpenPartner script on the page reported the click landing (`POST /attribution/landing`). Also done when the click was linked without a landing report: your server reads the click another way. |
+| Linked to a signup | your site linked the click to a signup or login (`identify()` or `POST /attribution/identify`). Sign up or log in in the tab the link opened; a private window helps if you're already signed in there. |
+
+The first step that didn't happen says what to fix, in the same words as
+the checks above: after a minute without a landing report, and three
+minutes after the landing without a signup. A step that arrives late still
+turns done. The page asks every two seconds until the test passes or
+expires. Until it's opened, the link can be opened again from the page or
+copied, to try a phone or another browser.
+
+**A test click is never a partner click.** It's recorded only on the test,
+never as a click, so it's credited, paid and counted nowhere: not in
+attribution or payouts, not in any click count, funnel or partner's numbers,
+not in fraud review, and not in an export. No partner is involved, so a
+program can be tested before its first partner joins. Your site's landing
+report and identify call for it answer `test: true`; the signup is not
+stitched to anything, and the user id isn't kept. If the tester goes on to
+buy, the test click credits nobody: the sale is credited only as it would be
+without it (a partner's code entered at checkout, or a customer already
+linked to a partner), so test with a code of your own, not a partner's. A
+checkout or conversion call carrying the test click id isn't counted under
+**Dropped by OpenPartner**.
+
+Only an admin can make one (`POST /admin/tracking-health/test-click`
+`{ "programId": … }`, then `GET /admin/tracking-health/test-click/<id>`).
+The test link is `/r/_test/<token>` under your share-link address: the token
+is random, kept only as a hash, and works once, so nobody can mark a click of
+their own as a test. It must be opened within 30 minutes. The landing and the
+signup count for 24 hours after the click. An account can make 20 a day. A
+program that sends partners straight to a Stripe-hosted checkout gets no
+button: nothing lands there, and the destination check covers it. While an
+account is waiting for approval its links record no clicks, so a test can't
+be sent either. Tests are deleted 90 days after they were made (the
+`test-click-purge` job, 06:50 UTC); until then, the test click id stored in
+the tester's browser is still recognised, so a later signup there isn't
+counted as an unknown click.
+
 ## Flags
 
 The rest of the page describes one window. Flags compare each browser and
@@ -281,6 +328,8 @@ can recognise your own typo.
 | Stripe checkout carried your own reference | Your Checkout Sessions put your own order or user id in `client_reference_id`, so partner clicks can't ride on it. Pass the referral there, or link customers with `openpartner_user_id` metadata. |
 | Coupon redemption with an unknown code | `POST /coupons/redeem` got a code no partner holds. |
 | Stripe refused a partner code's discount | Your Stripe wouldn't create the promotion code for a partner's code, so customers who enter it pay full price. Stripe's answer is shown under the code, and **Partner codes have their discount** above counts the codes still without one. OpenPartner Cloud retries every hour, so this can count many times a day. |
+
+A [test click](#send-a-test-click)'s id is never counted here.
 
 These counts stay on the deployment that recorded them: they are not part of
 an export (see [data portability](data-portability.md)).
