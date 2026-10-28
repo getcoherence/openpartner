@@ -452,7 +452,8 @@ Done Oct 18 2026: versions 0.1.0 and then 0.1.1 (the real icon) are uploaded to
 the **OpenPartner Apps** account (`acct_1URepJLKsWusNm7Z`). For a later version,
 bump `version` in `stripe-app.json`, repeat the last command, and switch the
 External test (step 5) to the new version: it stays on the version it was
-started with.
+started with. Now that the app is published (step 6), a new version also goes
+through App Review before Stripe releases it.
 
 ```bash
 stripe login --interactive --project-name openpartner-apps   # paste the live secret key
@@ -566,7 +567,7 @@ installed.
 | `STRIPE_APP_SECRET_KEY_SANDBOX` / `STRIPE_APP_CLIENT_ID_SANDBOX` | Optional: the app's managed-sandbox key and link |
 | `STRIPE_APP_WEBHOOK_SECRET` | The endpoint signing secrets from step 3, comma-separated |
 | `STRIPE_APP_REDIRECT_URI` | Optional. Defaults to `${PORTAL_URL}/api/stripe-app/oauth/callback`, and must exactly match a manifest URI |
-| `STRIPE_APP_AUTHORIZE_URL` | **Until the app is published.** Paste the External test tab's live-mode link whole (`https://marketplace.stripe.com/oauth/v2/chnlink_…/authorize?…`). Only its origin and path are used; `client_id` still comes from the vars above. It applies to every mode unless `_TEST` / `_SANDBOX` overrides it, since the live and test links have shared one channel so far. Unset = the public link, which works only after publishing. |
+| `STRIPE_APP_AUTHORIZE_URL` | **Leave unset.** The app is published, so installs use the public link. Before App Review it held the External test tab's live-mode link, pasted whole (`https://marketplace.stripe.com/oauth/v2/chnlink_…/authorize?…`), because the public link only works once the app is published. Only its origin and path are used; `client_id` still comes from the vars above. A `_TEST` / `_SANDBOX` variant overrides it for that mode. |
 
 Each mode is offered in the portal only when both its key and client id are set:
 
@@ -577,6 +578,9 @@ With nothing set, the card is hidden. Set these on the DO app's `api` component.
 `SECRETS_ENCRYPTION_KEY` (already set) encrypts the stored tokens.
 
 ### 5. External test
+
+Passed in prod on Oct 19 2026, before App Review. Setting
+`STRIPE_APP_AUTHORIZE_URL` (item 2) was only needed until the app was published.
 
 1. App details → **External test** → Get started, picking the uploaded version.
 2. Under **Test OAuth**, copy the **Live mode link** and the **Test mode link**.
@@ -627,6 +631,13 @@ so approve it first. Once published:
 2. Remove `STRIPE_APP_AUTHORIZE_URL` (and any `_TEST` / `_SANDBOX`), so installs
    use the public link.
 3. Redeploy.
+
+**Published Oct 28 2026.** Stripe approved the app, and it's listed at
+<https://marketplace.stripe.com/apps/openpartner>. Prod's `api` component has
+no `STRIPE_APP_AUTHORIZE_URL` (checked Oct 28 with `doctl apps spec get`), so
+items 2 and 3 are already done and installs use the public link. Item 1 still
+needs a look: compare the live `client_id` on the app's Settings tab with prod's
+`STRIPE_APP_CLIENT_ID`.
 
 ---
 
