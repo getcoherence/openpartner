@@ -105,6 +105,8 @@ import {
   setTenantCollection,
 } from '../invoice-billing.js';
 import { INVOICE_GRACE_DAYS_DEFAULT } from '../billing-plan.js';
+import { getHouseProgramSettings, setHouseProgramSettings } from '../house-program.js';
+import { activeConnectionForTenant } from '../stripe-app.js';
 import { stripe } from '../stripe.js';
 import { METER_RATES, NOTICE_DAYS } from '../fee-terms.js';
 import { previewPricingNotices, sendPricingNotices } from '../fee-notice.js';
@@ -1768,6 +1770,74 @@ platformAdminRouter.put(
       }
       throw err;
     }
+  },
+);
+
+// --------------------------------------------------------------------------
+// Own program — OpenPartner's own partner program (house-program.ts)
+// --------------------------------------------------------------------------
+//
+// The tenant whose partners refer brands to OpenPartner. While one is set,
+// a brand signup carrying one of its clicks is recorded there, and the
+// brand's billing Customer names it, so that tenant's Stripe App connection
+// to the billing account credits the brand's invoices. Unset, nothing is.
+
+async function houseProgramView() {
+  const settings = await getHouseProgramSettings(db);
+  if (!settings.tenantId) return { settings, tenant: null, stripeConnection: null, referredBrands: 0 };
+  const tenant = await db<TenantRow>(TABLES.Tenant)
+    .where({ id: settings.tenantId })
+    .first(['id', 'slug', 'displayName', 'status', 'approvalStatus']);
+  const conn = await activeConnectionForTenant(db, settings.tenantId);
+  const [referred] = (await db(TABLES.Event)
+    .where({ tenantId: settings.tenantId, type: 'signup' })
+    .whereLike('externalEventId', 'brand_signup:%')
+    .count({ c: '*' })) as Array<{ c: string | number }>;
+  return {
+    settings,
+    tenant: tenant ?? null,
+    stripeConnection: conn
+      ? { stripeAccountId: conn.stripeAccountId, livemode: conn.livemode, connectedAt: conn.connectedAt, lastEventAt: conn.lastEventAt }
+      : null,
+    referredBrands: Number(referred?.c ?? 0),
+  };
+}
+
+platformAdminRouter.get('/platform-admin/house-program', requirePlatformAdmin, async (_req, res) => {
+  res.json(await houseProgramView());
+});
+
+const houseProgramSchema = z
+  .object({
+    /** The program's tenant by slug; null turns crediting off. */
+    slug: z.string().trim().toLowerCase().min(1).max(64).nullable(),
+  })
+  .strict();
+
+platformAdminRouter.put(
+  '/platform-admin/house-program',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = houseProgramSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    let tenantId: string | null = null;
+    if (body.data.slug) {
+      const tenant = await db<TenantRow>(TABLES.Tenant).where({ slug: body.data.slug }).first(['id']);
+      if (!tenant) return res.status(404).json({ error: 'tenant_not_found' });
+      tenantId = tenant.id;
+    }
+    const actor = req.platformAdminActor!;
+    const before = await getHouseProgramSettings(db);
+    const settings = await setHouseProgramSettings(db, { tenantId }, actor.email);
+    await writeAudit(db, {
+      actor,
+      action: 'house_program.settings',
+      targetType: 'tenant',
+      targetId: tenantId,
+      detail: { before, after: settings },
+    });
+    res.json(await houseProgramView());
   },
 );
 

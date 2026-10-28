@@ -2403,6 +2403,31 @@
           "cref"
         ]
       },
+      "ConsentRegion": {
+        "type": "object",
+        "properties": {
+          "rule": {
+            "type": "string",
+            "enum": [
+              "opt_in",
+              "opt_out"
+            ],
+            "description": "`opt_in`: ask before storing anything (the EU, the rest of the EEA, the UK and Switzerland, and any visitor whose country is unknown). `opt_out`: track unless the visitor declines."
+          },
+          "country": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "ISO 3166-1 alpha-2, from the client IP address; null when unknown.",
+            "example": "US"
+          }
+        },
+        "required": [
+          "rule",
+          "country"
+        ]
+      },
       "EventResult": {
         "type": "object",
         "properties": {
@@ -11459,6 +11484,54 @@
           },
           "404": {
             "description": "`click_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/consent-region": {
+      "get": {
+        "operationId": "getConsentRegion",
+        "tags": [
+          "Attribution"
+        ],
+        "summary": "The consent rule for this visitor",
+        "description": "The browser SDK calls this on page load in `consent: 'regional'` mode (script tag: `data-consent=\"pending\" data-consent-region=\"on\"`), before it reads or writes anything. Where the answer is `opt_in`, or when the call fails or takes longer than 1.5 seconds, the SDK waits for `setConsent('granted')` as in `'pending'` mode. Where it's `opt_out`, the SDK starts tracking unless `setConsent('denied')` came first, or the browser sends a Global Privacy Control or Do Not Track signal (unless the SDK was told to ignore those: `privacySignals: 'ignore'`, script tag `data-gpc=\"ignore\"`).\n\nThe country comes from the client IP address. Nothing is stored, and the response isn't cacheable. Unauthenticated: any origin (CORS), no credentials, 300 requests per minute per client IP.\n\n**Access:** public, no API key. Rate-limited per client IP.",
+        "security": [],
+        "x-openpartner-access": {
+          "kind": "public",
+          "scopes": [],
+          "partner": false
+        },
+        "responses": {
+          "200": {
+            "description": "The rule.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsentRegion"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
             "content": {
               "application/json": {
                 "schema": {

@@ -32,6 +32,7 @@ import { db as privilegedDb } from './db.js';
 import { latestDeclaredCountries } from './country-access.js';
 import { getInvoiceBillingSettings, type InvoiceBillingSettings } from './platform-settings.js';
 import {
+  BILLING_CUSTOMER_ROLE,
   INVOICE_GRACE_DAYS_DEFAULT,
   invoiceOverdue,
   mirrorHostedBillingState,
@@ -40,6 +41,7 @@ import {
   type MirroredSubscriptionStatus,
 } from './billing-plan.js';
 import { withTenantTransaction } from './tenancy.js';
+import { houseCustomerMetadata } from './house-program.js';
 import { applyWhiteLabelFromSubscription, subscriptionHasWhiteLabel } from './white-label-billing.js';
 
 export const DAYS_UNTIL_DUE_DEFAULT = 15;
@@ -257,6 +259,10 @@ export async function startInvoiceSubscription(
   input: StartInvoiceSubscription,
 ): Promise<{ subscription: Stripe.Subscription; invoice: Stripe.Invoice | null; adopted: boolean }> {
   const { tenantId, terms } = input;
+  // As at card Checkout (billing.ts): a referred brand's house-program user
+  // id rides along on a new Customer. Looked up before the Tenant row lock
+  // below, which it doesn't need.
+  const houseMetadata = await houseCustomerMetadata(tenantId);
 
   const customerId = await withTenantTransaction(tenantId, async (trx) => {
     const tenant = await trx<TenantRow>(TABLES.Tenant)
@@ -271,7 +277,7 @@ export async function startInvoiceSubscription(
     const customer = await stripe.customers.create({
       email: input.billingEmail ?? input.adminEmail ?? undefined,
       name: input.legalName ?? tenant?.displayName ?? undefined,
-      metadata: { openpartner_role: 'merchant_self_subscription', openpartner_tenant_id: tenantId },
+      metadata: { openpartner_role: BILLING_CUSTOMER_ROLE, openpartner_tenant_id: tenantId, ...houseMetadata },
     });
     await trx<TenantRow>(TABLES.Tenant).where({ id: tenantId }).update({ stripeCustomerId: customer.id, updatedAt: new Date() });
     return customer.id;
