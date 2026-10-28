@@ -18,6 +18,10 @@
  *   stripe_foreign_reference  client_reference_id is something else
  *                             entirely (the brand's own order or user id)
  *   coupon_unknown_code       POST /coupons/redeem with a code nobody holds
+ *   reward_code_refused       the brand's Stripe wouldn't create a partner
+ *                             code's customer discount (customer-rewards.ts);
+ *                             `detail` keeps Stripe's answer, and the setup
+ *                             checks (setup-checks.ts) quote it
  *
  * Counting never fails the request that found the problem: the write runs
  * in a savepoint, so a failure can't abort the caller's transaction, and it
@@ -34,9 +38,11 @@ export const TRACKING_ISSUE_KINDS: readonly TrackingIssueKind[] = [
   'stripe_unknown_click',
   'stripe_foreign_reference',
   'coupon_unknown_code',
+  'reward_code_refused',
 ];
 
 const SAMPLE_MAX = 64;
+const DETAIL_MAX = 500;
 
 /** A click id: a ULID, 26 Crockford base32 characters. */
 const CLICK_ID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
@@ -46,11 +52,11 @@ export function looksLikeClickId(value: string): boolean {
 }
 
 /** The value a brand will recognise, minus anything that isn't printable. */
-function sample(ref: string | null | undefined): string | null {
+function sample(ref: string | null | undefined, max = SAMPLE_MAX): string | null {
   if (ref == null) return null;
   // eslint-disable-next-line no-control-regex
   const clean = ref.replace(/[\u0000-\u001f\u007f]/g, '').trim();
-  return clean ? clean.slice(0, SAMPLE_MAX) : null;
+  return clean ? clean.slice(0, max) : null;
 }
 
 export async function noteTrackingIssue(
@@ -58,6 +64,7 @@ export async function noteTrackingIssue(
   tenantId: string,
   kind: TrackingIssueKind,
   ref?: string | null,
+  detail?: string | null,
 ): Promise<void> {
   try {
     // A savepoint when `db` is the request's transaction, a transaction of
@@ -65,13 +72,23 @@ export async function noteTrackingIssue(
     // transaction would abort everything after it.
     await db.transaction(async (sp) => {
       await sp.raw(
-        `insert into ?? ("tenantId", "day", "kind", "count", "sampleRef", "firstSeenAt", "lastSeenAt")
-           values (?, (now() at time zone 'utc')::date, ?, 1, ?, now(), now())
+        `insert into ?? ("tenantId", "day", "kind", "count", "sampleRef", "detail", "firstSeenAt", "lastSeenAt")
+           values (?, (now() at time zone 'utc')::date, ?, 1, ?, ?, now(), now())
          on conflict ("tenantId", "day", "kind") do update
            set "count" = ??."count" + 1,
                "sampleRef" = coalesce(excluded."sampleRef", ??."sampleRef"),
+               "detail" = coalesce(excluded."detail", ??."detail"),
                "lastSeenAt" = excluded."lastSeenAt"`,
-        [TABLES.TrackingIssue, tenantId, kind, sample(ref), TABLES.TrackingIssue, TABLES.TrackingIssue],
+        [
+          TABLES.TrackingIssue,
+          tenantId,
+          kind,
+          sample(ref),
+          sample(detail, DETAIL_MAX),
+          TABLES.TrackingIssue,
+          TABLES.TrackingIssue,
+          TABLES.TrackingIssue,
+        ],
       );
     });
   } catch (err) {
@@ -84,6 +101,8 @@ export interface TrackingIssueSummary {
   count: number;
   days: number;
   sampleRef: string | null;
+  /** What went wrong with the latest one, for kinds that know. */
+  detail: string | null;
   lastSeenAt: string;
 }
 
@@ -93,10 +112,11 @@ export async function trackingIssuesSince(db: Knex, tenantId: string, since: Dat
     .where({ tenantId })
     .andWhere('day', '>=', since.toISOString().slice(0, 10))
     .orderBy('lastSeenAt', 'desc')
-    .select('kind', 'count', 'sampleRef', 'lastSeenAt')) as Array<{
+    .select('kind', 'count', 'sampleRef', 'detail', 'lastSeenAt')) as Array<{
     kind: TrackingIssueKind;
     count: number;
     sampleRef: string | null;
+    detail: string | null;
     lastSeenAt: Date;
   }>;
   const byKind = new Map<TrackingIssueKind, TrackingIssueSummary>();
@@ -113,6 +133,7 @@ export async function trackingIssuesSince(db: Knex, tenantId: string, since: Dat
       count: row.count,
       days: 1,
       sampleRef: row.sampleRef,
+      detail: row.detail,
       lastSeenAt: new Date(row.lastSeenAt).toISOString(),
     });
   }

@@ -1,6 +1,8 @@
 /**
  * SSRF guard for server-side outbound HTTP — webhook deliveries
- * (webhook-dispatcher.ts) and partner postbacks (partner-postback.ts).
+ * (webhook-dispatcher.ts), partner postbacks (partner-postback.ts) and the
+ * setup checks' fetch of a program's destination (setup-checks.ts), which
+ * follows redirects itself, one guarded hop at a time.
  * Both fetch attacker-influenced URLs (a tenant admin sets webhook URLs; a
  * PARTNER sets postback URLs) and are usable as scan oracles (the webhook
  * test route returns status/error; postbacks store lastStatus/lastError).
@@ -239,18 +241,26 @@ export interface SafeFetchInit {
    *  hardened policy; 'admin' gets the full deployment policy (may use the
    *  private-CIDR escape hatch). */
   trust?: 'admin' | 'partner';
+  /** Read at most this many bytes of the response body into `body`.
+   *  Unset: the body is never read. */
+  readBody?: number;
 }
 
 export interface SafeFetchResult {
   status: number;
   ok: boolean;
+  /** The response's headers (a 3xx's Location is here, not followed). */
+  headers: Headers;
+  /** The first `readBody` bytes of the body, as UTF-8, when asked for. */
+  body?: string;
 }
 
 /**
  * Validate + resolve + pin, then fetch. Throws OutboundBlockedError (with a
  * stable code) for policy violations before any socket opens; propagates
- * genuine network errors from the request itself. Never follows redirects.
- * The response body is never read — callers only use status.
+ * genuine network errors from the request itself. Never follows redirects:
+ * a caller that does validates every hop by calling this again. The
+ * response body is never read unless `readBody` asks for its first bytes.
  */
 export async function safeFetch(
   rawUrl: string,
@@ -287,8 +297,9 @@ export async function safeFetch(
       dispatcher: dispatcher as any,
     });
     const status = res.status;
+    const body = init.readBody && res.body ? await readCapped(res.body, init.readBody) : undefined;
     // A 3xx (or opaque redirect status 0) is a non-delivery: we never follow.
-    return { status, ok: status >= 200 && status < 300 };
+    return { status, ok: status >= 200 && status < 300, headers: res.headers, ...(body !== undefined ? { body } : {}) };
   } finally {
     try {
       await res?.body?.cancel();
@@ -297,6 +308,24 @@ export async function safeFetch(
     }
     await dispatcher.destroy();
   }
+}
+
+/** Up to `max` bytes of a body, then the rest is dropped unread. */
+async function readCapped(stream: ReadableStream<Uint8Array>, max: number): Promise<string> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (size < max) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      size += value.byteLength;
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  return Buffer.concat(chunks).subarray(0, max).toString('utf8');
 }
 
 /** Why a destination was refused, in words a tenant or partner can act on. */

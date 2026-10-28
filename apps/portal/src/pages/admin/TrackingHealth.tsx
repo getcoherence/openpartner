@@ -10,10 +10,16 @@
  * last delivered anything. It says plainly what it can't see: a sale that
  * left no trace at all.
  *
- * Flags come first (GET /admin/tracking-health/flags,
+ * Setup checks come first (GET /admin/tracking-health/setup,
+ * apps/api/src/setup-checks.ts): pass or fail for each step of the chain,
+ * from a partner who can share a program to Stripe's events and the
+ * partner codes' discounts, so a brand whose tracking never worked doesn't
+ * read "Nothing unusual". The checkbox beside them is the `tracking_alerts`
+ * setting that emails a check turning failing and a new flag.
+ *
+ * Flags follow (GET /admin/tracking-health/flags,
  * apps/api/src/tracking-flags.ts): a browser or a partner that changed
- * against its own recent past, which one window can't show. The checkbox
- * beside them is the `tracking_alerts` setting that emails new ones.
+ * against its own recent past, which one window can't show.
  */
 import type { ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -39,7 +45,8 @@ type IssueKind =
   | 'conversion_unknown_click'
   | 'stripe_unknown_click'
   | 'stripe_foreign_reference'
-  | 'coupon_unknown_code';
+  | 'coupon_unknown_code'
+  | 'reward_code_refused';
 
 export interface TrackingHealthReport {
   window: { days: number; since: string; programId: string | null };
@@ -53,7 +60,15 @@ export interface TrackingHealthReport {
   coupons: { overrodeLink: number };
   codes: Array<{ partnerId: string; partnerName: string; customers: number; codeOnly: number }>;
   stripe: { recovered: number };
-  issues: Array<{ kind: IssueKind; count: number; days: number; sampleRef: string | null; lastSeenAt: string }>;
+  issues: Array<{
+    kind: IssueKind;
+    count: number;
+    days: number;
+    sampleRef: string | null;
+    /** What went wrong with the latest one, for kinds that know. */
+    detail?: string | null;
+    lastSeenAt: string;
+  }>;
   signals: {
     lastClickAt: string | null;
     lastLandingAt: string | null;
@@ -138,6 +153,22 @@ export type TrackingFlag =
       baseline: SalesTiming | null;
     };
 
+export type SetupCheckStatus = 'pass' | 'fail' | 'waiting' | 'unknown';
+
+/** GET /admin/tracking-health/setup (apps/api/src/setup-checks.ts). */
+export interface SetupChecksReport {
+  computedAt: string;
+  checks: Array<{
+    id: 'partners' | 'destination' | 'script' | 'linking' | 'stripe' | 'codes';
+    title: string;
+    subject: string;
+    program: { id: string; name: string } | null;
+    status: SetupCheckStatus;
+    summary: string;
+    fix: string | null;
+  }>;
+}
+
 /** GET /admin/tracking-health/flags (apps/api/src/tracking-flags.ts). */
 export interface TrackingFlagsReport {
   computedAt: string;
@@ -204,6 +235,10 @@ const ISSUES: Record<IssueKind, { label: string; fix: string }> = {
   coupon_unknown_code: {
     label: 'Coupon redemption with an unknown code',
     fix: 'POST /coupons/redeem was sent a code no partner holds: a typo, a deactivated code, or a code from another program.',
+  },
+  reward_code_refused: {
+    label: "Stripe refused a partner code's discount",
+    fix: 'Customers who enter that code pay full price. Stripe said why, under the code. The setup checks above count the codes still without one.',
   },
 };
 
@@ -316,6 +351,7 @@ export function AdminTrackingHealth() {
         </>
       }
     >
+      <SetupChecksSection />
       <FlagsSection />
 
       {report.error && <ErrorBanner error={report.error} />}
@@ -438,7 +474,12 @@ export function AdminTrackingHealth() {
               </div>,
               `${i.count.toLocaleString()}${i.days > 1 ? ` over ${i.days} days` : ''}`,
               formatDate(i.lastSeenAt, { relative: true }),
-              i.sampleRef ? <code key="s">{i.sampleRef}</code> : '—',
+              <div key="s">
+                {i.sampleRef ? <code>{i.sampleRef}</code> : '—'}
+                {i.detail && (
+                  <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 2, maxWidth: 360 }}>{i.detail}</div>
+                )}
+              </div>,
             ])}
             empty="Nothing dropped in this window."
           />
@@ -570,16 +611,58 @@ function flagText(flag: TrackingFlag): { headline: string; detail: string } {
   };
 }
 
+const STATUS: Record<SetupCheckStatus, { label: string; bg: string; fg: string }> = {
+  fail: { label: 'failing', bg: theme.dangerSoft, fg: theme.danger },
+  unknown: { label: 'can’t check', bg: theme.warnSoft, fg: theme.warn },
+  waiting: { label: 'waiting', bg: theme.surface2, fg: theme.textMuted },
+  pass: { label: 'passing', bg: theme.successSoft, fg: theme.success },
+};
+
+function CheckStatus({ status }: { status: SetupCheckStatus }) {
+  const s = STATUS[status];
+  return (
+    <span
+      style={{
+        display: 'inline-block',
+        background: s.bg,
+        color: s.fg,
+        padding: '3px 9px',
+        borderRadius: 999,
+        fontSize: 11,
+        fontWeight: 600,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {s.label}
+    </span>
+  );
+}
+
+/** "2 failing, 1 can't check, 4 passing": the order of STATUS. */
+function checkCounts(checks: SetupChecksReport['checks']): string {
+  return (Object.keys(STATUS) as SetupCheckStatus[])
+    .map((s) => [s, checks.filter((c) => c.status === s).length] as const)
+    .filter(([, n]) => n > 0)
+    .map(([s, n]) => `${n} ${STATUS[s].label}`)
+    .join(', ');
+}
+
 /**
- * Each browser and partner against its own recent past, with the setting
- * that emails new flags to the admins. Loads on its own: the flags read a
- * few months of sales.
+ * Pass or fail for each step of the tracking chain, per program and then
+ * account-wide, with the setting that emails a check turning failing (and
+ * a new flag; the `tracking_alerts` setting). Loads on its own: it fetches
+ * each program's destination and reads Stripe, which takes a few seconds.
  */
-function FlagsSection() {
+function SetupChecksSection() {
   const qc = useQueryClient();
-  const flags = useQuery({
-    queryKey: ['tracking-health-flags'],
-    queryFn: () => api<TrackingFlagsReport>('/admin/tracking-health/flags'),
+  const key = ['tracking-health-setup'];
+  const query = useQuery({
+    queryKey: key,
+    queryFn: () => api<SetupChecksReport>('/admin/tracking-health/setup'),
+  });
+  const again = useMutation({
+    mutationFn: () => api<SetupChecksReport>('/admin/tracking-health/setup?refresh=1'),
+    onSuccess: (fresh) => qc.setQueryData(key, fresh),
   });
   const alerts = useQuery({
     queryKey: ['tracking-alerts'],
@@ -589,30 +672,123 @@ function FlagsSection() {
     mutationFn: (email: boolean) => api<{ email: boolean }>('/config/tracking-alerts', { method: 'POST', body: { email } }),
     onSuccess: (next) => qc.setQueryData(['tracking-alerts'], next),
   });
-  const list = flags.data?.flags ?? [];
+  const r = query.data;
+  const groups: Array<{ name: string; checks: SetupChecksReport['checks'] }> = [];
+  for (const c of r?.checks ?? []) {
+    const name = c.program?.name ?? 'Whole account';
+    const last = groups[groups.length - 1];
+    if (last && last.name === name) last.checks.push(c);
+    else groups.push({ name, checks: [c] });
+  }
+  const failing = r?.checks.filter((c) => c.status === 'fail').length ?? 0;
 
   return (
     <>
       <SectionHeading
         actions={
-          alerts.data ? (
-            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, color: theme.textMuted, cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={alerts.data.email}
-                disabled={save.isPending}
-                onChange={(e) => save.mutate(e.target.checked)}
-                style={{ accentColor: theme.accent, margin: 0 }}
-              />
-              Email admins about new flags
-            </label>
-          ) : undefined
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            {alerts.data && (
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, color: theme.textMuted, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={alerts.data.email}
+                  disabled={save.isPending}
+                  onChange={(e) => save.mutate(e.target.checked)}
+                  style={{ accentColor: theme.accent, margin: 0 }}
+                />
+                Email admins about failing checks and new flags
+              </label>
+            )}
+            {r && (
+              <Button variant="ghost" size="sm" disabled={again.isPending} onClick={() => again.mutate()}>
+                {again.isPending ? 'Checking…' : 'Check again'}
+              </Button>
+            )}
+          </div>
         }
       >
-        Flags
+        Setup checks
       </SectionHeading>
-      {flags.error && <ErrorBanner error={flags.error} />}
+      {query.error && <ErrorBanner error={query.error} />}
+      {again.error && <ErrorBanner error={again.error} />}
       {save.error && <ErrorBanner error={save.error} />}
+      {query.isLoading && <Muted>Checking each step, from your partner links to your Stripe…</Muted>}
+      {r && (
+        <Card style={failing ? { borderColor: theme.danger } : undefined}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: theme.text }}>
+            {r.checks.length === 0
+              ? 'Nothing to check yet: create a program to start.'
+              : failing
+                ? `${failing} of ${r.checks.length} ${r.checks.length === 1 ? 'check' : 'checks'} ${failing === 1 ? 'is' : 'are'} failing.`
+                : r.checks.every((c) => c.status === 'pass')
+                  ? 'Every check passes.'
+                  : `Nothing failing: ${checkCounts(r.checks)}.`}
+          </div>
+          {failing > 0 && (
+            <div style={{ marginTop: 4 }}>
+              <Muted>{`${checkCounts(r.checks)}. Each failing check says what to change.`}</Muted>
+            </div>
+          )}
+          {groups.map((g) => (
+            <div key={g.name} style={{ marginTop: 16 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                {g.name}
+              </div>
+              {g.checks.map((c) => (
+                <div
+                  key={`${c.id}|${c.subject}`}
+                  data-check={c.id}
+                  style={{
+                    display: 'flex',
+                    gap: 12,
+                    alignItems: 'flex-start',
+                    padding: '10px 0',
+                    borderTop: `1px solid ${theme.borderSubtle}`,
+                    marginTop: 8,
+                  }}
+                >
+                  <div style={{ width: 92, flexShrink: 0 }}>
+                    <CheckStatus status={c.status} />
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: theme.text }}>{c.title}</div>
+                    <div style={{ fontSize: 13, color: theme.text, marginTop: 2, lineHeight: 1.5, overflowWrap: 'anywhere' }}>
+                      {c.summary}
+                    </div>
+                    {c.fix && c.status !== 'pass' && (
+                      <div style={{ marginTop: 4 }}>
+                        <Muted>{c.fix}</Muted>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ))}
+          <div style={{ marginTop: 12 }}>
+            <Muted>Checked {formatDate(r.computedAt, { relative: true })}.</Muted>
+          </div>
+        </Card>
+      )}
+    </>
+  );
+}
+
+/**
+ * Each browser and partner against its own recent past. Loads on its own:
+ * the flags read a few months of sales.
+ */
+function FlagsSection() {
+  const flags = useQuery({
+    queryKey: ['tracking-health-flags'],
+    queryFn: () => api<TrackingFlagsReport>('/admin/tracking-health/flags'),
+  });
+  const list = flags.data?.flags ?? [];
+
+  return (
+    <>
+      <SectionHeading>Flags</SectionHeading>
+      {flags.error && <ErrorBanner error={flags.error} />}
       {flags.isLoading && <Muted>Comparing with recent weeks…</Muted>}
       {flags.data && list.length === 0 && (
         <Card>

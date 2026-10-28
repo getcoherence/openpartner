@@ -9,6 +9,52 @@ the page loads (`GET /admin/tracking-health`, admin only).
 
 Pick a window (7, 30 or 90 days) and, optionally, one program.
 
+## Setup checks
+
+The first section says, step by step, whether your tracking works at all
+(`GET /admin/tracking-health/setup`). Flags and the numbers below compare
+your account with its own past or describe one window, so an account whose
+tracking never worked would otherwise read as nothing unusual. Each check
+is one of:
+
+| Status | Means |
+|---|---|
+| passing | the step works |
+| failing | it doesn't, and the check says what to change |
+| waiting | too soon to tell: too few clicks yet, a program days old, or an earlier step that has to pass first |
+| can't check | OpenPartner couldn't look: your site turned its request away, or your Stripe connection can't read what the check needs |
+
+They run per active program (started, not ended, not taken down),
+in the order a click travels, and then for the whole account:
+
+| Check | Passes when |
+|---|---|
+| Partners can share it | a partner has a link or a code for the program. A program less than a week old is still waiting for its first. |
+| Destination keeps the click | the program's destination answers (2xx) after its redirects, and the click is still there at the end: `?cref=` on the final address, the click id wherever your `{click_id}` put it, or in a cookie your server set on the way that the final page receives. A Stripe Payment Link isn't fetched (each visit opens a Checkout Session); it passes when it carries `client_reference_id={click_id}`. |
+| Clicks reach the script | the program's partner clicks reach a page running the OpenPartner script. Fails when none ever has (in the last 90 days, or over the last year if fewer than 10 clicks came in the last 90), or when none has since a date after which that many misses would happen by chance less than once in a thousand at the program's own landing rate. Clicks that are linked to a customer anyway pass: your server reads the click another way. Not run for a Stripe Payment Link, where nothing lands. |
+| Clicks are linked to customers | the partner clicks that reached your site are linked to a customer (`identify()`, a Stripe checkout, a conversion call). Fails when 100 or more reached it in the last 90 days and none was linked, or when the links stopped (the same one-in-a-thousand rule). Clicks less than a week old aren't judged: a signup can come days after the visit. |
+| Stripe events arrive | your Stripe connection isn't waiting for a reconnect and wasn't uninstalled, and when Stripe shows a payment from the last 7 days that's at least 6 hours old, a payment event (`invoice.paid`, `checkout.session.completed`) reached OpenPartner after it. A payment is an invoice paid with an amount, by when it was paid, or a paid Checkout with an amount, at least a day old (so it has completed); zero-value invoices, setup-mode and still-unpaid Checkouts don't count. Only payments since OpenPartner began logging this account's events are compared: since the connection, or on a self-host, since the update that added the log. Only when Stripe is connected (or, on a single-tenant self-host, the instance's own `STRIPE_SECRET_KEY`). |
+| Partner codes have their discount | each partner code that promises customers a discount has its promotion code in your Stripe, two hours after it was issued. A failing check quotes Stripe's last answer for a refused code. A code you mapped onto a promotion of your own isn't counted. On OpenPartner Cloud it doesn't pass until the codes have been checked against the account you connected (it waits a day for that, then says it can't check). Without a Stripe connection that can create discounts, it can't check. |
+
+Clicks here are partner-link clicks from browsers (not bots), not flagged as
+fraud, and at least a day old, so they've had their chance to land.
+
+The destination is fetched from OpenPartner's servers with the user agent
+`OpenPartner-SetupCheck/1` and a click id of 26 zeros, never through your
+partner links, so no click is recorded and no partner is credited. It follows
+up to six redirects, each through the same address checks as webhooks,
+sending back the cookies each hop set as a browser would, and a page that
+doesn't answer (or answers 5xx) is tried once more. Each hop has six seconds,
+the whole fetch fifteen, and each Stripe read eight, with no retries. Sites behind
+bot protection often turn it away; the check then says so and asks you to open
+a partner link yourself. When the final page is HTML, the check also looks for
+`/op.js` and mentions it when clicks aren't landing; the npm SDK is bundled
+into your own scripts, so its absence from the page proves nothing.
+
+The fetches and the Stripe read are kept for ten minutes; **Check again**
+runs them afresh. Every threshold is in `SETUP_THRESHOLDS`
+(`apps/api/src/setup-checks.ts`).
+
 ## Flags
 
 The rest of the page describes one window. Flags compare each browser and
@@ -76,19 +122,31 @@ commissions.
 
 ### Email
 
-New flags are emailed to every activated admin once a day (the
-`tracking-alerts` job, 06:40 UTC). Each flag is emailed once when it first
-appears, not every day it stays. If no admin could be emailed, the next run
-tries again; if some could, the ones whose email failed aren't sent it again,
-and the flags stay on the page. A flag nobody has seen for three days
-closes; if it comes back after that, it's emailed again, unless it was
-emailed in the last seven days. The job needs the scheduler
-(`OPENPARTNER_ENABLE_SCHEDULER=1` on a self-host).
+Setup checks that turn failing, and new flags, are emailed to every
+activated admin once a day (the `tracking-alerts` job, 06:40 UTC), in one
+email: failing checks first. The job runs the checks afresh each time.
 
-It's on by default. **Email admins about new flags** beside the flags turns
-it off (`POST /config/tracking-alerts` `{ "email": false }`). The setting
-travels with an export; what was emailed when doesn't (see
-[data portability](data-portability.md)).
+A check is emailed when it goes from passing, waiting or unchecked to
+failing, and a flag when it first appears; neither is emailed again every day
+it stays. A check that's waiting or can't be checked is never emailed. If no
+admin could be emailed, the next run tries again; if some could, the ones
+whose email failed aren't sent it again, and it stays on the page. A check or
+flag nobody has seen fail for three days closes; if it comes back after that,
+it's emailed again, unless it was emailed in the last seven days.
+
+The first run that checks an account's setup records that it did. If the
+account was more than two days old by then, it existed before setup checks
+did, and what fails on that run was failing already: it shows on the page
+without an email, and only a check that fails after that is emailed. A newer
+account's first run emails what fails, like any other run.
+
+The job needs the scheduler (`OPENPARTNER_ENABLE_SCHEDULER=1` on a
+self-host).
+
+It's on by default. **Email admins about failing checks and new flags**
+beside the setup checks turns it off (`POST /config/tracking-alerts`
+`{ "email": false }`). The setting travels with an export; what was emailed
+when doesn't (see [data portability](data-portability.md)).
 
 ## Partner link clicks
 
@@ -225,6 +283,7 @@ can recognise your own typo.
 | Stripe checkout carried an unknown click | `client_reference_id` looks like a click id but isn't one of this program's: a stale link, or another program's script. |
 | Stripe checkout carried your own reference | Your Checkout Sessions put your own order or user id in `client_reference_id`, so partner clicks can't ride on it. Pass the referral there, or link customers with `openpartner_user_id` metadata. |
 | Coupon redemption with an unknown code | `POST /coupons/redeem` got a code no partner holds. |
+| Stripe refused a partner code's discount | Your Stripe wouldn't create the promotion code for a partner's code, so customers who enter it pay full price. Stripe's answer is shown under the code, and **Partner codes have their discount** above counts the codes still without one. OpenPartner Cloud retries every hour, so this can count many times a day. |
 
 These counts stay on the deployment that recorded them: they are not part of
 an export (see [data portability](data-portability.md)).

@@ -327,26 +327,55 @@ export function campaignEndingPartnerEmail(
   return { subject, text, html: wrap(text, programUrl, 'View program') };
 }
 
-/** Brand admin: Tracking health raised new flags (tracking-alerts.ts).
- *  `lines` are describeFlag's sentences, one per new flag. */
-export function trackingFlagsEmail(brandName: string | null, lines: string[], pageUrl: string): EmailTemplate {
+/** Brand admin: setup checks that turned failing and new Tracking health
+ *  flags (tracking-alerts.ts). `checks` are describeSetupCheck's sentences,
+ *  `flags` describeFlag's, one per check or flag; at least one of them. */
+export function trackingFlagsEmail(
+  brandName: string | null,
+  lines: { checks: string[]; flags: string[] },
+  pageUrl: string,
+): EmailTemplate {
+  const { checks, flags } = lines;
+  const checksPart = checks.length === 1 ? 'a setup check failing' : `${checks.length} setup checks failing`;
+  const flagsPart = flags.length === 1 ? 'a change flagged' : `${flags.length} changes flagged`;
   const subject =
-    lines.length === 1 ? 'Tracking health flagged a change' : `Tracking health flagged ${lines.length} changes`;
+    checks.length === 0
+      ? flags.length === 1
+        ? 'Tracking health flagged a change'
+        : `Tracking health flagged ${flags.length} changes`
+      : flags.length === 0
+        ? `Tracking health: ${checksPart}`
+        : `Tracking health: ${checksPart}, ${flagsPart}`;
   const text = [
     `Hi${brandName ? ` from ${brandName}` : ''},`,
     ``,
-    `Tracking health compares each browser and each partner with its own`,
-    `recent past. ${lines.length === 1 ? 'This changed' : 'These changed'} enough to look at:`,
-    ``,
-    ...lines.map((l) => `- ${l}`),
-    ``,
+    ...(checks.length
+      ? [
+          `Setup checks test each step of your tracking, from a partner's link`,
+          `to the payment. ${checks.length === 1 ? 'This one has' : 'These have'} stopped passing:`,
+          ``,
+          ...checks.map((l) => `- ${l}`),
+          ``,
+        ]
+      : []),
+    ...(flags.length
+      ? [
+          `Tracking health ${checks.length ? 'also compares' : 'compares'} each browser and each partner with its own`,
+          `recent past. ${flags.length === 1 ? 'This changed' : 'These changed'} enough to look at:`,
+          ``,
+          ...flags.map((l) => `- ${l}`),
+          ``,
+        ]
+      : []),
     `The numbers, and what usually causes each, are on the Tracking health`,
     `page:`,
     ``,
     pageUrl,
     ``,
-    `You get one email when a flag first appears, not one a day while it`,
-    `stays. Turn these emails off on the same page.`,
+    checks.length
+      ? `You get one email when a check fails or a flag first appears, not one`
+      : `You get one email when a flag first appears, not one a day while it`,
+    checks.length ? `a day while it stays. Turn these emails off on the same page.` : `stays. Turn these emails off on the same page.`,
   ].join('\n');
   return { subject, text, html: wrap(text, pageUrl, 'Open Tracking health') };
 }

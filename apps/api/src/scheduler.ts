@@ -29,9 +29,10 @@
  *                   daily (the payouts tick also runs this part first),
  *                   then any brand never screened under its current name.
  *   - tracking-alerts: daily at 06:40 UTC. Per active tenant, emails the
- *                   admins each Tracking health flag the first time it
- *                   appears (tracking-alerts.ts), unless the brand turned
- *                   the email off.
+ *                   admins each setup check that turns failing and each
+ *                   Tracking health flag the first time it appears
+ *                   (tracking-alerts.ts), unless the brand turned the
+ *                   email off.
  *
  * Both jobs are no-ops in selfhost mode for usage-report. Payouts run in
  * every mode (a self-host operator with no approved commissions just gets
@@ -418,7 +419,7 @@ const JOBS: ScheduledJob[] = [
     name: 'tracking-alerts',
     cronExpr: '40 6 * * *',
     description:
-      'Per tenant: compare each browser and partner with its own recent past (tracking-flags.ts) and email the admins each flag the first time it appears, unless the brand turned it off (daily 06:40 UTC)',
+      'Per tenant: run the setup checks (setup-checks.ts), compare each browser and partner with its own recent past (tracking-flags.ts), and email the admins each check that turns failing and each flag the first time it appears, unless the brand turned it off (daily 06:40 UTC)',
     handler: runTrackingAlertsJob,
   },
   {

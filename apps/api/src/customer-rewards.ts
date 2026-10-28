@@ -21,6 +21,11 @@
  * connecting Stripe backfills every active code (backfillCustomerRewards),
  * and an hourly sweep retries what's still missing. Codes are minted when a
  * partner is granted a program, usually before the brand connects.
+ *
+ * A code Stripe refuses is counted in TrackingIssue (reward_code_refused)
+ * with Stripe's answer, which Tracking health's setup checks quote
+ * (setup-checks.ts): a refusal repeats every hour, and the log alone
+ * reaches nobody who can act on it.
  */
 
 import type Stripe from 'stripe';
@@ -37,6 +42,7 @@ import {
   stripeAppRewardsAvailable,
 } from './stripe-app.js';
 import { getTenancyMode, withTenantTransaction } from './tenancy.js';
+import { noteTrackingIssue } from './tracking-issues.js';
 
 export interface ProvisionedReward {
   stripeCouponId: string;
@@ -135,7 +141,28 @@ export async function provisionCustomerReward(
     return await createReward(client, couponParams, code);
   } catch (err) {
     console.error('[customer-rewards] Stripe provisioning failed', { code, err });
+    await noteRewardRefused(tenantId, code, stripeRefusal(err));
     return null;
+  }
+}
+
+/** Stripe's own answer, or null for a failure that isn't Stripe refusing
+ *  the code (its connection couldn't be reached: the setup checks' Stripe
+ *  check reports that). */
+function stripeRefusal(err: unknown): string | null {
+  const type = (err as { type?: unknown } | null)?.type;
+  if (typeof type !== 'string' || !type.startsWith('Stripe')) return null;
+  return err instanceof Error && err.message ? err.message : type;
+}
+
+/** Count a code whose discount couldn't be created, with why. Never throws:
+ *  the mint and the backfill carry on without it. */
+async function noteRewardRefused(tenantId: string, code: string, why: string | null): Promise<void> {
+  if (!why) return;
+  try {
+    await withTenantTransaction(tenantId, (trx) => noteTrackingIssue(trx, tenantId, 'reward_code_refused', code, why));
+  } catch (err) {
+    console.error('[customer-rewards] could not record a refused code', { tenantId, code, err });
   }
 }
 
@@ -365,6 +392,39 @@ export async function rewardCodesNotInStripe(knex: Knex, tenantId: string): Prom
 }
 
 /**
+ * The setup checks' count (setup-checks.ts): reward codes OpenPartner is
+ * meant to create a promotion code for, and of those without one yet, how
+ * many were issued before `issuedBefore` (missing) and how many since
+ * (recent). A code the brand's admin mapped onto the brand's own promo
+ * (brandChosen) is left out: that promo carries the discount and the code
+ * never gets one of ours.
+ */
+export async function rewardCodeCounts(
+  knex: Knex,
+  tenantId: string,
+  issuedBefore: Date,
+): Promise<{ total: number; missing: number; recent: number }> {
+  const [row] = (await rewardCodes(knex, tenantId)
+    .where(`${TABLES.Coupon}.brandChosen`, false)
+    .count({ total: `${TABLES.Coupon}.id` })
+    .count({
+      missing: knex.raw(`case when ??."stripePromotionCodeId" is null and ??."createdAt" < ? then 1 end`, [
+        TABLES.Coupon,
+        TABLES.Coupon,
+        issuedBefore,
+      ]),
+    })
+    .count({
+      recent: knex.raw(`case when ??."stripePromotionCodeId" is null and ??."createdAt" >= ? then 1 end`, [
+        TABLES.Coupon,
+        TABLES.Coupon,
+        issuedBefore,
+      ]),
+    })) as Array<{ total: string | number; missing: string | number; recent: string | number }>;
+  return { total: Number(row?.total ?? 0), missing: Number(row?.missing ?? 0), recent: Number(row?.recent ?? 0) };
+}
+
+/**
  * Give every reward code its promotion code in the brand's Stripe account
  * (rewardStripe). Safe to run any number of times, in any number of
  * processes: a code whose promo is there already is left alone, one of ours
@@ -458,6 +518,7 @@ export async function backfillCustomerRewards(
     } catch (err) {
       const type = (err as { type?: string }).type;
       console.error('[customer-rewards] backfill: Stripe provisioning failed', { tenantId, code: row.code, err });
+      await noteRewardRefused(tenantId, row.code, stripeRefusal(err));
       result.failed++;
       // A bad request is about this code; anything else would fail the rest.
       if (type !== 'StripeInvalidRequestError') {
@@ -523,6 +584,11 @@ async function backfillCode(
     console.error(
       `[customer-rewards] ALERT: partner code ${row.code} (coupon ${row.id}, tenant ${tenantId}) is also a ${found.what} in the brand's own Stripe. It was left without a promotion code. Stripe purchases using the brand's ${found.what} credit this partner only if the brand made it for the code, after the code existed (stripe-webhook.ts discountMadeForCoupon); if it is the brand's own promo, the brand should give the partner a new code`,
     );
+    await noteRewardRefused(
+      tenantId,
+      row.code,
+      `Your Stripe already has a ${found.what} ${row.code} of your own, so OpenPartner left it alone. Give the partner another code.`,
+    );
     return 'taken';
   }
   if (found.kind === 'ours') {
@@ -537,6 +603,11 @@ async function backfillCode(
   const params = toStripeCouponParams(row.customerReward, rewardCouponName(row.programName, row.code));
   if (!params) {
     console.error('[customer-rewards] backfill: malformed customer reward', { tenantId, code: row.code });
+    await noteRewardRefused(
+      tenantId,
+      row.code,
+      `The ${row.programName} program's customer reward can't be made into a Stripe coupon (an amount off needs a currency, free months a number above zero).`,
+    );
     return 'failed';
   }
   const created = await createReward(client, params, row.code);

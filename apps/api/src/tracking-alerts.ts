@@ -1,18 +1,29 @@
 /**
- * Tracking alerts: a daily email to the brand's admins when Tracking health
- * raises a new flag (tracking-flags.ts). On by default; the Config key
- * `tracking_alerts` (`{ "email": false }`) turns it off. A brand setting
- * with no credential in it, so it travels with the export bundle
- * (export.ts PORTABLE_CONFIG_KEYS).
+ * Tracking alerts: a daily email to the brand's admins when a setup check
+ * turns failing (setup-checks.ts) or Tracking health raises a new flag
+ * (tracking-flags.ts). On by default; the Config key `tracking_alerts`
+ * (`{ "email": false }`) turns it off. A brand setting with no credential
+ * in it, so it travels with the export bundle (export.ts
+ * PORTABLE_CONFIG_KEYS).
  *
- * Each flag is emailed once per episode, kept in TrackingAlert:
+ * A failing check is kept like a flag, as kind `setup_<check>` with the
+ * program id (or `account`) as its subject; a check that passes, waits or
+ * can't be checked has no open episode. So a check is emailed when it goes
+ * from anything else to failing, not every day it stays failing. The first
+ * run that evaluates a brand's checks records a `setup_baseline` row. If the
+ * brand is older than BASELINE_QUIET_AFTER_DAYS by then, it predates the
+ * checks: whatever fails on that run was failing already, so its episodes
+ * open without an email, and only a change after that is news. A newer
+ * brand's first run emails what fails, as any later run would.
+ *
+ * Each flag or check is emailed once per episode, kept in TrackingAlert:
  *   - a flag with no open episode opens one and goes in the email, unless
  *     the same flag was emailed in the last RENOTIFY_COOLDOWN_DAYS (it went
  *     back under its threshold and returned);
  *   - a flag with an open episode only refreshes lastSeenAt;
  *   - an open episode not seen for RESOLVE_AFTER_DAYS closes, so a flag
  *     that comes back after that is news again.
- * One email per brand per run lists every new flag, to each activated,
+ * One email per brand per run lists every new check and flag, to each activated,
  * unrevoked admin, each sent on its own. When none of them could be sent,
  * the run closes the episodes it opened without marking them sent, so the
  * next run opens and emails them again. When some were, the admins whose
@@ -20,15 +31,17 @@
  *
  * Runs per active tenant in a tenant-scoped transaction (scheduler.ts,
  * daily), in every deployment mode: the flags read the brand's own raw
- * tables. A brand with no admin to tell is skipped and keeps no episodes,
- * so its first admin hears about whatever is open then.
+ * tables, and the checks those plus a fresh fetch of each destination and
+ * a Stripe read. A brand with no admin to tell is skipped and keeps no
+ * episodes, so its first admin hears about whatever is open then.
  */
 
 import type { Knex } from 'knex';
 import { ulid } from 'ulid';
 import { TABLES, type AdminRow, type TenantRow, type TrackingAlertRow } from '@openpartner/db';
 import { getConfig, setConfig } from './config.js';
-import { computeTrackingFlags, describeFlag, type TrackingFlag } from './tracking-flags.js';
+import { computeTrackingFlags, describeFlag } from './tracking-flags.js';
+import { computeSetupChecks, describeSetupCheck, type SetupCheck } from './setup-checks.js';
 import { getMailer } from './mailer.js';
 import { trackingFlagsEmail } from './email-templates.js';
 import { resolveBrandName } from './brand-name.js';
@@ -40,6 +53,9 @@ export const TRACKING_ALERTS_CONFIG_KEY = 'tracking_alerts';
 export const RENOTIFY_COOLDOWN_DAYS = 7;
 /** An open episode not seen for this long closes. */
 export const RESOLVE_AFTER_DAYS = 3;
+/** A brand this old at its first setup-check run predates the checks: what
+ *  fails on that run opens quietly. */
+export const BASELINE_QUIET_AFTER_DAYS = 2;
 
 const DAY = 86_400_000;
 
@@ -67,7 +83,12 @@ export async function saveTrackingAlertSettings(
 export type TrackingAlertSweep =
   | { skipped: 'disabled' | 'no_admins' }
   | {
+      /** Setup checks failing on this run. */
+      failingChecks: number;
       flags: number;
+      /** This run was the brand's first setup-check run: `quiet` when what
+       *  failed on it opened without an email. */
+      baseline?: 'quiet' | 'emailed';
       opened: number;
       notified: number;
       resolved: number;
@@ -93,41 +114,61 @@ export async function sweepTenantTrackingAlerts(
 
   const now = opts.now ?? new Date();
   const { flags } = await computeTrackingFlags(db, tenantId, { now });
+  // The checks read the outside world. If they can't be computed, the
+  // flags still go out, and no check episode opens or closes this run.
+  let checks: SetupCheck[] | null = null;
+  try {
+    // A savepoint: a failed statement must not abort the sweep's transaction.
+    checks = (await db.transaction((sp) => computeSetupChecks(sp, tenantId, { now, refresh: true }))).checks;
+  } catch (err) {
+    console.error('[tracking-alerts] setup checks failed', { tenantId, error: err instanceof Error ? err.message : String(err) });
+  }
+  const failing = (checks ?? []).filter((c) => c.status === 'fail');
+  const baseline = checks ? await firstSetupRun(db, tenantId, now, failing.length) : null;
+
+  const alerts: Alert[] = [
+    ...failing.map((c) => ({ kind: `setup_${c.id}`, subject: c.subject, detail: c, line: describeSetupCheck(c), check: true })),
+    ...flags.map((f) => ({ kind: f.kind, subject: f.subject, detail: f, line: describeFlag(f), check: false })),
+  ];
   const open = await db<TrackingAlertRow>(TABLES.TrackingAlert).where({ tenantId }).whereNull('resolvedAt');
   const openBy = new Map(open.map((r) => [`${r.kind}|${r.subject}`, r]));
   const cooldownSince = new Date(now.getTime() - RENOTIFY_COOLDOWN_DAYS * DAY);
 
   let opened = 0;
-  const fresh: Array<{ id: string; flag: TrackingFlag }> = [];
-  for (const flag of flags) {
-    const row = openBy.get(`${flag.kind}|${flag.subject}`);
+  const fresh: Array<{ id: string; alert: Alert }> = [];
+  for (const alert of alerts) {
+    const row = openBy.get(`${alert.kind}|${alert.subject}`);
     if (row) {
-      await db(TABLES.TrackingAlert).where({ id: row.id, tenantId }).update({ lastSeenAt: now, detail: flag });
+      await db(TABLES.TrackingAlert).where({ id: row.id, tenantId }).update({ lastSeenAt: now, detail: alert.detail });
       continue;
     }
     const recentlySent = await db(TABLES.TrackingAlert)
-      .where({ tenantId, kind: flag.kind, subject: flag.subject })
+      .where({ tenantId, kind: alert.kind, subject: alert.subject })
       .where('notifiedAt', '>', cooldownSince)
       .first('id');
+    const quiet = !!recentlySent || (alert.check && baseline === 'quiet');
     const id = ulid();
-    // The partial unique index allows one open episode per flag: a second
-    // run racing this one opens nothing.
+    // The partial unique index allows one open episode per flag or check:
+    // a second run racing this one opens nothing.
     const { rows } = await db.raw<{ rows: Array<{ id: string }> }>(
       `insert into ?? (id, "tenantId", kind, subject, "openedAt", "lastSeenAt", "notifiedAt", detail)
        values (?, ?, ?, ?, ?, ?, ?, ?::jsonb)
        on conflict ("tenantId", kind, subject) where "resolvedAt" is null do nothing
        returning id`,
-      [TABLES.TrackingAlert, id, tenantId, flag.kind, flag.subject, now, now, recentlySent ? null : now, JSON.stringify(flag)],
+      [TABLES.TrackingAlert, id, tenantId, alert.kind, alert.subject, now, now, quiet ? null : now, JSON.stringify(alert.detail)],
     );
     if (rows.length === 0) continue;
     opened += 1;
-    if (!recentlySent) fresh.push({ id, flag });
+    if (!quiet) fresh.push({ id, alert });
   }
 
   const resolved = await db(TABLES.TrackingAlert)
     .where({ tenantId })
     .whereNull('resolvedAt')
     .where('lastSeenAt', '<', new Date(now.getTime() - RESOLVE_AFTER_DAYS * DAY))
+    .modify((q) => {
+      if (!checks) q.whereNot('kind', 'like', 'setup_%');
+    })
     .update({ resolvedAt: now });
 
   let emailed = false;
@@ -137,7 +178,10 @@ export async function sweepTenantTrackingAlerts(
     const tenant = await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first('slug', 'customDomain');
     const tmpl = trackingFlagsEmail(
       await resolveBrandName(db, tenantId),
-      fresh.map((f) => describeFlag(f.flag)),
+      {
+        checks: fresh.filter((f) => f.alert.check).map((f) => f.alert.line),
+        flags: fresh.filter((f) => !f.alert.check).map((f) => f.alert.line),
+      },
       `${getPortalBaseUrl(tenant)}/admin/tracking-health`,
     );
     // Each admin on their own: one address that bounces mustn't keep the
@@ -153,7 +197,11 @@ export async function sweepTenantTrackingAlerts(
             html: tmpl.html,
             tag: 'tracking_flags',
             // Postmark takes short string values only.
-            metadata: { purpose: 'tracking_flags', flagCount: String(fresh.length) },
+            metadata: {
+              purpose: 'tracking_flags',
+              flagCount: String(fresh.filter((f) => !f.alert.check).length),
+              checkCount: String(fresh.filter((f) => f.alert.check).length),
+            },
           },
         );
         emailed = true;
@@ -178,11 +226,54 @@ export async function sweepTenantTrackingAlerts(
   }
 
   return {
+    failingChecks: failing.length,
     flags: flags.length,
+    ...(baseline ? { baseline } : {}),
     opened,
     notified: emailed ? fresh.length : 0,
     resolved,
     emailed,
     ...(failedRecipients ? { failedRecipients, sendError } : {}),
   };
+}
+
+interface Alert {
+  /** A flag's kind, or `setup_<check>`. */
+  kind: string;
+  subject: string;
+  /** Kept on the episode: the flag or the check, as last seen. */
+  detail: object;
+  /** Its line in the email. */
+  line: string;
+  check: boolean;
+}
+
+/**
+ * Is this the brand's first setup-check run? Records that it was, so the
+ * next one isn't. `quiet` for a brand older than BASELINE_QUIET_AFTER_DAYS:
+ * it predates the checks, and what fails now was failing before.
+ */
+async function firstSetupRun(
+  db: Knex,
+  tenantId: string,
+  now: Date,
+  failing: number,
+): Promise<'quiet' | 'emailed' | null> {
+  const seen = await db(TABLES.TrackingAlert).where({ tenantId, kind: 'setup_baseline' }).first('id');
+  if (seen) return null;
+  // Opened and closed at once: a record, not an episode.
+  await db(TABLES.TrackingAlert).insert({
+    id: ulid(),
+    tenantId,
+    kind: 'setup_baseline',
+    subject: 'account',
+    openedAt: now,
+    lastSeenAt: now,
+    notifiedAt: null,
+    resolvedAt: now,
+    detail: { failing },
+  });
+  const tenant = await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first('createdAt');
+  const age = tenant ? now.getTime() - new Date(tenant.createdAt).getTime() : 0;
+  return age > BASELINE_QUIET_AFTER_DAYS * DAY ? 'quiet' : 'emailed';
 }

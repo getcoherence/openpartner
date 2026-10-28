@@ -667,15 +667,21 @@ logs — not customer data):
 `TrackingIssue` counts, per day, the input this deployment had to drop: a
 click id that `identify()`, a conversion or the landing beacon named but the
 tenant doesn't have, a Checkout Session `client_reference_id` that isn't a
-click, a coupon code nobody holds (Admin → Tracking health). Like
+click, a coupon code nobody holds, a partner code whose discount Stripe
+refused, with Stripe's answer (Admin → Tracking health). Like
 `WebhookDelivery` it is a log of what reached one deployment, nothing
 re-derives from it, and a restored instance starts counting afresh.
 
-`TrackingAlert` records which Tracking health flags this deployment has
-already emailed, so each is emailed once ([tracking-health.md](tracking-health.md#email)).
-The flags themselves are derived from the exported clicks, landings,
-identities, events and attributions, so a restored instance shows the same
-flags; its first alert run emails the open ones once.
+`TrackingAlert` records which Tracking health flags and failing setup checks
+this deployment has already emailed, so each is emailed once
+([tracking-health.md](tracking-health.md#email)). The flags and checks are
+derived from the exported clicks, landings, identities, events, attributions
+and codes (plus a fresh fetch of each destination and a Stripe read), so a
+restored instance shows the same ones, with two exceptions: it quotes no
+Stripe refusal for a partner code until one happens again (that's kept in
+`TrackingIssue`), and it compares Stripe payments with events only from when
+its own event log began. Its first alert run is a first setup-check run like
+any other.
 
 `StripeEventLog` lists the brand Stripe events this deployment's attribution
 pipeline processed, so the Stripe catch-up ([stripe-app.md](stripe-app.md#missed-events--the-catch-up))
