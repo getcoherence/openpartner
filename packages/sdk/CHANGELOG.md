@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Regional consent.** `consent: 'regional'` (script tag:
+  `data-consent="regional"`) lets where the visitor is decide. The SDK
+  starts as `'pending'` and asks OpenPartner which rule applies
+  (`GET /consent-region`, no credentials, nothing stored).
+  - `opt_in` (the EU, the rest of the EEA, the UK and Switzerland), an
+    unknown country, or no answer within 1.5 seconds: it stays `'pending'`
+    until `setConsent('granted')`.
+  - `opt_out` (everywhere else): it starts as `'granted'`, unless
+    `setConsent()` was called first. A banner that knows of a saved decline
+    should call `setConsent('denied')` as soon as the page loads.
+  - A Global Privacy Control or Do Not Track signal keeps an opt-out region
+    waiting too, unless `privacySignals: 'ignore'` (script tag:
+    `data-gpc="ignore"`).
+  - `consentRegion()` returns the answer, so a banner can choose between
+    asking first and a notice with a Decline. It's `null` in the other modes.
+
+### Compatibility
+
+- A page that sets `data-consent="regional"` needs this version of `op.js`.
+  Earlier versions don't know the value and start as `'granted'`.
+
 ## 0.3.0
 
 Closes the places where a partner click could go missing in the browser, and

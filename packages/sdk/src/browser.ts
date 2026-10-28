@@ -34,6 +34,9 @@
  * Consent. `consent: 'pending'` holds the referral in memory until
  * setConsent('granted'): nothing is read from or written to storage or
  * cookies, no Stripe link is tagged and nothing is sent until then.
+ * `consent: 'regional'` asks OpenPartner which rule applies where the
+ * visitor is (GET /consent-region) and starts as 'pending' or 'granted'
+ * accordingly (see the option).
  *
  * Landing report. When a click first arrives from the URL the SDK tells
  * OpenPartner (POST /attribution/landing), so Admin → Tracking health can
@@ -57,6 +60,19 @@ export interface StripeLinkingConfig {
 
 /** Whether this visitor agreed to referral tracking. */
 export type ConsentState = 'granted' | 'pending' | 'denied';
+
+/** The consent rule where the visitor is (GET /consent-region). */
+export interface ConsentRegion {
+  /** `'opt_in'`: ask before storing anything. `'opt_out'`: track unless the
+   *  visitor declines. */
+  rule: 'opt_in' | 'opt_out';
+  /** ISO 3166-1 alpha-2, or null when it isn't known. */
+  country: string | null;
+}
+
+/** How long `consent: 'regional'` waits for its answer before treating the
+ *  visitor as opt-in. */
+const REGION_TIMEOUT_MS = 1500;
 
 export interface OpenPartnerConfig {
   /** Base URL of your OpenPartner API, e.g. "https://openpartner.example.com". */
@@ -92,8 +108,25 @@ export interface OpenPartnerConfig {
    * callback. Until then the referral from the URL is held in memory only,
    * so a visitor who agrees on the landing page is still credited.
    * `'denied'` uses nothing.
+   *
+   * `'regional'` lets where the visitor is decide. The SDK starts as
+   * `'pending'` and asks OpenPartner (GET `<apiUrl>/consent-region`) which
+   * rule applies, storing nothing. `'opt_in'` (the EU, the rest of the EEA,
+   * the UK and Switzerland), an unknown country, or no answer within 1.5
+   * seconds: it stays `'pending'`. `'opt_out'`: it starts as `'granted'`,
+   * unless setConsent() has already been called or the browser sends a
+   * privacy signal (`privacySignals`). Your banner reads the answer from
+   * consentRegion(), and should call setConsent('denied') as soon as it
+   * knows of a saved decline.
    */
-  consent?: ConsentState;
+  consent?: ConsentState | 'regional';
+  /**
+   * With `consent: 'regional'`: what a Global Privacy Control or Do Not
+   * Track signal means where tracking would otherwise start by itself.
+   * `'decline'` (default) waits for setConsent(), as in an opt-in region;
+   * `'ignore'` starts anyway.
+   */
+  privacySignals?: 'decline' | 'ignore';
   /**
    * Tell OpenPartner when a partner click arrives on your site, so Admin →
    * Tracking health can show clicks lost between the partner link and your
@@ -118,6 +151,7 @@ const DEFAULTS = {
   stripe: true,
   referralCookie: false,
   consent: 'granted',
+  privacySignals: 'decline',
   reportLanding: true,
   onError: (err: unknown) => {
     console.warn('[openpartner] request failed', err);
@@ -143,15 +177,21 @@ export class OpenPartner {
   /** The Stripe links and embeds this SDK tagged, and with what, so a
    *  withdrawn consent can take the tags back off. */
   private tagged: Array<{ el: Element; value: string }> = [];
+  /** consent: 'regional' only: the visitor's rule, once known. */
+  private region: Promise<ConsentRegion> | null = null;
+  /** setConsent() was called: the page's answer outranks the region's. */
+  private answered = false;
 
   private constructor(config: OpenPartnerConfig) {
     this.config = { ...DEFAULTS, ...config } as Required<OpenPartnerConfig>;
-    this.consent = this.config.consent;
+    const mode = this.config.consent;
+    this.consent = mode === 'regional' ? 'pending' : mode;
     if (this.consent === 'granted') this.start();
     else if (this.consent === 'pending') this.held = this.queryCref();
     // A returning visitor who has since said no: drop what an earlier
     // visit stored.
     else this.clear();
+    if (mode === 'regional') this.region = this.applyRegion();
   }
 
   static init(config: OpenPartnerConfig): OpenPartner {
@@ -206,6 +246,7 @@ export class OpenPartner {
    * safe.
    */
   setConsent(state: 'granted' | 'denied'): void {
+    this.answered = true;
     if (state === 'granted') {
       if (this.consent === 'granted') return;
       this.consent = state;
@@ -215,6 +256,16 @@ export class OpenPartner {
     this.consent = state;
     this.stopLinkingStripe();
     this.clear();
+  }
+
+  /**
+   * The consent rule where the visitor is, with `consent: 'regional'`:
+   * resolves once OpenPartner answers, as `'opt_in'` if it couldn't. Null in
+   * the other modes. A banner uses it to choose between asking first and a
+   * notice with a Decline.
+   */
+  consentRegion(): Promise<ConsentRegion | null> {
+    return this.region ?? Promise.resolve(null);
   }
 
   /**
@@ -341,6 +392,39 @@ export class OpenPartner {
       attributes: true,
       attributeFilter: ['href'],
     });
+  }
+
+  /** Look up the visitor's rule and, where it's opt-out, start: unless the
+   *  page answered first, or a privacy signal says to wait. */
+  private async applyRegion(): Promise<ConsentRegion> {
+    const region = await this.fetchRegion();
+    const signalled = this.config.privacySignals !== 'ignore' && sendsPrivacySignal();
+    if (region.rule === 'opt_out' && !this.answered && !signalled && this.consent === 'pending') {
+      this.consent = 'granted';
+      this.start();
+    }
+    return region;
+  }
+
+  /** GET /consent-region, with no credentials. Any failure, a slow answer
+   *  or a malformed one is opt-in. */
+  private async fetchRegion(): Promise<ConsentRegion> {
+    if (typeof fetch === 'undefined') return { rule: 'opt_in', country: null };
+    const abort = typeof AbortController === 'undefined' ? null : new AbortController();
+    const timer = abort ? setTimeout(() => abort.abort(), REGION_TIMEOUT_MS) : null;
+    try {
+      const res = await requestJson<Partial<ConsentRegion>>(`${this.config.apiUrl}/consent-region`, {
+        method: 'GET',
+        credentials: 'omit',
+        ...(abort ? { signal: abort.signal } : {}),
+      });
+      const country = typeof res?.country === 'string' ? res.country : null;
+      return { rule: res?.rule === 'opt_out' ? 'opt_out' : 'opt_in', country };
+    } catch {
+      return { rule: 'opt_in', country: null };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /** The cref on the landing URL, if any. */
@@ -482,4 +566,11 @@ export class OpenPartner {
       return null;
     }
   }
+}
+
+/** Global Privacy Control, or the older Do Not Track. */
+function sendsPrivacySignal(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const nav = navigator as Navigator & { globalPrivacyControl?: boolean };
+  return nav.globalPrivacyControl === true || nav.doNotTrack === '1';
 }

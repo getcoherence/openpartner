@@ -403,6 +403,8 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     const landed = check<{ firstLanding: boolean }>('reportLanding', await anon.post('/attribution/landing', { cref: clickId }));
     expect(landed.firstLanding).toBe(true);
     check('reportLanding', await anon.post('/attribution/landing', { cref: 'missing' }));
+    // No IP database in tests: an unknown country, so the rule is opt-in.
+    expect(check<{ rule: string }>('getConsentRegion', await anon.get('/consent-region')).rule).toBe('opt_in');
 
     check('recordEvent', await integration.post('/attribution/events', { userId: 'friend_1', type: 'signup', externalEventId: 'signup:friend_1' }));
     const paid = { userId: 'friend_1', type: 'invoice_paid', value: 300, currency: 'USD', externalEventId: 'inv_1' };
