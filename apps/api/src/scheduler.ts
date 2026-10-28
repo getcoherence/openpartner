@@ -65,6 +65,7 @@ import { runScreeningSweep, screenPayablePartners } from './sanctions-screening.
 import { sealPlaintextPayoutProfiles } from './payout-profile.js';
 import { runSealWebhookSecretsJob } from './webhook-secret.js';
 import { runSealPostbackUrlsJob } from './postback-url.js';
+import { purgeTestClicks, TEST_CLICK } from './test-clicks.js';
 
 interface ScheduledJob {
   name: string;
@@ -423,6 +424,12 @@ const JOBS: ScheduledJob[] = [
     handler: runTrackingAlertsJob,
   },
   {
+    name: 'test-click-purge',
+    cronExpr: '50 6 * * *',
+    description: `Delete admins' test clicks (test-clicks.ts) ${TEST_CLICK.retentionDays} days after they were made (daily 06:50 UTC)`,
+    handler: async () => ({ deleted: await purgeTestClicks(db) }),
+  },
+  {
     name: 'seal-payout-details',
     cronExpr: '35 * * * *',
     description:
@@ -547,6 +554,8 @@ export const TENANT_PURGE_ORDER = [
   TABLES.BrandNotification,
   TABLES.TrackingIssue,
   TABLES.TrackingAlert,
+  // Before Program (TestClick.programId).
+  TABLES.TestClick,
   TABLES.OperatorRecoveryRequest,
   TABLES.UsageLedger,
   TABLES.UsageFeeShadow,

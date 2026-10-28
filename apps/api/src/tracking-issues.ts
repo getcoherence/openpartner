@@ -23,6 +23,9 @@
  *                             `detail` keeps Stripe's answer, and the setup
  *                             checks (setup-checks.ts) quote it
  *
+ * A click id that belongs to an admin's test click (test-clicks.ts) isn't
+ * counted under any of the *_unknown_click kinds: a test is never a Click.
+ *
  * Counting never fails the request that found the problem: the write runs
  * in a savepoint, so a failure can't abort the caller's transaction, and it
  * is logged and dropped.
@@ -30,6 +33,7 @@
 
 import type { Knex } from 'knex';
 import { TABLES, type TrackingIssueKind } from '@openpartner/db';
+import { isTestClick } from './test-clicks.js';
 
 export const TRACKING_ISSUE_KINDS: readonly TrackingIssueKind[] = [
   'identify_unknown_click',
@@ -40,6 +44,14 @@ export const TRACKING_ISSUE_KINDS: readonly TrackingIssueKind[] = [
   'coupon_unknown_code',
   'reward_code_refused',
 ];
+
+/** The kinds whose ref is a click id nobody recorded. */
+const UNKNOWN_CLICK_KINDS = new Set<TrackingIssueKind>([
+  'identify_unknown_click',
+  'landing_unknown_click',
+  'conversion_unknown_click',
+  'stripe_unknown_click',
+]);
 
 const SAMPLE_MAX = 64;
 const DETAIL_MAX = 500;
@@ -71,6 +83,9 @@ export async function noteTrackingIssue(
     // its own otherwise: a failed statement inside the caller's
     // transaction would abort everything after it.
     await db.transaction(async (sp) => {
+      // An admin's test click (test-clicks.ts) is never a Click. Carried on
+      // to a checkout or a conversion call, it isn't dropped traffic.
+      if (UNKNOWN_CLICK_KINDS.has(kind) && ref && (await isTestClick(sp, tenantId, ref))) return;
       await sp.raw(
         `insert into ?? ("tenantId", "day", "kind", "count", "sampleRef", "detail", "firstSeenAt", "lastSeenAt")
            values (?, (now() at time zone 'utc')::date, ?, 1, ?, ?, now(), now())

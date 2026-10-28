@@ -296,6 +296,10 @@ export const IdentifyResult = z
     backfilledAttributions: z.number().int().openapi({
       description: 'Events already recorded for this userId that attributed now that the click is known.',
     }),
+    test: z.literal(true).optional().openapi({
+      description:
+        "Present when `cref` is an admin's test click (Admin → Tracking health → Send a test click). The test records the step; nothing is stitched or attributed, so `identityId` is null.",
+    }),
   })
   .openapi('IdentifyResult');
 
@@ -303,6 +307,9 @@ export const LandingResult = z
   .object({
     ok: z.literal(true),
     firstLanding: z.boolean().openapi({ description: 'False when this click had already landed; nothing was written.' }),
+    test: z.literal(true).optional().openapi({
+      description: "Present when `cref` is an admin's test click (Admin → Tracking health → Send a test click). The test records the landing.",
+    }),
   })
   .openapi('LandingResult');
 

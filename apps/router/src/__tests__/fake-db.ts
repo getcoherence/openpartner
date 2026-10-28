@@ -6,22 +6,39 @@
 
 export type Row = Record<string, unknown>;
 
-/** `db(table).where({...}).first(cols?)` and `db(table).insert(row)`. */
+type Filter = (r: Row) => boolean;
+
+/**
+ * `db(table).where({...}).first(cols?)`, `db(table).insert(row)` and
+ * `db(table).where({...}).where(col, '>', value).update(patch)`, which
+ * returns the number of rows it changed.
+ */
 export function fakeDb(tables: Record<string, Row[]>) {
   return (name: string) => {
     const rows = (tables[name] ??= []);
-    const filters: Row[] = [];
+    const filters: Filter[] = [];
+    const matches = (r: Row) => filters.every((f) => f(r));
     const builder = {
-      where(filter: Row) {
-        filters.push(filter);
+      where(filter: Row | string, op?: string, value?: unknown) {
+        if (typeof filter === 'string') {
+          if (op !== '>') throw new Error(`fakeDb: unsupported operator ${op}`);
+          filters.push((r) => (r[filter] as Date | number) > (value as Date | number));
+        } else {
+          filters.push((r) => Object.entries(filter).every(([k, v]) => r[k] === v));
+        }
         return builder;
       },
       async first(cols?: string[]) {
-        const row = rows.find((r) => filters.every((f) => Object.entries(f).every(([k, v]) => r[k] === v)));
+        const row = rows.find(matches);
         return row && cols ? Object.fromEntries(cols.map((c) => [c, row[c]])) : row;
       },
       async insert(row: Row) {
         rows.push(row);
+      },
+      async update(patch: Row) {
+        const hit = rows.filter(matches);
+        for (const r of hit) Object.assign(r, patch);
+        return hit.length;
       },
     };
     return builder;

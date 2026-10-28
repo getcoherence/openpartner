@@ -662,7 +662,8 @@ logs — not customer data):
 `PlatformSessionBundle`, `PlatformAdmin`, `PlatformAdminSession`,
 `PlatformAuditLog`, `SignupBlocklist`, `WebhookDelivery`, `NetworkOutbox`,
 `StripeWebhookInbox`, `LocationDeclaration`, `SanctionsScreening`,
-`PartnerSigninLinkLog`, `TrackingIssue`, `TrackingAlert`, `StripeEventLog`.
+`PartnerSigninLinkLog`, `TrackingIssue`, `TrackingAlert`, `StripeEventLog`,
+`TestClick`.
 
 `TrackingIssue` counts, per day, the input this deployment had to drop: a
 click id that `identify()`, a conversion or the landing beacon named but the
@@ -681,6 +682,13 @@ restored instance shows the same ones, with two exceptions: it quotes no
 Stripe refusal for a partner code until one happens again (that's kept in
 `TrackingIssue`), and it compares Stripe payments with events only from when
 its own event log began. Its first alert run emails what fails then, once.
+
+`TestClick` holds an admin's test clicks
+([tracking-health.md](tracking-health.md#send-a-test-click)): when each test
+link was opened, and when the brand's site reported it landing and linked it
+to a signup. A test click is never a `Click`, so it isn't partner traffic
+and nothing in the export derives from it. Rows are deleted 90 days after
+they were made.
 
 `StripeEventLog` lists the brand Stripe events this deployment's attribution
 pipeline processed, so the Stripe catch-up ([stripe-app.md](stripe-app.md#missed-events--the-catch-up))

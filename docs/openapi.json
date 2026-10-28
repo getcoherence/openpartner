@@ -2342,6 +2342,13 @@
           "backfilledAttributions": {
             "type": "integer",
             "description": "Events already recorded for this userId that attributed now that the click is known."
+          },
+          "test": {
+            "type": "boolean",
+            "enum": [
+              true
+            ],
+            "description": "Present when `cref` is an admin's test click (Admin → Tracking health → Send a test click). The test records the step; nothing is stitched or attributed, so `identityId` is null."
           }
         },
         "required": [
@@ -2383,6 +2390,13 @@
           "firstLanding": {
             "type": "boolean",
             "description": "False when this click had already landed; nothing was written."
+          },
+          "test": {
+            "type": "boolean",
+            "enum": [
+              true
+            ],
+            "description": "Present when `cref` is an admin's test click (Admin → Tracking health → Send a test click). The test records the landing."
           }
         },
         "required": [

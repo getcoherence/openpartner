@@ -6,6 +6,7 @@ import { attributeBacklogForUser } from '../attribution.js';
 import { sendTenantSlugMissing } from '../auth.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
 import { tenantOf } from '../tenancy.js';
+import { recordTestIdentify, recordTestLanding } from '../test-clicks.js';
 import { noteTrackingIssue } from '../tracking-issues.js';
 
 export const schema = z.object({
@@ -40,6 +41,12 @@ identifyRouter.post(
 
     const click = await db<ClickRow>(TABLES.Click).where({ id: cref, tenantId }).first();
     if (!click) {
+      // An admin's test click (test-clicks.ts) is never a Click: its row
+      // records the step, and nothing is stitched or attributed.
+      const test = await recordTestIdentify(db, tenantId, cref);
+      if (test) {
+        return res.json({ ok: true, identityId: null, firstStitch: test.first, backfilledAttributions: 0, test: true });
+      }
       // Counted for Admin → Tracking health: the SDK only logs this to the
       // visitor's console, so a script tag pointed at the wrong tenant
       // would otherwise drop every stitch unseen.
@@ -107,14 +114,17 @@ identifyRouter.post(
     if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
     const { cref } = body.data;
+    const host = landingHost(req.header('origin'), req.header('referer'));
     const click = await db<ClickRow>(TABLES.Click).where({ id: cref, tenantId }).first('id');
     if (!click) {
+      const test = await recordTestLanding(db, tenantId, cref, host);
+      if (test) return res.json({ ok: true, firstLanding: test.first, test: true });
       await noteTrackingIssue(db, tenantId, 'landing_unknown_click', cref);
       return res.status(404).json({ error: 'click_not_found' });
     }
 
     const inserted = await db<ClickLandingRow>(TABLES.ClickLanding)
-      .insert({ clickId: cref, tenantId, host: landingHost(req.header('origin'), req.header('referer')) })
+      .insert({ clickId: cref, tenantId, host })
       .onConflict('clickId')
       .ignore()
       .returning('clickId');

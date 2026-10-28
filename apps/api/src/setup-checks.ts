@@ -131,6 +131,17 @@ export const SETUP_CHECK_TITLES: Record<SetupCheckId, string> = {
   codes: 'Partner codes have their discount',
 };
 
+/** What to do when clicks don't reach the script: the page has no script
+ *  tag, or (SCRIPT_FIX_CHECK) it has one that isn't reporting. Test clicks
+ *  (test-clicks.ts) say the same. */
+export const SCRIPT_FIX_ADD =
+  'Add the script tag from Integrations to the destination page, and to every page a partner link can land on. If you load the SDK from npm, check that it runs there.';
+export const SCRIPT_FIX_CHECK =
+  'Check the script tag’s data-api-url against Integrations, and whether a consent banner holds it back (data-consent="pending").';
+/** What to do when clicks that reached the site aren't linked to customers. */
+export const LINKING_FIX =
+  'Call identify() (or POST /attribution/identify) when someone signs up or logs in, pass client_reference_id on Stripe Checkout, or send the click with each conversion call.';
+
 export interface SetupCheck {
   id: SetupCheckId;
   title: string;
@@ -259,7 +270,8 @@ function beyondChance(rate: number, misses: number): boolean {
   return rate > 0 && Math.pow(1 - rate, misses) < SETUP_THRESHOLDS.maxChance;
 }
 
-function isStripeCheckout(url: string): boolean {
+/** A Stripe-hosted checkout: nothing lands there for the script to see. */
+export function isStripeCheckout(url: string): boolean {
   try {
     return STRIPE_CHECKOUT_HOSTS.has(new URL(url).hostname.toLowerCase());
   } catch {
@@ -892,10 +904,7 @@ function scriptCheck(p: ActiveProgram, t: ProgramTraffic, probe: DestinationProb
       : probe?.scriptTag === true
         ? ' The destination page loads op.js, so the script is there but not reporting.'
         : '';
-  const fixMissing =
-    probe?.scriptTag === true
-      ? 'Check the script tag’s data-api-url against Integrations, and whether a consent banner holds it back (data-consent="pending").'
-      : 'Add the script tag from Integrations to the destination page, and to every page a partner link can land on. If you load the SDK from npm, check that it runs there.';
+  const fixMissing = probe?.scriptTag === true ? SCRIPT_FIX_CHECK : SCRIPT_FIX_ADD;
 
   if (t.landed > 0) {
     const s = t.since;
@@ -1023,8 +1032,7 @@ async function linkingCheck(db: Knex, tenantId: string, now: Date): Promise<Setu
   const reached = viaLanding ? ' that reached your site' : '';
   const window = `in the last ${SETUP_THRESHOLDS.windowDays} days`;
   const detail = { ...t, base, baseLinked: linked, viaLanding };
-  const fix =
-    'Call identify() (or POST /attribution/identify) when someone signs up or logs in, pass client_reference_id on Stripe Checkout, or send the click with each conversion call.';
+  const fix = LINKING_FIX;
 
   if (base === 0) {
     return check(

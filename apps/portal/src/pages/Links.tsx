@@ -1,28 +1,12 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link2, Plus, ArrowRight, Check, Copy, Search } from 'lucide-react';
-import { api, currentTenantSlug, type Principal } from '../api.js';
+import { api, type Principal } from '../api.js';
 import { theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
-import { useBrand, usePublicBrand } from '../lib/useBrand.js';
+import { useShareUrlBase } from '../lib/shareUrl.js';
 import { useDebouncedSearch, usePartnerSearch } from '../lib/usePartnerSearch.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../ui.js';
-
-/**
- * The full share URL for a link key, matching how the router resolves it:
- *   platform origin (path-based tenant) → https://app…/r/<slug>/<key>
- *   white-label custom domain           → https://portal.brand.com/r/<key>
- *   single-tenant self-host             → configured public router origin
- *     (the portal origin does not necessarily serve /r)
- */
-function useShareUrlBase(): string | null {
-  const pathSlug = currentTenantSlug();
-  const { tenantSlug } = usePublicBrand();
-  const { routerUrl } = useBrand();
-  if (pathSlug) return `${window.location.origin}/r/${pathSlug}`;
-  if (tenantSlug && tenantSlug !== 'default') return `${window.location.origin}/r`;
-  return routerUrl ? `${routerUrl}/r` : null;
-}
 
 function CopyableShareLink({ linkKey, base }: { linkKey: string; base: string | null }) {
   const [copied, setCopied] = useState(false);

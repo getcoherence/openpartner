@@ -163,4 +163,5 @@ export const TABLES = {
   UsageFeeShadow: 'UsageFeeShadow',
   TrackingIssue: 'TrackingIssue',
   TrackingAlert: 'TrackingAlert',
+  TestClick: 'TestClick',
 } as const;
