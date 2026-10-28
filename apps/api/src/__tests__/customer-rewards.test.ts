@@ -161,6 +161,21 @@ describe('provisionCustomerReward', () => {
       code: 'KEITH15A2X',
     });
   });
+
+  // Stripe answers a Coupon name over 40 characters with a 400, so a long
+  // program name used to leave every partner code without a promo.
+  it.each([
+    ['fits: the full name', 'Spring', 'ALPHA15', 'OpenPartner — Spring (ALPHA15)'],
+    ['too long: drops the prefix', 'OpenPartner - Earn 50%', 'RYANZ23106746', 'OpenPartner - Earn 50% (RYANZ23106746)'],
+    ['still too long: shortens the program', 'Coherence Pro annual creator program', 'MAYABUILDS20', 'Coherence Pro annual… (MAYABUILDS20)'],
+    ['no room for a program: the code', 'Spring', 'A'.repeat(40), 'A'.repeat(40)],
+    ['never splits an emoji', '🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉', 'PARTY2026', '🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉… (PARTY2026)'],
+  ])('coupon name %s', async (_label, program, code, expected) => {
+    await provisionCustomerReward(TENANT, { type: 'percent_off', value: 20, duration: 'once' }, code, program);
+    const { name } = couponCreate.mock.calls[0]![0] as { name: string };
+    expect(name).toBe(expected);
+    expect(name.length).toBeLessThanOrEqual(40);
+  });
 });
 
 // On hosted deployments STRIPE_SECRET_KEY is OpenPartner's own billing
