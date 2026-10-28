@@ -127,7 +127,10 @@ function RequestRow({
       )}
       {isPending && (
         <div style={{ marginTop: 12 }}>
-          <Label>Decision note (optional)</Label>
+          <Label>Note to the creator (optional)</Label>
+          <p style={{ color: theme.textMuted, fontSize: 12, margin: '0 0 6px' }}>
+            We email it to them with your decision, and they see it under My applications.
+          </p>
           <Input
             type="text"
             value={note}
