@@ -114,9 +114,9 @@ async function isCouponId(client: Stripe, code: string): Promise<boolean> {
  * — caller should still write the OpenPartner Coupon row and leave the
  * Stripe ID columns null. Logs the error; doesn't throw.
  *
- * couponName surfaces in Stripe Dashboard ("OpenPartner — KEITH15A2X")
- * so the brand can audit which OpenPartner-managed coupons exist
- * without cross-referencing IDs.
+ * couponName surfaces in Stripe Dashboard ("OpenPartner — Default
+ * (KEITH15A2X)", see rewardCouponName) so the brand can audit which
+ * OpenPartner-managed coupons exist without cross-referencing IDs.
  */
 export async function provisionCustomerReward(
   tenantId: string,
@@ -139,8 +139,41 @@ export async function provisionCustomerReward(
   }
 }
 
+/** Stripe refuses a Coupon name longer than this with a 400, and the
+ *  hourly backfill would retry that code forever. */
+const STRIPE_COUPON_NAME_MAX = 40;
+
+/**
+ * "OpenPartner — Spring (ALPHA15)" when it fits. Stripe shows the name to
+ * customers on invoices and receipts, so a longer one drops the prefix
+ * (metadata.source still marks the coupon as ours) and then shortens the
+ * program name. The code always stays whole: it's how the brand finds the
+ * partner in the Dashboard. A code too long for any program name is the
+ * name on its own (codes are at most 40 characters).
+ */
 function rewardCouponName(campaignName: string, code: string): string {
-  return `OpenPartner — ${campaignName} (${code})`;
+  const tail = ` (${code})`;
+  const full = `OpenPartner — ${campaignName}${tail}`;
+  if (full.length <= STRIPE_COUPON_NAME_MAX) return full;
+  const room = STRIPE_COUPON_NAME_MAX - tail.length;
+  const program = campaignName.trim();
+  if (room < 2 || !program) return clip(code, STRIPE_COUPON_NAME_MAX);
+  return `${clip(program, room)}${tail}`;
+}
+
+/** At most `max` UTF-16 units, ending in "…" when cut, at a space when
+ *  there is one. Never splits a surrogate pair, so the count holds however
+ *  Stripe measures it. */
+function clip(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let out = '';
+  for (const ch of text) {
+    if (out.length + ch.length > max - 1) break;
+    out += ch;
+  }
+  const space = out.lastIndexOf(' ');
+  if (space > 0 && !/\s/.test(text[out.length] ?? '')) out = out.slice(0, space);
+  return `${out.trimEnd()}…`;
 }
 
 /** The Coupon, then its PromotionCode. The promo's metadata is how a
