@@ -27,6 +27,10 @@ import { getMode, type OpenPartnerMode } from './stripe.js';
 
 export const TRIAL_DAYS = 14;
 
+/** metadata.openpartner_role on the Stripe Customer a tenant pays
+ *  OpenPartner through (billing.ts, invoice-billing.ts). */
+export const BILLING_CUSTOMER_ROLE = 'merchant_self_subscription';
+
 /** Days a pay-by-invoice subscription may stay past due before partner
  *  onboarding pauses, when ops set nothing else for the tenant
  *  (HostedBillingProfile.graceDays). */

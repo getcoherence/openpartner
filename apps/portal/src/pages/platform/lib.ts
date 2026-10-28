@@ -274,6 +274,14 @@ export interface NotificationsState {
   networkConfigured: boolean;
 }
 
+/** OpenPartner's own partner program (house-program.ts on the API). */
+export interface HouseProgramState {
+  settings: { tenantId: string | null };
+  tenant: { id: string; slug: string; displayName: string; status: string; approvalStatus: string } | null;
+  stripeConnection: { stripeAccountId: string; livemode: boolean; connectedAt: string; lastEventAt: string | null } | null;
+  referredBrands: number;
+}
+
 /** Who a reminder run would email (dryRun) or did email. Brand rows carry a
  *  slug, creator rows a name. */
 export interface ReminderRunResult {
@@ -567,6 +575,8 @@ export function friendlyPlatformError(err: unknown): string {
       return 'The brand has no card on file. It can add one in the Stripe Customer Portal from its Billing page.';
     case 'not_found':
       return 'No brand with that id or slug.';
+    case 'tenant_not_found':
+      return 'No brand has that slug.';
     default:
       return raw;
   }

@@ -29,6 +29,7 @@ import { applyWhiteLabelFromSubscription, subscriptionHasWhiteLabel, whiteLabelP
 import { ensureCouponClickAndIdentity, findCouponByCode } from './coupons.js';
 import { handleFundingEvent, InboxEventHeldError } from '../funding/webhook.js';
 import {
+  BILLING_CUSTOMER_ROLE,
   markInvoicePaid,
   mirrorHostedBillingState,
   type InvoiceOverdue,
@@ -1175,7 +1176,7 @@ async function mapStripeEvent(
         // stitchFromCompletedCheckouts. Anywhere else this is OpenPartner's
         // billing account, and the Stripe read would find nobody.
         if (!customerId || !source.brandAccount || !checkoutPaymentRevenue(session, customerId)) return null;
-        const userId = await resolveUserIdFromCustomer(trx, tenantId, stripe, customerId);
+        const userId = await resolveUserIdFromCustomer(trx, tenantId, source, customerId);
         if (!userId) return null;
         if (userId !== customerId) await lockMerchantUser(trx, tenantId, userId);
         return checkoutEvents(revenue(userId));
@@ -1224,7 +1225,7 @@ async function mapStripeEvent(
         stripe.customers.retrieve(customerId),
       );
       const customer = fetched && !fetched.deleted ? fetched : null;
-      const metadataUserId = customer?.metadata?.openpartner_user_id;
+      const metadataUserId = customer ? customerUserId(source, customer) : null;
       if (metadataUserId && metadataUserId !== customerId) {
         // Locked before the stitch so a concurrent customer.created or
         // invoice.paid for this user either sees our Identity or has
@@ -1265,7 +1266,7 @@ async function mapStripeEvent(
     }
     case 'customer.created': {
       const customer = event.data.object as Stripe.Customer;
-      const userId = customer.metadata?.openpartner_user_id;
+      const userId = customerUserId(source, customer);
       if (!userId) return null;
       // checkout.session.completed records this user's signup too when the
       // customer also checks out with a cref. One per merchant userId.
@@ -1279,7 +1280,7 @@ async function mapStripeEvent(
       const sub = event.data.object as Stripe.Subscription;
       const userId =
         sub.metadata?.openpartner_user_id ??
-        (await resolveUserIdFromCustomer(trx, tenantId, stripe, sub.customer)) ??
+        (await resolveUserIdFromCustomer(trx, tenantId, source, sub.customer)) ??
         (await stitchFromCompletedCheckouts(trx, source, tenantId, sub.customer));
       if (!userId) return null;
       // Keyed to a merchant-set userId: wait out a concurrent checkout
@@ -1295,7 +1296,7 @@ async function mapStripeEvent(
       // on every renewal of every such customer.
       const fromCheckout = !RENEWAL_BILLING_REASONS.has(invoice.billing_reason ?? '');
       const userId =
-        (await resolveUserIdFromCustomer(trx, tenantId, stripe, invoice.customer)) ??
+        (await resolveUserIdFromCustomer(trx, tenantId, source, invoice.customer)) ??
         (fromCheckout ? await stitchFromCompletedCheckouts(trx, source, tenantId, invoice.customer) : null);
       if (!userId) return null;
       // As for customer.subscription.created.
@@ -1337,7 +1338,7 @@ async function mapStripeEvent(
       // A guest one-time purchase has no Customer to resolve; its revenue
       // Event names the PaymentIntent.
       const userId =
-        (await resolveUserIdFromCustomer(trx, tenantId, stripe, charge.customer)) ??
+        (await resolveUserIdFromCustomer(trx, tenantId, source, charge.customer)) ??
         (await userIdForPaymentIntent(trx, tenantId, paymentIntentId));
       if (!userId) return null;
       // Absent, not null, from API version 2025-03-31.basil on: Stripe moved
@@ -1449,7 +1450,7 @@ async function mapStripeEvent(
         ? await stripeReadOrNull('charges.retrieve', chargeId, () => stripe.charges.retrieve(chargeId))
         : null;
       const userId =
-        (await resolveUserIdFromCustomer(trx, tenantId, stripe, charge?.customer ?? null)) ??
+        (await resolveUserIdFromCustomer(trx, tenantId, source, charge?.customer ?? null)) ??
         (await userIdForPaymentIntent(trx, tenantId, paymentIntentId));
       if (!userId) return null;
       return {
@@ -1471,7 +1472,7 @@ async function mapStripeEvent(
       // have fired for this invoice in the first place, so there's nothing to
       // reverse. Useful when an admin is debugging "why didn't this convert?"
       const invoice = event.data.object as Stripe.Invoice;
-      const userId = await resolveUserIdFromCustomer(trx, tenantId, stripe, invoice.customer);
+      const userId = await resolveUserIdFromCustomer(trx, tenantId, source, invoice.customer);
       if (!userId) return null;
       return {
         userId,
@@ -1562,7 +1563,7 @@ async function invoicePaidBy(
 async function resolveUserIdFromCustomer(
   trx: Knex.Transaction,
   tenantId: string,
-  stripe: Stripe,
+  source: BrandStripeSource,
   customer: string | Stripe.Customer | Stripe.DeletedCustomer | null,
 ): Promise<string | null> {
   if (!customer) return null;
@@ -1571,12 +1572,12 @@ async function resolveUserIdFromCustomer(
 
   if (typeof customer === 'string') {
     customerId = customer;
-    const fetched = await stripeReadOrNull('customers.retrieve', customer, () => stripe.customers.retrieve(customer));
-    if (fetched && !fetched.deleted) metadataUserId = fetched.metadata?.openpartner_user_id ?? null;
+    const fetched = await stripeReadOrNull('customers.retrieve', customer, () => source.stripe.customers.retrieve(customer));
+    if (fetched && !fetched.deleted) metadataUserId = customerUserId(source, fetched);
   } else {
     if ('deleted' in customer && customer.deleted) return null;
     customerId = (customer as Stripe.Customer).id;
-    metadataUserId = (customer as Stripe.Customer).metadata?.openpartner_user_id ?? null;
+    metadataUserId = customerUserId(source, customer as Stripe.Customer);
   }
 
   if (metadataUserId) return metadataUserId;
@@ -1587,6 +1588,22 @@ async function resolveUserIdFromCustomer(
   // metadata-backfill on checkout.session.completed lands on Stripe's side.
   const identity = await trx<IdentityRow>(TABLES.Identity).where({ tenantId, userId: customerId }).first();
   return identity ? customerId : null;
+}
+
+/**
+ * The merchant userId a Customer's metadata names (openpartner_user_id).
+ * OpenPartner's own billing Customers can carry one too: a brand a partner
+ * referred to OpenPartner, as a user of OpenPartner's own partner program
+ * (house-program.ts), whose tenant reads the billing account over the
+ * Stripe App. Anywhere else (/webhooks/stripe, where the account isn't a
+ * brand's) the Customer is the brand paying for its own plan, the event
+ * resolved to the brand's own tenant, and the id names none of its users:
+ * read there, it would record the brand's own signup, subscription or
+ * refund as one of its conversions.
+ */
+function customerUserId(source: BrandStripeSource, customer: Stripe.Customer): string | null {
+  if (!source.brandAccount && customer.metadata?.openpartner_role === BILLING_CUSTOMER_ROLE) return null;
+  return customer.metadata?.openpartner_user_id ?? null;
 }
 
 /** Coupons maybeRedeemStripeCoupons matched, and the userId their
