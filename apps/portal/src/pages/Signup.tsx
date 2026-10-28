@@ -35,6 +35,10 @@ export function SignupPage() {
   const [params] = useSearchParams();
   const planParam = params.get('plan');
   const plan: SignupPlan | null = isPlan(planParam) ? planParam : null;
+  // A partner link straight to /signup arrives with the click as ?cref=.
+  // Sent with the signup so OpenPartner's own program credits the partner;
+  // one through openpartner.dev rides the op_ref cookie instead.
+  const cref = params.get('cref');
   const [slug, setSlug] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [adminEmail, setAdminEmail] = useState('');
@@ -72,6 +76,7 @@ export function SignupPage() {
           // enterprise (it would bypass the plan-required gate), so the
           // CTA only records intent visually; ops set the plan on close.
           ...(plan && plan !== 'enterprise' ? { plan } : {}),
+          ...(cref ? { cref } : {}),
         }),
       });
       const data = (await res.json()) as Record<string, unknown>;

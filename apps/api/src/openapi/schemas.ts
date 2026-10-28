@@ -306,6 +306,16 @@ export const LandingResult = z
   })
   .openapi('LandingResult');
 
+export const ConsentRegion = z
+  .object({
+    rule: z.enum(['opt_in', 'opt_out']).openapi({
+      description:
+        '`opt_in`: ask before storing anything (the EU, the rest of the EEA, the UK and Switzerland, and any visitor whose country is unknown). `opt_out`: track unless the visitor declines.',
+    }),
+    country: z.string().nullable().openapi({ description: 'ISO 3166-1 alpha-2, from the client IP address; null when unknown.', example: 'US' }),
+  })
+  .openapi('ConsentRegion');
+
 export const Attribution = z
   .object({
     status: z

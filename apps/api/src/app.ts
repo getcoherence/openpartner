@@ -15,6 +15,7 @@ import { paypalWebhookRouter } from './routes/paypal-webhook.js';
 import { paypalRouter } from './routes/paypal.js';
 import { stripeAppCallbackRouter, stripeAppRouter } from './routes/stripe-app.js';
 import { identifyRouter } from './routes/identify.js';
+import { consentRegionRouter } from './routes/consent-region.js';
 import { eventsRouter } from './routes/events.js';
 import { conversionsRouter } from './routes/conversions.js';
 import { refundsRouter } from './routes/refunds.js';
@@ -110,7 +111,8 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
     throw new Error('PORTAL_URL must be set in production so CORS has an origin allowlist');
   }
   // /attribution/identify is the browser SDK's stitch call (and
-  // /attribution/landing its landing beacon), made from the
+  // /attribution/landing its landing beacon, /consent-region its consent
+  // rule lookup), made from the
   // BRAND'S OWN website origin (acme.com) — an origin we can never
   // allowlist ahead of time. It gets analytics-collector CORS: any origin,
   // NO credentials (the endpoint is deliberately unauthenticated,
@@ -119,7 +121,7 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   // the OPTIONS preflight for this path; the global middleware runs after
   // but never unsets headers, so the open ACAO survives for this route
   // only. Everything else keeps the strict allowlist + credentials.
-  const IDENTIFY_PATH = /^(?:\/(?:api\/)?t\/[a-z0-9-]+)?\/attribution\/(?:identify|landing)\/?$/;
+  const IDENTIFY_PATH = /^(?:\/(?:api\/)?t\/[a-z0-9-]+)?\/(?:attribution\/(?:identify|landing)|consent-region)\/?$/;
   const identifyCors = cors({ origin: true, credentials: false });
   app.use((req, res, next) => (IDENTIFY_PATH.test(req.path) ? identifyCors(req, res, next) : next()));
 
@@ -269,6 +271,9 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   // Stripe App OAuth callback: Stripe redirects to one fixed URL with no
   // tenant in it; the signed state names the tenant (routes/stripe-app.ts).
   app.use(stripeAppCallbackRouter);
+  // The SDK's consent rule lookup, tenant prefix or not, with no tenant
+  // transaction: it's one call per page view (routes/consent-region.ts).
+  app.use(consentRegionRouter);
 
   // ----- Tenant scope -----
   // Everything below runs inside a per-request transaction with

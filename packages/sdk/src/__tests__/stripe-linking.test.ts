@@ -127,6 +127,7 @@ describe('the script-tag build', () => {
       stripe: { linkHosts: [] },
       referralCookie: { name: 'op_ref' },
       consent: 'granted',
+      privacySignals: 'decline',
       reportLanding: true,
     });
     expect(
@@ -143,6 +144,7 @@ describe('the script-tag build', () => {
       stripe: { linkHosts: ['pay.acme.test', 'buy.acme.test'] },
       referralCookie: { name: 'op_ref', domain: '.acme.test' },
       consent: 'granted',
+      privacySignals: 'decline',
       reportLanding: true,
     });
     expect(configFromScript({ src: 'https://x.test/op.js', dataset: { stripe: 'off', cookie: 'off' } })).toMatchObject({
@@ -154,6 +156,13 @@ describe('the script-tag build', () => {
     ).toMatchObject({ consent: 'pending', reportLanding: false });
     expect(configFromScript({ src: 'https://x.test/op.js', dataset: { consent: 'denied' } })).toMatchObject({
       consent: 'denied',
+    });
+    expect(
+      configFromScript({ src: 'https://x.test/op.js', dataset: { consent: 'pending', consentRegion: 'on', gpc: 'ignore' } }),
+    ).toMatchObject({ consent: 'regional', privacySignals: 'ignore' });
+    // The region switch needs pending: an op.js that predates it then waits.
+    expect(configFromScript({ src: 'https://x.test/op.js', dataset: { consentRegion: 'on' } })).toMatchObject({
+      consent: 'granted',
     });
     // Anything else is the default, never a value the SDK doesn't know.
     expect(configFromScript({ src: 'https://x.test/op.js', dataset: { consent: 'yes' } })).toMatchObject({

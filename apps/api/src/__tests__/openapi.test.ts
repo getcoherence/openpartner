@@ -48,6 +48,7 @@ const DOCUMENTED_ROUTERS: Record<string, Router> = {
   partnerPrograms: (await import('../routes/partner-campaigns.js')).partnerCampaignsRouter,
   links: (await import('../routes/links.js')).linksRouter,
   identify: (await import('../routes/identify.js')).identifyRouter,
+  consentRegion: (await import('../routes/consent-region.js')).consentRegionRouter,
   events: (await import('../routes/events.js')).eventsRouter,
   conversions: (await import('../routes/conversions.js')).conversionsRouter,
   refunds: (await import('../routes/refunds.js')).refundsRouter,

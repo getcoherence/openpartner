@@ -32,6 +32,7 @@ import { RESERVED_SLUGS, getTenancyMode } from '../tenancy.js';
 import { newTrialEnd } from '../billing-plan.js';
 import { findBlockingEntry, notifyOpsNewBrand } from '../brand-review.js';
 import { screenTenantInBackground } from '../sanctions-screening.js';
+import { recordHouseSignup, signupCrefs } from '../house-program.js';
 import {
   checkCountryAccess,
   countryAccessStatus,
@@ -69,6 +70,9 @@ const signupSchema = z.object({
    *  when the activation link is redeemed (passwords.ts claimSignupPassword),
    *  and never replaces a password the address already has. */
   password: passwordSchema.optional(),
+  /** The partner click on the signup page's URL (`?cref=`), for
+   *  OpenPartner's own partner program (house-program.ts). */
+  cref: z.string().max(200).optional(),
 });
 
 class SignupGuardError extends Error {
@@ -213,6 +217,15 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
   // In the background: a possible match lands in the ops review queue,
   // and the response doesn't wait on the list.
   screenTenantInBackground(db, tenantId, 'signup');
+  // A partner of OpenPartner's own program referred this brand: credit the
+  // signup there (house-program.ts). Best-effort; never fails the signup.
+  await recordHouseSignup({
+    brandTenantId: tenantId,
+    adminId,
+    brandSlug: slug,
+    displayName: body.data.displayName,
+    crefs: signupCrefs(body.data.cref, req.cookies),
+  });
 
   // Email the activation magic link. If this fails the Tenant + Admin row
   // remain — the operator can hit /admins/:id/invite later (after first

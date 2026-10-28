@@ -28,6 +28,7 @@ import {
 } from '../country-access.js';
 import { findBlockingEntry, notifyOpsNewBrand } from '../brand-review.js';
 import { screenTenantInBackground } from '../sanctions-screening.js';
+import { recordHouseSignup, signupCrefs } from '../house-program.js';
 import {
   attachSessionToBundle,
   createPlatformBundle,
@@ -335,6 +336,15 @@ platformAuthRouter.post('/me/brands', addBrandLimit, async (req, res) => {
   });
   // Same background screening as public signup (sanctions-screening.ts).
   screenTenantInBackground(db, tenantId, 'add_brand');
+  // As at public signup: a "Sign up with Google" lands here, carrying the
+  // op_ref cookie from openpartner.dev (house-program.ts).
+  await recordHouseSignup({
+    brandTenantId: tenantId,
+    adminId,
+    brandSlug: slug,
+    displayName: body.data.displayName,
+    crefs: signupCrefs(undefined, req.cookies),
+  });
 
   const network = await autoEnrollBrandOnNetwork({
     tenantId,
