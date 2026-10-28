@@ -208,7 +208,7 @@ describe.skipIf(skipIntegration)('noteTrackingIssue', () => {
       { tenantId: OTHER_TENANT_ID, day: '2026-10-02', kind: 'stripe_foreign_reference', count: 9, sampleRef: 'theirs', lastSeenAt: new Date('2026-10-02T10:00:00Z') },
     ]);
     expect(await trackingIssuesSince(db, DEFAULT_TENANT_ID, new Date('2026-09-24T00:00:00Z'))).toEqual([
-      { kind: 'stripe_foreign_reference', count: 6, days: 2, sampleRef: 'new', lastSeenAt: '2026-10-03T10:00:00.000Z' },
+      { kind: 'stripe_foreign_reference', count: 6, days: 2, sampleRef: 'new', detail: null, lastSeenAt: '2026-10-03T10:00:00.000Z' },
     ]);
   });
 });

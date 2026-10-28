@@ -192,6 +192,8 @@ const createdAdmins: string[] = [];
 const PRODUCT_TABLES = [
   // Every brand event the pipeline processes is logged (stripe-event-catchup.ts).
   TABLES.StripeEventLog,
+  // A partner code whose discount Stripe refused is counted (customer-rewards.ts).
+  TABLES.TrackingIssue,
   TABLES.Commission,
   TABLES.Attribution,
   TABLES.Event,

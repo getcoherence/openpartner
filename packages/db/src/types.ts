@@ -925,7 +925,8 @@ export type TrackingIssueKind =
   | 'conversion_unknown_click'
   | 'stripe_unknown_click'
   | 'stripe_foreign_reference'
-  | 'coupon_unknown_code';
+  | 'coupon_unknown_code'
+  | 'reward_code_refused';
 
 /** Dropped input, counted per (tenant, day, kind). Not exported. */
 export interface TrackingIssueRow {
@@ -936,6 +937,10 @@ export interface TrackingIssueRow {
   count: number;
   /** The latest value seen, cut to 64 characters. */
   sampleRef: string | null;
+  /** What went wrong with it, for kinds that know (Stripe's answer to a
+   *  partner code's discount), cut to 500 characters. Migration
+   *  20261028000000. */
+  detail: string | null;
   firstSeenAt: Date;
   lastSeenAt: Date;
 }
@@ -943,13 +948,24 @@ export interface TrackingIssueRow {
 /** A Tracking health flag (apps/api/src/tracking-flags.ts). */
 export type TrackingFlagKind = 'linkage_drop' | 'fast_sales';
 
+/** A setup check (apps/api/src/setup-checks.ts), as the alert job records
+ *  it: `setup_<check id>`. */
+export type SetupAlertKind =
+  | 'setup_destination'
+  | 'setup_script'
+  | 'setup_linking'
+  | 'setup_stripe'
+  | 'setup_codes'
+  | 'setup_partners';
+
 /** One episode of a flag the alert job has seen, so it emails each once
  *  (apps/api/src/tracking-alerts.ts). Not exported. */
 export interface TrackingAlertRow {
   id: string;
   tenantId: string;
-  kind: TrackingFlagKind;
-  /** `<browser>|<device>|<metric>` for a linkage drop; the partner id for fast sales. */
+  kind: TrackingFlagKind | SetupAlertKind;
+  /** `<browser>|<device>|<metric>` for a linkage drop; the partner id for
+   *  fast sales; a program id or `account` for a setup check. */
   subject: string;
   openedAt: Date;
   lastSeenAt: Date;

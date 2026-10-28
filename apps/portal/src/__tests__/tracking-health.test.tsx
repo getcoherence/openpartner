@@ -6,9 +6,11 @@
  * conversions that credited nobody by why, and the input OpenPartner
  * dropped, with what to fix. Stripe revenue splits missed sales from
  * signals that couldn't have credited, and partner codes whose customers
- * almost never clicked the partner's link are highlighted. Flags (a browser
- * or partner changed against its own past) come first, in plain words,
- * with the checkbox that emails new ones.
+ * almost never clicked the partner's link are highlighted. Setup checks
+ * come first, per program then account-wide, each failing one with what to
+ * change, beside the checkbox that emails failing checks and new flags.
+ * Flags (a browser or partner changed against its own past) follow, in
+ * plain words.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -16,6 +18,7 @@ import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   AdminTrackingHealth,
+  type SetupChecksReport,
   type StripeReconciliationReport,
   type TrackingFlagsReport,
   type TrackingHealthReport,
@@ -24,6 +27,7 @@ import {
 let report: TrackingHealthReport;
 let stripe: StripeReconciliationReport;
 let flags: TrackingFlagsReport;
+let setup: SetupChecksReport;
 let alerts: { email: boolean };
 let saved: unknown[] = [];
 let requested: string[] = [];
@@ -32,6 +36,12 @@ function flagsReport(list: TrackingFlagsReport['flags'] = []): TrackingFlagsRepo
   const w = { baselineSince: '2026-09-20T00:00:00.000Z', recentSince: '2026-10-18T00:00:00.000Z', until: '2026-10-25T00:00:00.000Z' };
   return { computedAt: '2026-10-26T00:00:00.000Z', windows: { linkage: w, sales: w }, flags: list };
 }
+
+function setupReport(checks: SetupChecksReport['checks'] = []): SetupChecksReport {
+  return { computedAt: new Date().toISOString(), checks };
+}
+
+const SPRING = { id: 'p1', name: 'Spring' };
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -109,6 +119,7 @@ beforeEach(() => {
   report = baseReport();
   stripe = stripeReport();
   flags = flagsReport();
+  setup = setupReport();
   alerts = { email: true };
   saved = [];
   requested = [];
@@ -119,6 +130,7 @@ beforeEach(() => {
     if (url.pathname === '/api/admin/tracking-health') return json(200, report);
     if (url.pathname === '/api/admin/tracking-health/stripe') return json(200, stripe);
     if (url.pathname === '/api/admin/tracking-health/flags') return json(200, flags);
+    if (url.pathname === '/api/admin/tracking-health/setup') return json(200, setup);
     if (url.pathname === '/api/config/tracking-alerts') {
       if (init?.method === 'POST') {
         const body = JSON.parse(String(init.body)) as { email: boolean };
@@ -264,12 +276,91 @@ describe('Admin → Tracking health', () => {
     expect(requested).toContain('/api/admin/tracking-health/flags');
   });
 
-  it('turns the alert email off from the flags heading', async () => {
+  it('turns the alert email off from the setup checks heading', async () => {
     renderPage();
-    const box = (await screen.findByLabelText('Email admins about new flags')) as HTMLInputElement;
+    const label = 'Email admins about failing checks and new flags';
+    const box = (await screen.findByLabelText(label)) as HTMLInputElement;
     expect(box.checked).toBe(true);
     fireEvent.click(box);
     await waitFor(() => expect(saved).toEqual([{ email: false }]));
-    await waitFor(() => expect((screen.getByLabelText('Email admins about new flags') as HTMLInputElement).checked).toBe(false));
+    await waitFor(() => expect((screen.getByLabelText(label) as HTMLInputElement).checked).toBe(false));
+  });
+
+  it('shows each setup check per program, then the whole account, with what to change for the failing ones', async () => {
+    setup = setupReport([
+      {
+        id: 'partners',
+        title: 'Partners can share it',
+        subject: 'p1',
+        program: SPRING,
+        status: 'pass',
+        summary: '6 partners can share it (6 partners with a link).',
+        fix: null,
+      },
+      {
+        id: 'destination',
+        title: 'Destination keeps the click',
+        subject: 'p1',
+        program: SPRING,
+        status: 'fail',
+        summary: 'The click is lost on the way: brand.example redirects to https://www.brand.example/ without ?cref=.',
+        fix: 'Make the redirect keep the query string.',
+      },
+      {
+        id: 'linking',
+        title: 'Clicks are linked to customers',
+        subject: 'account',
+        program: null,
+        status: 'waiting',
+        summary: 'Waiting for partner clicks to reach a page running the script.',
+        fix: null,
+      },
+      {
+        id: 'codes',
+        title: 'Partner codes have their discount',
+        subject: 'account',
+        program: null,
+        status: 'unknown',
+        summary: '6 partner codes promise customers a discount, and OpenPartner has no Stripe connection that can create it.',
+        fix: 'Connect Stripe under Integrations.',
+      },
+    ]);
+    renderPage();
+    expect(await screen.findByText('1 of 4 checks is failing.')).toBeTruthy();
+    expect(screen.getByText('1 failing, 1 can’t check, 1 waiting, 1 passing. Each failing check says what to change.')).toBeTruthy();
+    expect(screen.getByText('Spring')).toBeTruthy();
+    expect(screen.getByText('Whole account')).toBeTruthy();
+    expect(screen.getByText('Destination keeps the click')).toBeTruthy();
+    expect(screen.getByText('Make the redirect keep the query string.')).toBeTruthy();
+    expect(screen.getByText('Connect Stripe under Integrations.')).toBeTruthy();
+    expect(screen.getByText('can’t check')).toBeTruthy();
+    expect(requested).toContain('/api/admin/tracking-health/setup');
+
+    setup = setupReport(setup.checks.map((c) => ({ ...c, status: 'pass' as const })));
+    fireEvent.click(screen.getByText('Check again'));
+    expect(await screen.findByText('Every check passes.')).toBeTruthy();
+    expect(requested).toContain('/api/admin/tracking-health/setup?refresh=1');
+    // A passing check's advice isn't shown.
+    expect(screen.queryByText('Make the redirect keep the query string.')).toBeNull();
+  });
+
+  it("shows Stripe's answer under a refused partner code", async () => {
+    report = {
+      ...baseReport(),
+      issues: [
+        {
+          kind: 'reward_code_refused',
+          count: 24,
+          days: 1,
+          sampleRef: 'ALPHA15',
+          detail: 'Invalid string: …; must be at most 40 characters',
+          lastSeenAt: '2026-10-28T10:00:00.000Z',
+        },
+      ],
+    };
+    renderPage();
+    expect(await screen.findByText("Stripe refused a partner code's discount")).toBeTruthy();
+    expect(screen.getByText('ALPHA15')).toBeTruthy();
+    expect(screen.getByText('Invalid string: …; must be at most 40 characters')).toBeTruthy();
   });
 });
