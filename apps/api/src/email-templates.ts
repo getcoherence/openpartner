@@ -69,6 +69,11 @@ export interface PartnerApplicationSummary {
   pitch: string;
 }
 
+/** The greeting on mail to a brand's own admins: "Hi Acme team,". */
+function brandTeamGreeting(brandName: string | null): string {
+  return brandName ? `Hi ${brandName} team,` : 'Hi there,';
+}
+
 /** Brand admin: someone applied through the public join page and is
  *  waiting for review. */
 export function partnerApplicationAdminEmail(
@@ -94,7 +99,7 @@ export function partnerApplicationAdminEmail(
       ]
     : [];
   const text = [
-    `Hi${brandName ? ` from ${brandName}` : ''},`,
+    brandTeamGreeting(brandName),
     ``,
     `${applicantName} (${applicantEmail}) applied to your partner program and is waiting for review.`,
     ``,
@@ -272,7 +277,7 @@ export function paypalBatchAttentionEmail(opts: {
             ``,
             `Payouts that failed or were returned are back to "to send", so you can pay them again, for example once the partner fixes their PayPal email. An unclaimed one stays in the batch until it is claimed or returned; you can cancel it on the Payouts page to get the money back now.`,
           ];
-  const text = [`Hi${opts.brandName ? ` from ${opts.brandName}` : ''},`, ``, ...intro, ``, `Payouts page:`, ``, opts.payoutsUrl].join('\n');
+  const text = [brandTeamGreeting(opts.brandName), ``, ...intro, ``, `Payouts page:`, ``, opts.payoutsUrl].join('\n');
   return { subject, text, html: wrap(text, opts.payoutsUrl, 'Open Payouts') };
 }
 
@@ -286,7 +291,7 @@ export function campaignEndingBrandEmail(
   const dateStr = endsAt.toUTCString().replace(/ \d\d:\d\d:\d\d GMT$/, '');
   const subject = `"${campaignName}" ends in 7 days`;
   const text = [
-    `Hi${brandName ? ` from ${brandName}` : ''},`,
+    brandTeamGreeting(brandName),
     ``,
     `Your campaign "${campaignName}" is scheduled to end ${dateStr}.`,
     ``,
@@ -347,7 +352,7 @@ export function trackingFlagsEmail(
         ? `Tracking health: ${checksPart}`
         : `Tracking health: ${checksPart}, ${flagsPart}`;
   const text = [
-    `Hi${brandName ? ` from ${brandName}` : ''},`,
+    brandTeamGreeting(brandName),
     ``,
     ...(checks.length
       ? [
