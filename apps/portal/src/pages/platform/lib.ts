@@ -266,6 +266,7 @@ export interface NetworkVendorReview {
 export interface NotificationSettings {
   brandSetupReminders: boolean;
   creatorProfileReminders: boolean;
+  creatorStorefrontNudge: boolean;
 }
 
 export interface NotificationsState {
@@ -294,6 +295,26 @@ export interface ReminderRunResult {
     email: string;
     step: number;
     missing: string[];
+  }>;
+  sent: number;
+  failed: number;
+}
+
+/** Who the storefront nudge would email (dryRun) or did email. */
+export interface StorefrontNudgeRunResult {
+  dryRun: boolean;
+  eligible: Array<{
+    creatorId: string;
+    email: string;
+    name: string;
+    handle: string | null;
+    /** Their biggest channel, when it has 1,000 or more followers. */
+    audience: { platform: string; count: number } | null;
+    /** Packages saved, drafts included, and how many are published. */
+    packages: number;
+    publishedPackages: number;
+    bookingsOpen: boolean;
+    paymentsReady: boolean;
   }>;
   sent: number;
   failed: number;

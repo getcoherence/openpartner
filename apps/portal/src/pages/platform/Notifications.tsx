@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Page, Table } from '../../ui.js';
+import { PLATFORM_LABELS } from '../creator/storefront-shared.js';
 import {
   papi,
   friendlyPlatformError,
@@ -9,9 +10,49 @@ import {
   type NotificationsState,
   type PlatformOperator,
   type ReminderRunResult,
+  type StorefrontNudgeRunResult,
 } from './lib.js';
 
-type Sweep = 'brand-setup' | 'creator-profile';
+type Sweep = 'brand-setup' | 'creator-profile' | 'creator-storefront';
+type RunResult = ReminderRunResult | StorefrontNudgeRunResult;
+
+/** The preview table for the two step-by-step reminder sweeps. */
+function reminderRows(result: RunResult): ReactNode[][] {
+  return (result as ReminderRunResult).eligible.map((e) => [
+    <div key="r" style={{ minWidth: 0 }}>
+      <div style={{ fontSize: 13 }}>{e.slug ? `/t/${e.slug}/` : e.name}</div>
+      <div style={{ fontSize: 12, color: theme.textDim }}>{e.email}</div>
+    </div>,
+    `${e.step} of 3`,
+    <span key="m" style={{ fontSize: 12.5, color: theme.textMuted }}>
+      {e.missing.join(' · ')}
+    </span>,
+  ]);
+}
+
+/** Where a creator's storefront stands, for the nudge's preview. */
+function storefrontState(e: StorefrontNudgeRunResult['eligible'][number]): string {
+  if (e.packages === 0 && !e.bookingsOpen) return 'Not started';
+  const parts = [`${e.packages} ${e.packages > 0 && e.publishedPackages === 0 ? 'draft ' : ''}package${e.packages === 1 ? '' : 's'}`];
+  if (!e.paymentsReady) parts.push('Stripe not connected');
+  if (!e.bookingsOpen) parts.push('bookings off');
+  return parts.join(', ');
+}
+
+function storefrontRows(result: RunResult): ReactNode[][] {
+  return (result as StorefrontNudgeRunResult).eligible.map((e) => [
+    <div key="r" style={{ minWidth: 0 }}>
+      <div style={{ fontSize: 13 }}>{e.handle ? `@${e.handle}` : e.name}</div>
+      <div style={{ fontSize: 12, color: theme.textDim }}>{e.email}</div>
+    </div>,
+    e.audience
+      ? `${e.audience.count.toLocaleString('en-US')} on ${PLATFORM_LABELS[e.audience.platform] ?? e.audience.platform}`
+      : 'Under 1,000',
+    <span key="s" style={{ fontSize: 12.5, color: theme.textMuted }}>
+      {storefrontState(e)}
+    </span>,
+  ]);
+}
 
 const SWEEPS: Array<{
   key: Sweep;
@@ -19,6 +60,12 @@ const SWEEPS: Array<{
   title: string;
   who: string;
   cadence: string;
+  /** Sent by the Network, so it needs NETWORK_URL + NETWORK_ADMIN_API_KEY. */
+  network: boolean;
+  /** "N people are due {due} right now." */
+  due: string;
+  columns: string[];
+  rows: (result: RunResult) => ReactNode[][];
 }> = [
   {
     key: 'brand-setup',
@@ -26,6 +73,10 @@ const SWEEPS: Array<{
     title: 'Brand setup reminders',
     who: 'Admins of live brands (pending or approved) who haven’t created a program, listed it on the marketplace, connected tracking, or (once approved) invited a partner.',
     cadence: 'Up to 3 emails: 2 days after signup, then 4 and 7 days later. Stops as soon as setup is complete or they unsubscribe.',
+    network: false,
+    due: 'a reminder',
+    columns: ['Recipient', 'Reminder', 'Still missing'],
+    rows: reminderRows,
   },
   {
     key: 'creator-profile',
@@ -33,12 +84,27 @@ const SWEEPS: Array<{
     title: 'Creator profile reminders',
     who: 'Creators who confirmed their email but are hidden from discovery because their profile is missing a handle, photo, bio, category, or social platform.',
     cadence: 'Up to 3 emails: 1 day after signup, then 3 and 7 days later. Stops as soon as the profile is complete or they unsubscribe. Sent by the Network.',
+    network: true,
+    due: 'a reminder',
+    columns: ['Recipient', 'Reminder', 'Still missing'],
+    rows: reminderRows,
+  },
+  {
+    key: 'creator-storefront',
+    setting: 'creatorStorefrontNudge',
+    title: 'Creator storefront email',
+    who: 'Approved creators with no open storefront who haven’t said “No thanks” to it, biggest audiences first. Shows what a storefront does, with screenshots, and quotes their follower count when their biggest channel has 1,000 or more.',
+    cadence: 'One email, ever: 7 days after signup. The first run after switching it on also reaches everyone who signed up earlier. Sent by the Network.',
+    network: true,
+    due: 'the storefront email',
+    columns: ['Recipient', 'Biggest channel', 'Storefront'],
+    rows: storefrontRows,
   },
 ];
 
 /**
- * Operator switches for the two reminder sweeps, with a dry-run preview of
- * exactly who the next run would email and a "send now". Both sweeps are
+ * Operator switches for the reminder sweeps, with a dry-run preview of
+ * exactly who the next run would email and a "send now". Every sweep is
  * off until switched on here — they email real people.
  */
 export function NotificationsPage({ operator }: { operator: PlatformOperator }) {
@@ -70,7 +136,7 @@ export function NotificationsPage({ operator }: { operator: PlatformOperator }) 
               sweep={s}
               enabled={state.data.settings[s.setting]}
               canWrite={canWrite}
-              unavailable={s.key === 'creator-profile' && !state.data.networkConfigured}
+              unavailable={s.network && !state.data.networkConfigured}
               saving={save.isPending && save.variables?.[s.setting] !== undefined}
               onToggle={(on) => save.mutate({ [s.setting]: on })}
               footnote={
@@ -103,10 +169,10 @@ function SweepCard({
   onToggle: (on: boolean) => void;
   footnote: string | null;
 }) {
-  const [result, setResult] = useState<ReminderRunResult | null>(null);
+  const [result, setResult] = useState<RunResult | null>(null);
   const run = useMutation({
     mutationFn: (dryRun: boolean) =>
-      papi<ReminderRunResult>(`/platform-admin/notifications/${sweep.key}/run`, { method: 'POST', body: { dryRun } }),
+      papi<RunResult>(`/platform-admin/notifications/${sweep.key}/run`, { method: 'POST', body: { dryRun } }),
     onSuccess: (r) => setResult(r),
   });
 
@@ -134,7 +200,7 @@ function SweepCard({
           {footnote && <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>{footnote}</div>}
           {unavailable && (
             <div style={{ fontSize: 12.5, color: theme.warn, marginTop: 6 }}>
-              NETWORK_URL / NETWORK_ADMIN_API_KEY aren’t set on this deployment, so creator reminders can’t run.
+              NETWORK_URL / NETWORK_ADMIN_API_KEY aren’t set on this deployment, so creator emails can’t run.
             </div>
           )}
         </div>
@@ -175,7 +241,7 @@ function SweepCard({
           >
             <div style={{ fontSize: 13, color: theme.text }}>
               {result.dryRun
-                ? `${result.eligible.length} ${result.eligible.length === 1 ? 'person is' : 'people are'} due a reminder right now.`
+                ? `${result.eligible.length} ${result.eligible.length === 1 ? 'person is' : 'people are'} due ${sweep.due} right now.`
                 : `Sent ${result.sent}${result.failed ? `, ${result.failed} failed` : ''}.`}
             </div>
             {result.dryRun && canWrite && result.eligible.length > 0 && (
@@ -193,19 +259,7 @@ function SweepCard({
             )}
           </div>
           {result.dryRun && result.eligible.length > 0 && (
-            <Table
-              columns={['Recipient', 'Reminder', 'Still missing']}
-              rows={result.eligible.map((e) => [
-                <div key="r" style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 13 }}>{e.slug ? `/t/${e.slug}/` : e.name}</div>
-                  <div style={{ fontSize: 12, color: theme.textDim }}>{e.email}</div>
-                </div>,
-                `${e.step} of 3`,
-                <span key="m" style={{ fontSize: 12.5, color: theme.textMuted }}>
-                  {e.missing.join(' · ')}
-                </span>,
-              ])}
-            />
+            <Table columns={sweep.columns} rows={sweep.rows(result)} />
           )}
         </div>
       )}
