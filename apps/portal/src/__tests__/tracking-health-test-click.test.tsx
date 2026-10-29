@@ -194,6 +194,26 @@ describe('Send a test click', () => {
     }
   });
 
+  it('says when this browser sends a privacy signal, until the script reports the click', async () => {
+    progress = report('waiting', [['done', null], ['missing', 'Add the script tag from Integrations.'], ['waiting', null]]);
+    renderPage();
+    fireEvent.click(await sendButton());
+    await screen.findByText('Add the script tag from Integrations.');
+    expect(document.querySelector('[data-privacy-signal]')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+
+    Object.defineProperty(navigator, 'globalPrivacyControl', { value: true, configurable: true });
+    try {
+      fireEvent.click(await sendButton());
+      expect(await screen.findByText(/This browser sends Global Privacy Control\./)).toBeTruthy();
+
+      progress = report('waiting', [['done', null], ['done', null], ['waiting', null]]);
+      await waitFor(() => expect(document.querySelector('[data-privacy-signal]')).toBeNull(), { timeout: 4000 });
+    } finally {
+      delete (navigator as { globalPrivacyControl?: boolean }).globalPrivacyControl;
+    }
+  }, 15_000);
+
   it('is disabled until the brand has a router URL to send it through', async () => {
     routerUrl = null;
     renderPage();

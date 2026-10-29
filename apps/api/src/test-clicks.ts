@@ -57,6 +57,14 @@ export const TEST_CLICK = {
   identifyGraceSeconds: 180,
 } as const;
 
+/** The tester's own browser can hold the script back: with data-consent=
+ *  "pending", the SDK's regional mode and many consent banners count a
+ *  Global Privacy Control or Do Not Track signal as declining, and an
+ *  Accept may not undo it. Only a test has one browser to blame, so the
+ *  setup checks don't say it. */
+export const PRIVACY_SIGNAL_FIX =
+  'If the tag waits for consent (data-consent="pending"), a browser that sends Global Privacy Control or Do Not Track (Brave does by default) can stop it reporting even after you accept: send the test from a browser that doesn’t.';
+
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
@@ -214,7 +222,7 @@ export async function testClickResult(
       'missing',
       null,
       'The page hasn’t reported the click.',
-      `If the page’s address lost the click id (?cref=) on the way, fix the redirect that drops it. Otherwise: ${SCRIPT_FIX_ADD} ${SCRIPT_FIX_CHECK}`,
+      `If the page’s address lost the click id (?cref=) on the way, fix the redirect that drops it. Otherwise: ${SCRIPT_FIX_ADD} ${SCRIPT_FIX_CHECK} ${PRIVACY_SIGNAL_FIX}`,
     );
   }
 
