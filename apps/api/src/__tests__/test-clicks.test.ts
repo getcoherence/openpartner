@@ -29,7 +29,7 @@ import { DEFAULT_TENANT_ID, TABLES, type TrackingIssueKind } from '@openpartner/
 import { db } from '../db.js';
 import { createApp } from '../app.js';
 import { LINKING_FIX, SCRIPT_FIX_ADD } from '../setup-checks.js';
-import { TEST_CLICK, purgeTestClicks, testClickResult } from '../test-clicks.js';
+import { PRIVACY_SIGNAL_FIX, TEST_CLICK, purgeTestClicks, testClickResult } from '../test-clicks.js';
 import { noteTrackingIssue } from '../tracking-issues.js';
 
 const ADMIN_KEY = 'op_test_test_clicks_0123456789abcdef0123';
@@ -246,6 +246,7 @@ describe.skipIf(skipIntegration)('GET /admin/tracking-health/test-click/:id', ()
     expect(statuses(late)).toEqual(['click:done', 'landing:missing', 'identify:waiting']);
     expect(late.steps[1]!.fix).toContain('?cref=');
     expect(late.steps[1]!.fix).toContain(SCRIPT_FIX_ADD);
+    expect(late.steps[1]!.fix).toContain(PRIVACY_SIGNAL_FIX);
   });
 
   it('records the landing and the signup from the public endpoints, and writes nothing else', async () => {

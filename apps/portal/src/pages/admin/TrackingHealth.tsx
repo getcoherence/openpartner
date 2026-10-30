@@ -897,6 +897,16 @@ const STEP_STATUS: Record<TestClickStepStatus, { label: string; bg: string; fg: 
 
 const timeOf = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 
+/** The privacy signal this browser sends, if any. The test link opens in
+ *  this browser, and a script tag that waits for consent can count the
+ *  signal as declining, so the click may never reach the script here. */
+function privacySignal(): string | null {
+  const nav = navigator as Navigator & { globalPrivacyControl?: boolean };
+  if (nav.globalPrivacyControl === true) return 'Global Privacy Control';
+  if (nav.doNotTrack === '1') return 'Do Not Track';
+  return null;
+}
+
 /**
  * One test click, followed every two seconds until it passes or expires:
  * the link opened, the brand's script reporting it, a signup linked to it.
@@ -906,6 +916,7 @@ const timeOf = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { ho
  */
 function TestClickPanel({ test, onClose }: { test: { id: string; url: string }; onClose: () => void }) {
   const [copied, setCopied] = useState(false);
+  const [signal] = useState(privacySignal);
   const query = useQuery({
     queryKey: ['tracking-health-test-click', test.id],
     queryFn: () => api<TestClickReport>(`/admin/tracking-health/test-click/${test.id}`),
@@ -913,6 +924,7 @@ function TestClickPanel({ test, onClose }: { test: { id: string; url: string }; 
   });
   const t = query.data;
   const opened = t?.steps[0]?.status === 'done';
+  const landed = t?.steps.find((s) => s.id === 'landing')?.status === 'done';
   const headline = !t
     ? 'Test click'
     : t.state === 'passed'
@@ -959,6 +971,14 @@ function TestClickPanel({ test, onClose }: { test: { id: string; url: string }; 
             {copied ? 'Copied' : 'Copy it'}
           </button>
           <Muted>It works once.</Muted>
+        </div>
+      )}
+      {signal && t && t.state !== 'passed' && !landed && (
+        <div data-privacy-signal style={{ marginTop: 6 }}>
+          <Muted>
+            This browser sends {signal}. If your script tag waits for consent, it may not report a test opened here, so
+            send the test from a browser that doesn’t.
+          </Muted>
         </div>
       )}
       {t?.destination && (
