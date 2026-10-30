@@ -72,6 +72,9 @@ const GO_LIVE_ROUTES: GatedRoute[] = [
   { method: 'POST', test: (p) => p === '/admin/network/bookings' },
   { method: 'POST', test: (p) => p === '/admin/network/conversations' },
   { method: 'POST', test: (p) => /^\/admin\/network\/bookings\/[^/]+\/track$/.test(p) },
+  // Inviting a creator who isn't on OpenPartner yet emails them on the
+  // brand's behalf (openpartner-network docs/creator-index.md §5).
+  { method: 'POST', test: (p) => p === '/admin/network/creator-invites' },
   {
     method: 'POST',
     test: (p) => p === '/config/network',

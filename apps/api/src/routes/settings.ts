@@ -53,6 +53,7 @@ import { afterCommit, getTenancyMode, tenantOf } from '../tenancy.js';
 import { NETWORK_FEDERATION_SCOPES } from './api-keys.js';
 import { getTenantBillingState, hasActivePlan } from '../billing-plan.js';
 import { bookingFeeBpsFor } from '../booking-fee.js';
+import { getMode } from '../stripe.js';
 import { connectPayoutsAvailable } from '../payout-method.js';
 import { isWhiteLabelEntitled, getWhiteLabelState } from '../white-label.js';
 import { currencyInputSchema } from '../currency.js';
@@ -951,6 +952,93 @@ settingsRouter.get('/admin/network/discover/creators', requireAuth, requireAdmin
 // ownership.
 settingsRouter.post('/admin/network/offerings/:id/invite-creator', requireAuth, requireAdmin, async (req, res) =>
   proxy(req, res, (db, tenantId) => networkProxy.inviteCreator(db, tenantId, req.params.id!, req.body ?? {}), 201),
+);
+
+// The creator index (openpartner-network docs/creator-index.md §4, §5):
+// creators not on OpenPartner yet, which brands on Flex or Enterprise search
+// and invite. The plan is checked here; the Network trusts the flag only from
+// hosted instances. Listing and withdrawing the brand's own invites needs no
+// plan, so a brand that moves off Flex can still see and withdraw them.
+
+/** Flex or Enterprise with the plan active, on the hosted platform. The
+ *  deployment's own mode decides "hosted": a self-hosted install can hold a
+ *  tenant row with a plan (an import from the hosted platform), and the
+ *  billing state's mode follows the plan, not the deployment. */
+export async function creatorIndexAllowed(db: Knex, tenantId: string): Promise<boolean> {
+  if (getMode() === 'selfhost') return false;
+  const state = await getTenantBillingState(db, tenantId);
+  return (state.plan === 'flex' || state.plan === 'enterprise') && hasActivePlan(state);
+}
+
+const INDEX_PLAN_REQUIRED = {
+  error: 'plan_required',
+  detail: 'Creators not on OpenPartner yet come with the Flex and Enterprise plans.',
+};
+
+const INDEX_QUERY_KEYS = ['q', 'categories', 'locations', 'platforms', 'topics', 'mentions', 'minFollowers', 'maxFollowers', 'sort', 'limit', 'after'];
+
+/** Like proxy, but the Network's own error code (already_invited,
+ *  unreachable, rate_limited…) reaches the portal as `error`. */
+async function proxyIndex(req: Request, res: Response, fn: (db: Knex, tenantId: string) => Promise<unknown>, successStatus = 200) {
+  const { db, tenantId } = tenantOf(req);
+  try {
+    const out = await fn(db, tenantId);
+    if (successStatus === 204) return res.status(204).send();
+    res.status(successStatus).json(out);
+  } catch (err) {
+    if (!(err instanceof NetworkProxyError)) throw err;
+    let code = 'network_call_failed';
+    try {
+      const parsed = JSON.parse(err.message) as { error?: unknown };
+      if (typeof parsed.error === 'string') code = parsed.error;
+    } catch {
+      // Not the Network's JSON (unreachable, not configured): keep the generic code.
+    }
+    res.status(err.status).json({ error: code });
+  }
+}
+
+settingsRouter.get('/admin/network/indexed-creators', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  if (!(await creatorIndexAllowed(db, tenantId))) return res.status(402).json(INDEX_PLAN_REQUIRED);
+  const qs = new URLSearchParams();
+  for (const key of INDEX_QUERY_KEYS) {
+    const v = req.query[key];
+    if (typeof v === 'string' && v) qs.set(key, v);
+  }
+  qs.set('creatorIndex', '1');
+  return proxyIndex(req, res, (db, tenantId) => networkProxy.searchIndexedCreators(db, tenantId, qs.toString()));
+});
+
+settingsRouter.get('/admin/network/indexed-creators/:id', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  if (!(await creatorIndexAllowed(db, tenantId))) return res.status(402).json(INDEX_PLAN_REQUIRED);
+  return proxyIndex(req, res, (db, tenantId) => networkProxy.getIndexedCreator(db, tenantId, req.params.id!));
+});
+
+settingsRouter.post('/admin/network/creator-invites', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  if (!(await creatorIndexAllowed(db, tenantId))) return res.status(402).json(INDEX_PLAN_REQUIRED);
+  const b = bodyOf(req);
+  const fields = {
+    indexedCreatorId: b.indexedCreatorId,
+    message: b.message,
+    ...(b.offeringId ? { offeringId: b.offeringId } : {}),
+  };
+  return proxyIndex(
+    req,
+    res,
+    async (db, tenantId) => networkProxy.createCreatorInvite(db, tenantId, { ...fields, ...(await actingAdmin(req)), creatorIndex: true }),
+    201,
+  );
+});
+
+settingsRouter.get('/admin/network/creator-invites', requireAuth, requireAdmin, async (req, res) =>
+  proxyIndex(req, res, (db, tenantId) => networkProxy.listCreatorInvites(db, tenantId)),
+);
+
+settingsRouter.delete('/admin/network/creator-invites/:id', requireAuth, requireAdmin, async (req, res) =>
+  proxyIndex(req, res, (db, tenantId) => networkProxy.withdrawCreatorInvite(db, tenantId, req.params.id!), 204),
 );
 
 // Storefront bookings and conversations (openpartner-network

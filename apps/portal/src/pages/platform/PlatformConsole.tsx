@@ -19,10 +19,12 @@ import { InvoicingPage } from './Invoicing.js';
 import { CountriesPage } from './Countries.js';
 import { ScreeningPage } from './Screening.js';
 import { OwnProgramPage } from './OwnProgram.js';
+import { CreatorIndexPage } from './CreatorIndex.js';
 
 const TABS = [
   { to: '/platform/brands', label: 'Brands' },
   { to: '/platform/creators', label: 'Creators' },
+  { to: '/platform/creator-index', label: 'Creator index' },
   { to: '/platform/vendors', label: 'Vendors' },
   { to: '/platform/marketplace', label: 'Marketplace' },
   { to: '/platform/notifications', label: 'Notifications' },
@@ -85,6 +87,7 @@ export function PlatformConsole() {
         <Route index element={<Navigate to="/platform/brands" replace />} />
         <Route path="brands" element={<BrandsPage operator={operator} />} />
         <Route path="creators" element={<CreatorsPage operator={operator} />} />
+        <Route path="creator-index" element={<CreatorIndexPage operator={operator} />} />
         <Route path="vendors" element={<VendorsPage operator={operator} />} />
         <Route path="marketplace" element={<MarketplacePage operator={operator} />} />
         <Route path="notifications" element={<NotificationsPage operator={operator} />} />

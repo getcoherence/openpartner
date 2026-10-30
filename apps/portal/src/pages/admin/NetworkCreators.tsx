@@ -18,6 +18,7 @@ import { VerifiedBadge } from '../../lib/VerifiedBadge.js';
 import { PLATFORMS as CREATOR_PLATFORMS } from '../../lib/NetworkProfileEditor.js';
 import { TenantLink } from '../../tenant-link.js';
 import { BookCreatorDialog } from './BookCreatorDialog.js';
+import { IndexedCreatorsSection } from './NetworkIndexedCreators.js';
 
 interface PlatformRow {
   id: string;
@@ -70,6 +71,11 @@ export function AdminNetworkCreators() {
   const [minFollowers, setMinFollowers] = useState<number | ''>('');
   const [minRevenue, setMinRevenue] = useState<number | ''>('');
   const [sort, setSort] = useState<SortKey>('revenue');
+  // Members, or creators the Network listed who haven't joined yet
+  // (NetworkIndexedCreators.tsx). ?tab=index opens the second.
+  const [tab, setTab] = useState<DirectoryTab>(() =>
+    new URLSearchParams(window.location.search).get('tab') === 'index' ? 'index' : 'members',
+  );
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedQ(q.trim()), 250);
@@ -98,15 +104,29 @@ export function AdminNetworkCreators() {
     queryFn: () => api<{ creators: DirectoryRow[] }>(`/admin/network/discover/creators${qs ? '?' + qs : ''}`),
     retry: false,
     staleTime: 30_000,
+    enabled: tab === 'members',
   });
 
   const rows = list.data?.creators ?? [];
+
+  if (tab === 'index') {
+    return (
+      <Page
+        title="Discover creators"
+        subtitle="Browse the OpenPartner Network for creators who match your audience. Filter by category, platform, audience size, and past performance."
+      >
+        <DirectoryTabs tab={tab} onChange={setTab} />
+        <IndexedCreatorsSection />
+      </Page>
+    );
+  }
 
   return (
     <Page
       title="Discover creators"
       subtitle="Browse the OpenPartner Network for creators who match your audience. Filter by category, platform, audience size, and past performance."
     >
+      <DirectoryTabs tab={tab} onChange={setTab} />
       <ErrorBanner error={list.error} />
       <Card>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14, marginBottom: 14 }}>
@@ -201,6 +221,36 @@ export function AdminNetworkCreators() {
         </div>
       )}
     </Page>
+  );
+}
+
+type DirectoryTab = 'members' | 'index';
+
+function DirectoryTabs({ tab, onChange }: { tab: DirectoryTab; onChange: (t: DirectoryTab) => void }) {
+  const item = (value: DirectoryTab, label: string) => (
+    <button
+      type="button"
+      onClick={() => onChange(value)}
+      aria-pressed={tab === value}
+      style={{
+        background: 'transparent',
+        border: 0,
+        borderBottom: `2px solid ${tab === value ? theme.accent : 'transparent'}`,
+        color: tab === value ? theme.text : theme.textMuted,
+        fontWeight: tab === value ? 600 : 400,
+        fontSize: 14,
+        padding: '8px 2px',
+        cursor: 'pointer',
+      }}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div style={{ display: 'flex', gap: 20, borderBottom: `1px solid ${theme.borderSubtle}`, marginBottom: 16 }}>
+      {item('members', 'On OpenPartner')}
+      {item('index', 'Not on OpenPartner yet')}
+    </div>
   );
 }
 
