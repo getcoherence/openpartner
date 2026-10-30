@@ -59,6 +59,15 @@ import {
   writeAudit,
 } from '../brand-review.js';
 import {
+  adminCreatorIndexStats,
+  adminGetCreatorIndexSettings,
+  adminGetIndexedCreator,
+  adminQueueIndexSeeds,
+  adminRemoveIndexedCreator,
+  adminRunCreatorIndexInvites,
+  adminRunCreatorIndexJob,
+  adminSearchIndexedCreators,
+  adminSetCreatorIndexSettings,
   adminBlockCreator,
   adminListCreatorMessages,
   adminListCreators,
@@ -1877,6 +1886,182 @@ platformAdminRouter.put(
     res.json(await houseProgramView());
   },
 );
+
+// --------------------------------------------------------------------------
+// Creator index (openpartner-network docs/creator-index.md §6)
+// --------------------------------------------------------------------------
+//
+// Creators not on OpenPartner yet, read from public profiles. The settings,
+// the data and the jobs all live on the Network; these routes relay them with
+// the admin key. Support operators can look; writes and runs need an admin,
+// except a dry run of the invite email.
+
+platformAdminRouter.get('/platform-admin/creator-index/settings', requirePlatformAdmin, async (_req, res) => {
+  const networkUrl = networkOr503(res);
+  if (!networkUrl) return;
+  try {
+    res.json(await adminGetCreatorIndexSettings(networkUrl));
+  } catch (err) {
+    sendNetworkFailure(res, err);
+  }
+});
+
+const creatorIndexSettingsSchema = z
+  .object({
+    enabled: z.boolean(),
+    invitesEnabled: z.boolean(),
+    monthlyBudgetUsd: z.number().int().min(0).max(100_000),
+    minFollowers: z.number().int().min(0).max(10_000_000),
+    minPostsPer30d: z.number().int().min(0).max(1_000),
+    refreshDays: z.number().int().min(7).max(90),
+    excludedCountries: z.array(z.string().trim().length(2).transform((v) => v.toUpperCase()).refine(isCountryCode, 'unknown country code')).max(250),
+    hiddenRegions: z.array(z.string().trim().toUpperCase().regex(/^[A-Z]{2}-[A-Z0-9]{1,3}$/)).max(100),
+    seedQueries: z.array(z.string().trim().min(3).max(200)).max(50),
+    classifierModel: z.string().trim().min(1).max(60),
+  })
+  .strict();
+
+platformAdminRouter.put(
+  '/platform-admin/creator-index/settings',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = creatorIndexSettingsSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    const actor = req.platformAdminActor!;
+    try {
+      const before = (await adminGetCreatorIndexSettings(networkUrl)).settings;
+      const saved = await adminSetCreatorIndexSettings(networkUrl, { ...body.data, updatedByEmail: actor.email });
+      await writeAudit(db, {
+        actor,
+        action: 'creator_index.settings',
+        targetType: 'platform',
+        detail: { before, after: saved.settings, visibilityChanged: saved.visibilityChanged },
+      });
+      res.json(saved);
+    } catch (err) {
+      sendNetworkFailure(res, err);
+    }
+  },
+);
+
+platformAdminRouter.get('/platform-admin/creator-index/stats', requirePlatformAdmin, async (_req, res) => {
+  const networkUrl = networkOr503(res);
+  if (!networkUrl) return;
+  try {
+    res.json(await adminCreatorIndexStats(networkUrl));
+  } catch (err) {
+    sendNetworkFailure(res, err);
+  }
+});
+
+platformAdminRouter.get('/platform-admin/creator-index/creators', requirePlatformAdmin, async (req, res) => {
+  const networkUrl = networkOr503(res);
+  if (!networkUrl) return;
+  const qs = new URLSearchParams();
+  for (const key of ['q', 'status', 'limit']) {
+    const v = req.query[key];
+    if (typeof v === 'string' && v) qs.set(key, v);
+  }
+  try {
+    res.json(await adminSearchIndexedCreators(networkUrl, qs.toString()));
+  } catch (err) {
+    sendNetworkFailure(res, err);
+  }
+});
+
+platformAdminRouter.get('/platform-admin/creator-index/creators/:id', requirePlatformAdmin, async (req, res) => {
+  const networkUrl = networkOr503(res);
+  if (!networkUrl) return;
+  try {
+    res.json(await adminGetIndexedCreator(networkUrl, req.params.id!));
+  } catch (err) {
+    sendNetworkFailure(res, err);
+  }
+});
+
+platformAdminRouter.delete(
+  '/platform-admin/creator-index/creators/:id',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    try {
+      await adminRemoveIndexedCreator(networkUrl, req.params.id!);
+      await writeAudit(db, { actor: req.platformAdminActor!, action: 'creator_index.remove', targetType: 'indexed_creator', targetId: req.params.id! });
+      res.status(204).send();
+    } catch (err) {
+      sendNetworkFailure(res, err);
+    }
+  },
+);
+
+const indexSeedsSchema = z.object({ urls: z.array(z.string().trim().min(5).max(500)).min(1).max(500) });
+
+platformAdminRouter.post(
+  '/platform-admin/creator-index/seeds',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = indexSeedsSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    try {
+      const counts = await adminQueueIndexSeeds(networkUrl, body.data.urls);
+      await writeAudit(db, { actor: req.platformAdminActor!, action: 'creator_index.seeds', targetType: 'platform', detail: counts });
+      res.json(counts);
+    } catch (err) {
+      sendNetworkFailure(res, err);
+    }
+  },
+);
+
+const INDEX_JOBS = ['discover', 'read', 'refresh'] as const;
+
+platformAdminRouter.post(
+  '/platform-admin/creator-index/run/:job',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const job = req.params.job as (typeof INDEX_JOBS)[number];
+    if (!INDEX_JOBS.includes(job)) return res.status(404).json({ error: 'unknown_job' });
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    try {
+      const result = await adminRunCreatorIndexJob(networkUrl, job);
+      await writeAudit(db, { actor: req.platformAdminActor!, action: `creator_index.run_${job}`, targetType: 'platform', detail: result });
+      res.json(result);
+    } catch (err) {
+      sendNetworkFailure(res, err);
+    }
+  },
+);
+
+platformAdminRouter.post('/platform-admin/creator-index/invites/run', requirePlatformAdmin, async (req, res) => {
+  const dryRun = (req.body as { dryRun?: unknown } | undefined)?.dryRun !== false;
+  // Anyone on the console can see who would be emailed; sending takes an admin.
+  if (!dryRun && req.platformAdminActor!.role !== 'admin') return res.status(403).json({ error: 'read_only_operator' });
+  const networkUrl = networkOr503(res);
+  if (!networkUrl) return;
+  try {
+    const result = await adminRunCreatorIndexInvites(networkUrl, { dryRun });
+    if (!dryRun) {
+      await writeAudit(db, {
+        actor: req.platformAdminActor!,
+        action: 'creator_index.invites_run',
+        targetType: 'platform',
+        detail: { sent: result.sent, failed: result.failed, candidates: result.candidates },
+      });
+    }
+    res.json(result);
+  } catch (err) {
+    sendNetworkFailure(res, err);
+  }
+});
 
 // --------------------------------------------------------------------------
 // Audit

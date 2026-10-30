@@ -111,6 +111,7 @@ import { CreatorResetPasswordPage } from './pages/creator/CreatorResetPassword.j
 import { CreatorShell } from './pages/creator/CreatorShell.js';
 import { CreatorPublicProfilePage } from './pages/creator/CreatorPublicProfile.js';
 import { BookingConfirmPage } from './pages/creator/BookingConfirm.js';
+import { CreatorIndexClaimPage } from './pages/creator/CreatorIndexClaim.js';
 import { clearAttachmentCache } from './pages/creator/conversation-media.js';
 import { FraudReviewPage } from './pages/FraudReview.js';
 import { ResetPasswordPage, TenantResetPasswordPage } from './pages/auth/ResetPassword.js';
@@ -204,6 +205,8 @@ export function App() {
             <Route path="/creator/auth/magic" element={<CreatorMagicLandingPage />} />
             {/* The Network's "forgot password" link. */}
             <Route path="/creator/reset-password" element={<CreatorResetPasswordPage />} />
+            {/* The creator index's invite email (claim works signed out). */}
+            <Route path="/creator/claim" element={<CreatorIndexClaimPage />} />
             <Route path="/creator/*" element={<CreatorShell />} />
             {/* Public creator profiles — no auth, browsable from anywhere. */}
             <Route path="/creators/:handle" element={<CreatorPublicProfilePage />} />

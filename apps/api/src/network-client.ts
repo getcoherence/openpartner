@@ -857,6 +857,26 @@ export const networkProxy = {
   // the admin endpoint because by that point the vendorToken is gone.
   deleteVendor: (db: Knex, tenantId: string) =>
     callNetwork<{ ok: boolean }>(db, tenantId, 'POST', '/vendors/me/delete'),
+
+  // The creator index (openpartner-network docs/creator-index.md §4, §5):
+  // creators not on OpenPartner yet. The caller adds `creatorIndex=1` (or
+  // `creatorIndex: true`) only for brands on Flex or Enterprise; the
+  // Network honours it from hosted instances only.
+  searchIndexedCreators: (db: Knex, tenantId: string, querystring: string) =>
+    callNetwork<{ creators: unknown[]; nextCursor: string | null; total: number }>(
+      db,
+      tenantId,
+      'GET',
+      `/vendors/me/discover/indexed-creators?${querystring}`,
+    ),
+  getIndexedCreator: (db: Knex, tenantId: string, id: string) =>
+    callNetwork<{ creator: unknown }>(db, tenantId, 'GET', `/vendors/me/discover/indexed-creators/${encodeURIComponent(id)}?creatorIndex=1`),
+  createCreatorInvite: (db: Knex, tenantId: string, body: unknown) =>
+    callNetwork<{ invite: unknown }>(db, tenantId, 'POST', '/vendors/me/creator-invites', body),
+  listCreatorInvites: (db: Knex, tenantId: string) =>
+    callNetwork<{ invites: unknown[] }>(db, tenantId, 'GET', '/vendors/me/creator-invites'),
+  withdrawCreatorInvite: (db: Knex, tenantId: string, id: string) =>
+    callNetwork<null>(db, tenantId, 'DELETE', `/vendors/me/creator-invites/${encodeURIComponent(id)}`),
 };
 
 /**
@@ -1438,6 +1458,94 @@ export async function adminRunStorefrontNudge(
     'POST',
     '/admin/storefront-nudge/run',
     { dryRun: opts.dryRun, limit: STOREFRONT_NUDGE_RUN_LIMIT, publicUrl: networkUrl },
+    {},
+    // A run's sends happen before the Network answers.
+    90_000,
+  );
+}
+
+// ---------- Creator index ops (openpartner-network docs/creator-index.md §6) ----------
+
+export interface CreatorIndexSettings {
+  enabled: boolean;
+  invitesEnabled: boolean;
+  monthlyBudgetUsd: number;
+  minFollowers: number;
+  minPostsPer30d: number;
+  refreshDays: number;
+  excludedCountries: string[];
+  hiddenRegions: string[];
+  seedQueries: string[];
+  classifierModel: string;
+}
+
+export interface StoredCreatorIndexSettings {
+  settings: CreatorIndexSettings;
+  defaults: CreatorIndexSettings;
+  classifierModels: string[];
+  updatedAt: string | null;
+  updatedByEmail: string | null;
+  /** Which of the Network's data sources have credentials, by its own names. */
+  configured: Record<string, boolean>;
+}
+
+export async function adminGetCreatorIndexSettings(networkUrl: string): Promise<StoredCreatorIndexSettings> {
+  return callNetworkAdmin<StoredCreatorIndexSettings>(networkUrl, 'GET', '/admin/creator-index/settings');
+}
+
+export async function adminSetCreatorIndexSettings(
+  networkUrl: string,
+  settings: CreatorIndexSettings & { updatedByEmail?: string },
+): Promise<{ settings: CreatorIndexSettings; updatedAt: string | null; updatedByEmail: string | null; visibilityChanged: number }> {
+  return callNetworkAdmin(networkUrl, 'PUT', '/admin/creator-index/settings', { ...settings });
+}
+
+export async function adminCreatorIndexStats(networkUrl: string): Promise<Record<string, unknown>> {
+  return callNetworkAdmin<Record<string, unknown>>(networkUrl, 'GET', '/admin/creator-index/stats');
+}
+
+export async function adminSearchIndexedCreators(networkUrl: string, querystring: string): Promise<{ creators: unknown[] }> {
+  return callNetworkAdmin<{ creators: unknown[] }>(networkUrl, 'GET', `/admin/creator-index/creators${querystring ? `?${querystring}` : ''}`);
+}
+
+export async function adminGetIndexedCreator(networkUrl: string, id: string): Promise<{ creator: unknown; invites: Record<string, number> }> {
+  return callNetworkAdmin(networkUrl, 'GET', `/admin/creator-index/creators/${encodeURIComponent(id)}`);
+}
+
+export async function adminRemoveIndexedCreator(networkUrl: string, id: string): Promise<void> {
+  return callNetworkAdmin<void>(networkUrl, 'DELETE', `/admin/creator-index/creators/${encodeURIComponent(id)}`);
+}
+
+export async function adminQueueIndexSeeds(networkUrl: string, urls: string[]): Promise<Record<string, number>> {
+  return callNetworkAdmin<Record<string, number>>(networkUrl, 'POST', '/admin/creator-index/seeds', { urls });
+}
+
+/** Run one of the index jobs now. Reads take most of a minute each. */
+export async function adminRunCreatorIndexJob(networkUrl: string, job: 'discover' | 'read' | 'refresh'): Promise<Record<string, unknown>> {
+  return callNetworkAdmin<Record<string, unknown>>(networkUrl, 'POST', `/admin/creator-index/run/${job}`, {}, {}, 300_000);
+}
+
+export interface CreatorIndexInviteRunResult {
+  ran: boolean;
+  dryRun: boolean;
+  candidates: number;
+  sent: number;
+  skipped: number;
+  failed: number;
+  expired: number;
+  unreachable: number;
+  targets?: string[];
+}
+
+/** The weekly invite email (§5.2). The Network decides who is due and
+ *  whether invites are on at all; the mute and remove links point at
+ *  `networkUrl`. */
+export async function adminRunCreatorIndexInvites(networkUrl: string, opts: { dryRun: boolean }): Promise<CreatorIndexInviteRunResult> {
+  return callNetworkAdmin<CreatorIndexInviteRunResult>(
+    networkUrl,
+    'POST',
+    '/admin/creator-index/invites/run',
+    { dryRun: opts.dryRun, publicUrl: networkUrl },
     {},
     // A run's sends happen before the Network answers.
     90_000,

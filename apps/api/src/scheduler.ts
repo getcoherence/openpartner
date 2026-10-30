@@ -327,6 +327,13 @@ const JOBS: ScheduledJob[] = [
     },
   },
   {
+    name: 'creator-index-invites',
+    cronExpr: '20 * * * *',
+    description:
+      "Hosted multi-tenant: trigger the Network to email creators not on OpenPartner yet whom brands invited, one email a week each at most (hourly :20). The switch is the creator index's own invitesEnabled, in the ops console",
+    handler: runCreatorIndexInvitesJob,
+  },
+  {
     name: 'funding-collector',
     cronExpr: '*/5 * * * *',
     description:
@@ -473,6 +480,19 @@ const JOBS: ScheduledJob[] = [
  * sync.ts). Every console save pushes it already; this heals a push that
  * failed, and covers a Network that was updated or restored since.
  */
+/** The creator index's weekly invite email (openpartner-network
+ *  docs/creator-index.md §5.2). The Network decides who is due, and whether
+ *  invites are on at all. */
+export async function runCreatorIndexInvitesJob() {
+  if (getTenancyMode() !== 'multi') return { skipped: 'single_tenant' };
+  const { adminRunCreatorIndexInvites, platformNetworkUrl } = await import('./network-client.js');
+  const networkUrl = platformNetworkUrl();
+  if (!networkUrl || !process.env.NETWORK_ADMIN_API_KEY) return { skipped: 'network_admin_not_configured' };
+  const r = await adminRunCreatorIndexInvites(networkUrl, { dryRun: false });
+  if (!r.ran) return { skipped: 'invites_off' };
+  return { sent: r.sent, failed: r.failed, expired: r.expired, candidates: r.candidates };
+}
+
 export async function runCountryAccessSyncJob() {
   if (getTenancyMode() !== 'multi') return { skipped: 'single_tenant' };
   const { pushCountryAccessToNetwork } = await import('./country-access-sync.js');
