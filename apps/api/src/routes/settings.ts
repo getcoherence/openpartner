@@ -975,7 +975,20 @@ const INDEX_PLAN_REQUIRED = {
   detail: 'Creators not on OpenPartner yet come with the Flex and Enterprise plans.',
 };
 
-const INDEX_QUERY_KEYS = ['q', 'categories', 'locations', 'platforms', 'topics', 'mentions', 'minFollowers', 'maxFollowers', 'sort', 'limit', 'after'];
+const INDEX_QUERY_KEYS = [
+  'q',
+  'categories',
+  'locations',
+  'platforms',
+  'topics',
+  'mentions',
+  'minFollowers',
+  'maxFollowers',
+  'openToPartnerships',
+  'sort',
+  'limit',
+  'after',
+];
 
 /** Like proxy, but the Network's own error code (already_invited,
  *  unreachable, rate_limited…) reaches the portal as `error`. */
