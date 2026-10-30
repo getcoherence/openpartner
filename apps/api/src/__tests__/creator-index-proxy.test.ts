@@ -217,12 +217,15 @@ describe.skipIf(skipIntegration)('creator index: brand side', () => {
     expect(calls).toHaveLength(0);
 
     for (const b of [await brand({ plan: 'flex', subscribed: true }), await brand({ plan: 'enterprise' })]) {
-      const r = await request(app).get(`/t/${b.slug}/admin/network/indexed-creators?q=sales&creatorIndex=0&evil=1`).set('Cookie', b.cookie);
+      const r = await request(app)
+        .get(`/t/${b.slug}/admin/network/indexed-creators?q=sales&openToPartnerships=1&creatorIndex=0&evil=1`)
+        .set('Cookie', b.cookie);
       expect(r.status).toBe(200);
       expect(r.body.total).toBe(1);
       const sent = new URL(`http://x${last(/^\/vendors\/me\/discover\/indexed-creators\?/)!.path}`).searchParams;
       expect(sent.get('creatorIndex')).toBe('1');
       expect(sent.get('q')).toBe('sales');
+      expect(sent.get('openToPartnerships')).toBe('1');
       expect(sent.get('evil')).toBeNull();
       expect(last(/indexed-creators/)!.auth).toBe('Bearer vntok_test_index');
     }
@@ -295,6 +298,20 @@ describe.skipIf(skipIntegration)('creator index: ops console', () => {
     const audit = await db(TABLES.PlatformAuditLog).where({ action: 'creator_index.settings', platformAdminEmail: OPS_EMAIL }).first();
     expect(audit).toBeTruthy();
     expect((await request(app).put('/platform-admin/creator-index/settings').set('Cookie', cookie).send({ ...SETTINGS, extra: 1 })).status).toBe(400);
+
+    // Where to search, and whether to keep only creators who take partnerships.
+    const sources = { storefronts: true, sponsorPages: false, people: true };
+    const withSources = await request(app)
+      .put('/platform-admin/creator-index/settings')
+      .set('Cookie', cookie)
+      .send({ ...SETTINGS, discoverySources: sources, requirePartnershipSignal: false });
+    expect(withSources.status).toBe(200);
+    expect(last('/admin/creator-index/settings')!.body).toMatchObject({ discoverySources: sources, requirePartnershipSignal: false });
+    const partial = await request(app)
+      .put('/platform-admin/creator-index/settings')
+      .set('Cookie', cookie)
+      .send({ ...SETTINGS, discoverySources: { people: true } });
+    expect(partial.status).toBe(400);
   });
 
   it('lets support look and dry-run, and keeps writes and live runs to admins', async () => {

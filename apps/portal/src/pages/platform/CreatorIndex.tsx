@@ -6,7 +6,9 @@
  *   - Status: how many are listed, shown to brands or hidden, the month's
  *     spend against the budget, rejections, invites.
  *   - Settings: on/off, invites on/off, budget, thresholds, the countries
- *     never indexed, the regions hidden from brands, seed queries, model.
+ *     never indexed, the regions hidden from brands, seed queries and where
+ *     to search them, whether to keep only creators who take partnerships,
+ *     model.
  *   - Seed URLs, runs, and search with removal.
  *
  * Support operators can look and dry-run the invite email; changes and runs
@@ -18,6 +20,19 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select, Table, Textarea } from '../../ui.js';
 import { friendlyPlatformError, papi, type PlatformOperator } from './lib.js';
+import { brandSignalLabel, shortUrl, type PartnershipSignal } from '../../lib/partnership-signals.js';
+
+type DiscoverySource = 'storefronts' | 'sponsorPages' | 'people';
+
+/** Where seed queries are searched, as ops read it. */
+const DISCOVERY_SOURCES: Array<{ key: DiscoverySource; label: string }> = [
+  { key: 'storefronts', label: 'Sponsorship storefronts' },
+  { key: 'sponsorPages', label: 'Creators’ sponsor and media-kit pages' },
+  { key: 'people', label: 'Anyone who posts about the topic' },
+];
+
+/** Until the Network sends its own. */
+const SOURCE_DEFAULTS: Record<DiscoverySource, boolean> = { storefronts: true, sponsorPages: true, people: false };
 
 interface IndexSettings {
   enabled: boolean;
@@ -29,6 +44,8 @@ interface IndexSettings {
   excludedCountries: string[];
   hiddenRegions: string[];
   seedQueries: string[];
+  discoverySources?: Record<DiscoverySource, boolean>;
+  requirePartnershipSignal?: boolean;
   classifierModel: string;
 }
 
@@ -42,7 +59,7 @@ interface SettingsState {
 }
 
 interface Stats {
-  creators: { byStatus: Record<string, number>; listed: number; shownToBrands: number; hiddenFromBrands: number };
+  creators: { byStatus: Record<string, number>; listed: number; shownToBrands: number; hiddenFromBrands: number; openToPartnerships?: number };
   byCountry: Array<{ country: string | null; count: number }>;
   candidates: Record<string, number>;
   rejections: Record<string, number>;
@@ -64,6 +81,8 @@ interface OpsCreator {
   contact: { masked: string; foundOn: string | null; verified: boolean } | null;
   emailsSent: number;
   platforms: Array<{ platform: string; handle: string | null; profileUrl: string; followerCount: number | null }>;
+  /** With the page each was read from. */
+  partnershipSignals?: PartnershipSignal[];
 }
 
 const list = (s: string) =>
@@ -178,6 +197,9 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                   <div style={{ color: theme.textMuted }}>
                     {s.creators.shownToBrands.toLocaleString()} shown · {s.creators.hiddenFromBrands.toLocaleString()} hidden
                   </div>
+                  {s.creators.openToPartnerships != null && (
+                    <div style={{ color: theme.textMuted }}>{s.creators.openToPartnerships.toLocaleString()} open to partnerships</div>
+                  )}
                 </div>
                 <div>
                   <Label>Spend this month</Label>
@@ -262,6 +284,37 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                 onChange={(e) => setDraft({ ...draft, seedQueries: e.target.value.split('\n').map((x) => x.trim()).filter(Boolean) })}
               />
             </div>
+            <div style={{ marginTop: 14 }}>
+              <Label>Search each query in</Label>
+              <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+                {DISCOVERY_SOURCES.map((src) => {
+                  const sources = draft.discoverySources ?? SOURCE_DEFAULTS;
+                  return (
+                    <label key={src.key} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
+                      <input
+                        type="checkbox"
+                        checked={sources[src.key]}
+                        disabled={!canWrite}
+                        onChange={(e) => setDraft({ ...draft, discoverySources: { ...sources, [src.key]: e.target.checked } })}
+                      />
+                      {src.label}
+                    </label>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 6 }}>
+                A query is searched again in each place after 30 days, so new queries are what find new creators.
+              </div>
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14, marginTop: 10 }}>
+                <input
+                  type="checkbox"
+                  checked={draft.requirePartnershipSignal ?? true}
+                  disabled={!canWrite}
+                  onChange={(e) => setDraft({ ...draft, requirePartnershipSignal: e.target.checked })}
+                />
+                Only index creators who already take partnerships (a storefront, a sponsor page, sponsored posts, or a profile that says so)
+              </label>
+            </div>
             {canWrite && (
               <div style={{ display: 'flex', gap: 8, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>
                 <Button onClick={() => save.mutate(draft)} disabled={save.isPending}>{save.isPending ? 'Saving…' : 'Save settings'}</Button>
@@ -297,7 +350,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
             )}
             {canWrite && (
               <div style={{ marginTop: 16 }}>
-                <Label>Queue profile URLs (LinkedIn, X, YouTube)</Label>
+                <Label>Queue URLs: profiles (LinkedIn, X, YouTube), sponsorship storefronts or sponsor pages</Label>
                 <Textarea rows={3} value={seedText} onChange={(e) => setSeedText(e.target.value)} placeholder="https://www.linkedin.com/in/…" />
                 <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
                   <Button variant="secondary" onClick={() => seeds.mutate()} disabled={!seedText.trim() || seeds.isPending}>Queue</Button>
@@ -335,6 +388,19 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                       </a>
                     ))}
                   </div>
+                  {(c.partnershipSignals ?? []).map((sig) => (
+                    <div key={sig.kind} style={{ fontSize: 12, color: theme.success }}>
+                      {brandSignalLabel(sig)}
+                      {sig.evidence && (
+                        <>
+                          {' · '}
+                          <a href={sig.evidence} target="_blank" rel="noreferrer noopener" style={{ color: theme.textMuted }}>
+                            {shortUrl(sig.evidence)}
+                          </a>
+                        </>
+                      )}
+                    </div>
+                  ))}
                 </div>,
                 `${c.country ?? '—'}${c.region ? ` (${c.region})` : ''}${c.brandVisible ? '' : ' · hidden'}`,
                 c.totalReach.toLocaleString(),
