@@ -3,8 +3,11 @@
  * The creator index in the portal (openpartner-network
  * docs/creator-index.md §4.4, §5.3): the "Not on OpenPartner yet" tab shows
  * listed creators with the badge and an invite that needs a real message;
- * brands on other plans see what the plan unlocks; the claim page shows
- * who is waiting and what we hold, and sends an existing account to sign in.
+ * brands on other plans see what the plan unlocks; creators who already do
+ * partnerships are marked and can be shown alone; the claim page shows who
+ * is waiting and what we hold, and sends an existing account to sign in; the
+ * ops console picks where to search and whether to keep only creators who
+ * take partnerships.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -12,6 +15,7 @@ import { MemoryRouter, Route, Routes } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { IndexedCreatorsSection } from '../pages/admin/NetworkIndexedCreators.js';
 import { CreatorIndexClaimPage } from '../pages/creator/CreatorIndexClaim.js';
+import { CreatorIndexPage } from '../pages/platform/CreatorIndex.js';
 
 interface Recorded {
   url: string;
@@ -110,6 +114,98 @@ describe('Not on OpenPartner yet', () => {
     expect(screen.getByText(/Can.t be invited yet/)).toBeTruthy();
     expect(screen.queryByText('Invite to collaborate')).toBeNull();
   });
+
+  it('marks creators who already do partnerships, says why, and can show only them', async () => {
+    const open = {
+      ...JO,
+      openToPartnerships: true,
+      partnershipSignals: [
+        { kind: 'storefront', count: 3 },
+        { kind: 'sponsored_posts', count: 1 },
+      ],
+    };
+    respond = () => ({ status: 200, body: { creators: [open, { ...JO, id: 'b', name: 'Quiet One' }], nextCursor: null, total: 2 } });
+    wrap(<IndexedCreatorsSection />);
+    expect(await screen.findByText('Sells sponsorships (3 past collaborations) · 1 sponsored post lately')).toBeTruthy();
+    expect(screen.getAllByText('Open to partnerships')).toHaveLength(1);
+    fireEvent.click(screen.getByLabelText('Only creators who already do brand partnerships'));
+    await waitFor(() => expect(calls[calls.length - 1]!.url).toBe('/api/admin/network/indexed-creators?openToPartnerships=1'));
+  });
+});
+
+describe('ops console: creator index settings', () => {
+  const SETTINGS = {
+    enabled: true,
+    invitesEnabled: false,
+    monthlyBudgetUsd: 10,
+    minFollowers: 3000,
+    minPostsPer30d: 4,
+    refreshDays: 30,
+    excludedCountries: ['DE'],
+    hiddenRegions: ['US-CA'],
+    seedQueries: ['B2B sales newsletters'],
+    classifierModel: 'gpt-6-luna',
+  };
+
+  it('chooses where queries are searched and whether only partnership-ready creators are kept, and shows ops the evidence', async () => {
+    respond = (url, method) => {
+      if (url.endsWith('/creator-index/settings') && method === 'PUT') return { status: 200, body: { settings: calls[calls.length - 1]!.body, visibilityChanged: 0 } };
+      if (url.endsWith('/creator-index/settings')) {
+        // A Network that predates the discovery settings: the page shows their defaults.
+        return { status: 200, body: { settings: SETTINGS, defaults: SETTINGS, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {} } };
+      }
+      if (url.endsWith('/creator-index/stats')) {
+        return {
+          status: 200,
+          body: {
+            creators: { byStatus: {}, listed: 4, shownToBrands: 4, hiddenFromBrands: 0, openToPartnerships: 3 },
+            byCountry: [],
+            candidates: {},
+            rejections: {},
+            invites: {},
+            emailsSent30d: 0,
+            suppressions: {},
+            spend: { thisMonthUsd: 0, budgetUsd: 10 },
+          },
+        };
+      }
+      return {
+        status: 200,
+        body: {
+          creators: [
+            {
+              id: 'ixc_1',
+              status: 'active',
+              name: 'Jo Rivera',
+              headline: null,
+              country: 'US',
+              region: 'US-TX',
+              brandVisible: true,
+              totalReach: 12000,
+              contact: null,
+              emailsSent: 0,
+              platforms: [],
+              partnershipSignals: [{ kind: 'storefront', count: 0, evidence: 'https://www.example-storefront.test/jo' }],
+            },
+          ],
+        },
+      };
+    };
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    expect(await screen.findByText('3 open to partnerships')).toBeTruthy();
+    expect((screen.getByLabelText('Sponsorship storefronts') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText('Anyone who posts about the topic') as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(screen.getByLabelText('Anyone who posts about the topic'));
+    fireEvent.click(screen.getByLabelText(/Only index creators who already take partnerships/));
+    fireEvent.click(screen.getByText('Save settings'));
+    await waitFor(() => expect(calls.some((c) => c.method === 'PUT')).toBe(true));
+    expect(calls.find((c) => c.method === 'PUT')!.body).toMatchObject({
+      discoverySources: { storefronts: true, sponsorPages: true, people: true },
+      requirePartnershipSignal: false,
+    });
+    // Ops see where a signal was read; brands never do.
+    expect(await screen.findByText('example-storefront.test/jo')).toBeTruthy();
+  });
 });
 
 describe('claim page', () => {
@@ -163,6 +259,27 @@ describe('claim page', () => {
     fireEvent.click(await screen.findByText('Claim my profile and read'));
     await waitFor(() => expect(screen.getByText(/You already have an OpenPartner account at partnerships@jo\.co/)).toBeTruthy());
     expect(screen.getByText('Sign in')).toBeTruthy();
+  });
+
+  it('tells the creator why brands see them as open to partnerships, and where we read it', async () => {
+    respond = () => ({
+      status: 200,
+      body: {
+        ...PREVIEW,
+        creator: {
+          ...PREVIEW.creator,
+          partnershipSignals: [
+            { kind: 'sponsor_page', count: null, evidence: 'https://jo.co/sponsor' },
+            { kind: 'sponsored_posts', count: 2, evidence: 'https://www.linkedin.com/in/jorivera' },
+          ],
+        },
+      },
+    });
+    page();
+    expect(await screen.findByText(/We show brands that you take partnerships, from/)).toBeTruthy();
+    expect(screen.getByText(/your sponsor page/)).toBeTruthy();
+    expect(screen.getByText(/2 recent posts marked as sponsored/)).toBeTruthy();
+    expect(screen.getByText('jo.co/sponsor').getAttribute('href')).toBe('https://jo.co/sponsor');
   });
 
   it('explains an expired link', async () => {

@@ -1476,6 +1476,11 @@ export interface CreatorIndexSettings {
   excludedCountries: string[];
   hiddenRegions: string[];
   seedQueries: string[];
+  /** Where each seed query is searched. Optional so an older Network's
+   *  answer still reads. */
+  discoverySources?: { storefronts: boolean; sponsorPages: boolean; people: boolean };
+  /** Keep only creators who already take partnerships. */
+  requirePartnershipSignal?: boolean;
   classifierModel: string;
 }
 

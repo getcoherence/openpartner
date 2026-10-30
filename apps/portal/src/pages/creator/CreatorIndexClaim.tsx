@@ -21,6 +21,7 @@ import { MessagesSquare } from 'lucide-react';
 import { Button, Card } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { ApiError, creatorApi } from './creator-api.js';
+import { creatorSignalLabel, shortUrl, type PartnershipSignal } from '../../lib/partnership-signals.js';
 
 interface ClaimPreview {
   creator: {
@@ -31,6 +32,8 @@ interface ClaimPreview {
     emailFoundOn: string | null;
     firstSeenAt: string;
     platforms: Array<{ platform: string; handle: string | null; profileUrl: string; followerCount: number | null }>;
+    /** Why brands see them as open to partnerships, and where we read it. */
+    partnershipSignals?: PartnershipSignal[];
   };
   invites: Array<{ brand: string; logoUrl: string | null; preview: string }>;
   expiresAt: string;
@@ -79,6 +82,7 @@ export function CreatorIndexClaimPage() {
   const previewCode = codeOf(preview.error);
   const existingEmail = claimCode === 'sign_in_required' ? ((claim.error as ApiError).detail as { email?: string } | null)?.email ?? null : null;
   const p = preview.data;
+  const signals = p?.creator.partnershipSignals ?? [];
 
   return (
     <div style={{ minHeight: '100vh', background: theme.bg, padding: '64px 20px' }}>
@@ -153,9 +157,30 @@ export function CreatorIndexClaimPage() {
                 We listed {p.creator.name ?? 'you'} from your public{' '}
                 {p.creator.platforms.map((pl) => PLATFORM_LABEL[pl.platform] ?? pl.platform).join(' and ')} profile
                 {p.creator.platforms.length === 1 ? '' : 's'}
-                {p.creator.email && p.creator.emailFoundOn ? <>, and found {p.creator.email} on {p.creator.emailFoundOn}</> : null}. Claiming moves
-                it into your own account; anything you don&rsquo;t want, you can change there. The email we sent has a link to remove the listing
-                instead.
+                {p.creator.email && p.creator.emailFoundOn ? <>, and found {p.creator.email} on {p.creator.emailFoundOn}</> : null}.
+                {signals.length > 0 && (
+                  <>
+                    {' '}We show brands that you take partnerships, from{' '}
+                    {signals.map((s, i) => (
+                      <span key={s.kind}>
+                        {i > 0 && (i === signals.length - 1 ? ' and ' : ', ')}
+                        {creatorSignalLabel(s)}
+                        {s.evidence && (
+                          <>
+                            {' '}(
+                            <a href={s.evidence} target="_blank" rel="noreferrer noopener" style={{ color: theme.textMuted }}>
+                              {shortUrl(s.evidence)}
+                            </a>
+                            )
+                          </>
+                        )}
+                      </span>
+                    ))}
+                    .
+                  </>
+                )}{' '}
+                Claiming moves it into your own account; anything you don&rsquo;t want, you can change there. The email we sent has a link to
+                remove the listing instead.
               </div>
             </>
           )}

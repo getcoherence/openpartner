@@ -6,6 +6,9 @@
  * creator on the brand's behalf, and the message opens as a conversation
  * when they claim their free profile.
  *
+ * Creators who already take partnerships (a sponsorship storefront, a
+ * sponsor page, sponsored posts) are marked, and a brand can show only them.
+ *
  * Other plans get the plan_required answer from the API, and this shows
  * what the plan would unlock instead of an error.
  */
@@ -17,6 +20,7 @@ import { api, ApiError } from '../../api.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Select, Textarea } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
 import { TenantLink } from '../../tenant-link.js';
+import { brandSignalLabel, type PartnershipSignal } from '../../lib/partnership-signals.js';
 
 interface IndexedPlatform {
   platform: string;
@@ -38,6 +42,10 @@ interface IndexedCreator {
   topics: string[];
   platforms: IndexedPlatform[];
   totalReach: number;
+  /** Shows they take partnerships: a storefront, a sponsor page,
+   *  sponsored posts. Kinds and counts only. */
+  openToPartnerships?: boolean;
+  partnershipSignals?: PartnershipSignal[];
   invitable: boolean;
   invite: { id: string; status: string; createdAt: string } | null;
   refreshedAt: string | null;
@@ -72,6 +80,7 @@ export function IndexedCreatorsSection() {
   const [platform, setPlatform] = useState('');
   const [locations, setLocations] = useState('');
   const [minFollowers, setMinFollowers] = useState<number | ''>('');
+  const [openOnly, setOpenOnly] = useState(false);
   const [sort, setSort] = useState<'reach' | 'newest'>('reach');
 
   useEffect(() => {
@@ -90,9 +99,10 @@ export function IndexedCreatorsSection() {
       .filter((s) => /^[A-Z]{2}$/.test(s));
     if (codes.length > 0) p.set('locations', codes.join(','));
     if (minFollowers !== '' && minFollowers > 0) p.set('minFollowers', String(minFollowers));
+    if (openOnly) p.set('openToPartnerships', '1');
     if (sort !== 'reach') p.set('sort', sort);
     return p.toString();
-  }, [debouncedQ, category, platform, locations, minFollowers, sort]);
+  }, [debouncedQ, category, platform, locations, minFollowers, openOnly, sort]);
 
   const search = useInfiniteQuery({
     queryKey: ['admin-indexed-creators', qs],
@@ -165,6 +175,10 @@ export function IndexedCreatorsSection() {
             </Select>
           </div>
         </div>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, marginTop: 14 }}>
+          <input type="checkbox" checked={openOnly} onChange={(e) => setOpenOnly(e.target.checked)} />
+          Only creators who already do brand partnerships
+        </label>
       </Card>
 
       <div style={{ height: 18 }} />
@@ -243,6 +257,11 @@ function IndexedCreatorCard({ creator }: { creator: IndexedCreator }) {
           <span style={{ display: 'inline-block', marginTop: 3, background: theme.surface2, color: theme.textMuted, fontSize: 10, padding: '2px 8px', borderRadius: 10 }}>
             Not on OpenPartner yet
           </span>
+          {creator.openToPartnerships && (
+            <span style={{ display: 'inline-block', marginTop: 3, marginLeft: 4, background: theme.successSoft, color: theme.success, fontSize: 10, padding: '2px 8px', borderRadius: 10 }}>
+              Open to partnerships
+            </span>
+          )}
         </div>
         {creator.country && <span style={{ fontSize: 12, color: theme.textDim }}>{creator.country}</span>}
       </div>
@@ -262,6 +281,9 @@ function IndexedCreatorCard({ creator }: { creator: IndexedCreator }) {
           </span>
         ))}
       </div>
+      {creator.partnershipSignals && creator.partnershipSignals.length > 0 && (
+        <div style={{ fontSize: 12, color: theme.text, marginBottom: 10 }}>{creator.partnershipSignals.map(brandSignalLabel).join(' · ')}</div>
+      )}
       {creator.topics.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 12 }}>
           {creator.topics.slice(0, 5).map((t) => (
