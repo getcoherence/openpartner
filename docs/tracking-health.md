@@ -75,6 +75,15 @@ turns done. The page asks every two seconds until the test passes or
 expires. Until it's opened, the link can be opened again from the page or
 copied, to try a phone or another browser.
 
+The test runs in your own browser, so its privacy settings count. If your
+script tag waits for consent (`data-consent="pending"`), a browser that
+sends Global Privacy Control or Do Not Track (Brave does by default) can
+keep the script from reporting the click, even after you accept your
+banner: the SDK's regional mode, and many banners, read the signal as a
+decline. The fix for **Reached the script** says so, and when the browser
+you sent the test from sends a signal, the page says that too. Send the
+test from a browser without one.
+
 **A test click is never a partner click.** It's recorded only on the test,
 never as a click, so it's credited, paid and counted nowhere: not in
 attribution or payouts, not in any click count, funnel or partner's numbers,
