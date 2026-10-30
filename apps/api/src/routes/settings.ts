@@ -53,6 +53,7 @@ import { afterCommit, getTenancyMode, tenantOf } from '../tenancy.js';
 import { NETWORK_FEDERATION_SCOPES } from './api-keys.js';
 import { getTenantBillingState, hasActivePlan } from '../billing-plan.js';
 import { bookingFeeBpsFor } from '../booking-fee.js';
+import { getMode } from '../stripe.js';
 import { connectPayoutsAvailable } from '../payout-method.js';
 import { isWhiteLabelEntitled, getWhiteLabelState } from '../white-label.js';
 import { currencyInputSchema } from '../currency.js';
@@ -959,10 +960,13 @@ settingsRouter.post('/admin/network/offerings/:id/invite-creator', requireAuth, 
 // hosted instances. Listing and withdrawing the brand's own invites needs no
 // plan, so a brand that moves off Flex can still see and withdraw them.
 
-/** Flex or Enterprise with the plan active, on the hosted platform. */
+/** Flex or Enterprise with the plan active, on the hosted platform. The
+ *  deployment's own mode decides "hosted": a self-hosted install can hold a
+ *  tenant row with a plan (an import from the hosted platform), and the
+ *  billing state's mode follows the plan, not the deployment. */
 export async function creatorIndexAllowed(db: Knex, tenantId: string): Promise<boolean> {
+  if (getMode() === 'selfhost') return false;
   const state = await getTenantBillingState(db, tenantId);
-  if (state.mode === 'selfhost') return false;
   return (state.plan === 'flex' || state.plan === 'enterprise') && hasActivePlan(state);
 }
 

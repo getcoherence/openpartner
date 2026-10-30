@@ -484,6 +484,7 @@ const JOBS: ScheduledJob[] = [
  *  docs/creator-index.md §5.2). The Network decides who is due, and whether
  *  invites are on at all. */
 export async function runCreatorIndexInvitesJob() {
+  if (getMode() === 'selfhost') return { skipped: 'selfhost' };
   if (getTenancyMode() !== 'multi') return { skipped: 'single_tenant' };
   const { adminRunCreatorIndexInvites, platformNetworkUrl } = await import('./network-client.js');
   const networkUrl = platformNetworkUrl();

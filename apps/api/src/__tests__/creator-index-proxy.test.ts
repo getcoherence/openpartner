@@ -204,6 +204,18 @@ describe.skipIf(skipIntegration)('creator index: brand side', () => {
     }
     expect(calls).toHaveLength(0);
 
+    // A self-hosted install never uses it, whatever plan a tenant row carries.
+    const imported = await brand({ plan: 'enterprise' });
+    process.env.OPENPARTNER_MODE = 'selfhost';
+    try {
+      expect((await request(app).get(`/t/${imported.slug}/admin/network/indexed-creators`).set('Cookie', imported.cookie)).status).toBe(402);
+      const { runCreatorIndexInvitesJob } = await import('../scheduler.js');
+      expect(await runCreatorIndexInvitesJob()).toEqual({ skipped: 'selfhost' });
+    } finally {
+      process.env.OPENPARTNER_MODE = 'revshare';
+    }
+    expect(calls).toHaveLength(0);
+
     for (const b of [await brand({ plan: 'flex', subscribed: true }), await brand({ plan: 'enterprise' })]) {
       const r = await request(app).get(`/t/${b.slug}/admin/network/indexed-creators?q=sales&creatorIndex=0&evil=1`).set('Cookie', b.cookie);
       expect(r.status).toBe(200);
