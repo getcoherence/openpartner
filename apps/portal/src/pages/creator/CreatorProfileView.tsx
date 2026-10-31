@@ -14,10 +14,10 @@ import type { ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ExternalLink } from 'lucide-react';
 import { audienceSizeLabel } from '@openpartner/db';
-import { Card } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { VerifiedBadge } from '../../lib/VerifiedBadge.js';
 import { PlatformMark } from '../../lib/PlatformMark.js';
+import { SectionCard, SectionGap } from '../../lib/Surface.js';
 import { creatorApi } from './creator-api.js';
 import { ListingBanner } from './ListingBanner.js';
 import { PLATFORM_LABELS, type StorefrontChannel, type StorefrontPackage } from './storefront-shared.js';
@@ -62,7 +62,7 @@ export function CreatorProfileView({ data, storefront }: { data: PublicProfile; 
 
   return (
     <>
-      <Card style={{ overflow: 'hidden' }}>
+      <SectionCard style={{ overflow: 'hidden' }}>
         {/* Cover (or a wash of the avatar), bleeding over the Card's 20px
             padding; the avatar sits half over it, profile style. */}
         <ListingBanner coverUrl={data.coverImageUrl} logoUrl={data.avatarUrl} style={{ margin: '-20px -20px 0' }} />
@@ -95,15 +95,15 @@ export function CreatorProfileView({ data, storefront }: { data: PublicProfile; 
           </div>
         </div>
         {data.bio && <p style={{ marginTop: 16, fontSize: 14, color: theme.text, lineHeight: 1.5 }}>{data.bio}</p>}
-      </Card>
+      </SectionCard>
 
       {data.bookingsOpen && storefront}
 
       {/* The storefront shows each channel with its packages; otherwise list them here. */}
       {!data.bookingsOpen && (data.platforms.length > 0 || totalReach > 0) && (
         <>
-          <div style={{ height: 14 }} />
-          <Card>
+          <SectionGap />
+          <SectionCard>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 12 }}>
               <h3 style={{ margin: 0, fontSize: 15, fontWeight: 500 }}>Platforms</h3>
               {totalReach > 0 && (
@@ -148,14 +148,14 @@ export function CreatorProfileView({ data, storefront }: { data: PublicProfile; 
                 </a>
               ))}
             </div>
-          </Card>
+          </SectionCard>
         </>
       )}
 
       {(data.audienceLocations.length > 0 || data.audienceAgeRange || audienceSize) && (
         <>
-          <div style={{ height: 14 }} />
-          <Card>
+          <SectionGap />
+          <SectionCard>
             <h3 style={{ marginTop: 0, marginBottom: 12, fontSize: 15, fontWeight: 500 }}>Audience</h3>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24 }}>
               {audienceSize && <Stat label="Audience size" value={audienceSize} />}
@@ -166,14 +166,14 @@ export function CreatorProfileView({ data, storefront }: { data: PublicProfile; 
                 <Stat label="Age range" value={data.audienceAgeRange} />
               )}
             </div>
-          </Card>
+          </SectionCard>
         </>
       )}
 
       {data.portfolioLinks.length > 0 && (
         <>
-          <div style={{ height: 14 }} />
-          <Card>
+          <SectionGap />
+          <SectionCard>
             <h3 style={{ marginTop: 0, marginBottom: 12, fontSize: 15, fontWeight: 500 }}>Sample work</h3>
             <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 6 }}>
               {data.portfolioLinks.map((u) => (
@@ -182,14 +182,14 @@ export function CreatorProfileView({ data, storefront }: { data: PublicProfile; 
                 </li>
               ))}
             </ul>
-          </Card>
+          </SectionCard>
         </>
       )}
 
       {data.pastBrands.length > 0 && (
         <>
-          <div style={{ height: 14 }} />
-          <Card>
+          <SectionGap />
+          <SectionCard>
             <h3 style={{ marginTop: 0, marginBottom: 12, fontSize: 15, fontWeight: 500 }}>Past collaborations</h3>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
               {data.pastBrands.map((b) => (
@@ -198,7 +198,7 @@ export function CreatorProfileView({ data, storefront }: { data: PublicProfile; 
                 </span>
               ))}
             </div>
-          </Card>
+          </SectionCard>
         </>
       )}
     </>

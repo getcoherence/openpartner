@@ -29,7 +29,9 @@ import { alpha, theme } from '../../theme.js';
 import { TenantLink } from '../../tenant-link.js';
 import { brandSignalLabel, type PartnershipSignal } from '../../lib/partnership-signals.js';
 import { ChannelCount, ChannelCounts, PlatformMark, compactCount, platformName } from '../../lib/PlatformMark.js';
-import { CreatorRow, RowFigure } from './CreatorRow.js';
+import { FlatCards, SectionCard, useFlatCards } from '../../lib/Surface.js';
+import { ListingBanner } from '../creator/ListingBanner.js';
+import { CreatorList, CreatorRow, PanelBar, RowFigure } from './CreatorRow.js';
 
 interface IndexedPlatform {
   platform: string;
@@ -172,11 +174,11 @@ export function IndexedCreatorsSection({
           <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 10 }}>
             {total.toLocaleString()} external creator{total === 1 ? '' : 's'}
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <CreatorList>
             {rows.map((c) => (
               <ExternalRow key={c.id} creator={c} selected={selectedId === c.id} onSelect={onSelect && (() => onSelect(c.id))} />
             ))}
-          </div>
+          </CreatorList>
           {search.hasNextPage && (
             <div style={{ marginTop: 16, textAlign: 'center' }}>
               <Button variant="secondary" onClick={() => search.fetchNextPage()} disabled={search.isFetchingNextPage}>
@@ -389,12 +391,10 @@ export function IndexedCreatorPanel({ id }: { id: string }) {
   }
   return (
     <>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
-        <TenantLink to={profilePath(id)} style={{ fontSize: 13, color: theme.accentText, textDecoration: 'none' }}>
-          Open full page →
-        </TenantLink>
-      </div>
-      <IndexedCreatorBody c={c} named />
+      <PanelBar to={profilePath(id)} />
+      <FlatCards>
+        <IndexedCreatorBody c={c} named />
+      </FlatCards>
     </>
   );
 }
@@ -405,36 +405,60 @@ export function IndexedCreatorPanel({ id }: { id: string }) {
 function IndexedCreatorBody({ c, named = false }: { c: IndexedCreatorProfile; named?: boolean }) {
   const [inviting, setInviting] = useState(false);
   const signals = c.partnershipSignals ?? [];
+  const flat = useFlatCards();
+  const badges = (
+    <>
+      <ExternalBadge size={11} />
+      {c.openToPartnerships && (
+        <span style={{ background: theme.successSoft, color: theme.success, fontSize: 11, padding: '2px 8px', borderRadius: 10 }}>Open to partnerships</span>
+      )}
+      {c.country && <span style={{ fontSize: 12, color: theme.textDim }}>{c.country}</span>}
+    </>
+  );
+  const reach = (
+    <>
+      <strong style={{ color: theme.text }}>{c.totalReach.toLocaleString()}</strong> followers across {c.platforms.length} channel
+      {c.platforms.length === 1 ? '' : 's'}
+      {c.refreshedAt && <> · read {formatDate(c.refreshedAt)}</>}
+    </>
+  );
+  const inviteControl = c.invite ? (
+    <div style={{ fontSize: 13, color: c.invite.status === 'claimed' ? theme.success : theme.textMuted }}>{INVITE_STATUS[c.invite.status] ?? 'Invited.'}</div>
+  ) : c.invitable ? (
+    <Button onClick={() => setInviting(true)} style={{ width: '100%' }}>
+      Invite to collaborate
+    </Button>
+  ) : (
+    <div style={{ fontSize: 13, color: theme.textDim }}>Can&rsquo;t be invited yet</div>
+  );
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <Card>
-        <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
-          <Avatar creator={c} size={56} />
-          <div style={{ flex: 1, minWidth: 200 }}>
-            {named && <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 6 }}>{c.name}</div>}
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-              <ExternalBadge size={11} />
-              {c.openToPartnerships && (
-                <span style={{ background: theme.successSoft, color: theme.success, fontSize: 11, padding: '2px 8px', borderRadius: 10 }}>Open to partnerships</span>
-              )}
-              {c.country && <span style={{ fontSize: 12, color: theme.textDim }}>{c.country}</span>}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: flat ? 0 : 16 }}>
+      <SectionCard>
+        {named ? (
+          <>
+            {/* No cover of their own: a short wash. */}
+            <ListingBanner coverUrl={null} logoUrl={c.avatarUrl} style={{ margin: '-20px -20px 0', aspectRatio: 'auto', height: 112 }} />
+            {/* Positioned, so it sits over the banner rather than under it. */}
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginTop: -36 }}>
+              <div style={{ display: 'flex', borderRadius: '50%', border: `4px solid ${theme.surface}`, background: theme.surface }}>
+                <Avatar creator={c} size={72} />
+              </div>
+              <div style={{ minWidth: 200 }}>{inviteControl}</div>
             </div>
-            <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 6 }}>
-              <strong style={{ color: theme.text }}>{c.totalReach.toLocaleString()}</strong> followers across {c.platforms.length} channel
-              {c.platforms.length === 1 ? '' : 's'}
-              {c.refreshedAt && <> · read {formatDate(c.refreshedAt)}</>}
+            <div style={{ fontSize: 20, fontWeight: 600, marginTop: 10 }}>{c.name}</div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginTop: 6 }}>{badges}</div>
+            <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 8 }}>{reach}</div>
+          </>
+        ) : (
+          <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Avatar creator={c} size={56} />
+            <div style={{ flex: 1, minWidth: 200 }}>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>{badges}</div>
+              <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 6 }}>{reach}</div>
             </div>
+            <div style={{ minWidth: 200 }}>{inviteControl}</div>
           </div>
-          <div style={{ minWidth: 200 }}>
-            {c.invite ? (
-              <div style={{ fontSize: 13, color: c.invite.status === 'claimed' ? theme.success : theme.textMuted }}>{INVITE_STATUS[c.invite.status] ?? 'Invited.'}</div>
-            ) : c.invitable ? (
-              <Button onClick={() => setInviting(true)} style={{ width: '100%' }}>Invite to collaborate</Button>
-            ) : (
-              <div style={{ fontSize: 13, color: theme.textDim }}>Can&rsquo;t be invited yet</div>
-            )}
-          </div>
-        </div>
+        )}
         {named && c.headline && <p style={{ fontSize: 14, color: theme.text, margin: '14px 0 0', lineHeight: 1.5 }}>{c.headline}</p>}
         <ChannelCounts style={{ marginTop: 14 }}>
           {c.platforms.map((p) => (
@@ -446,21 +470,21 @@ function IndexedCreatorBody({ c, named = false }: { c: IndexedCreatorProfile; na
             {(c.blocker && BLOCKERS[c.blocker]) ?? BLOCKERS.unreachable}
           </p>
         )}
-      </Card>
+      </SectionCard>
 
       {signals.length > 0 && (
-        <Card>
+        <SectionCard>
           <SectionTitle>Why they&rsquo;re open to partnerships</SectionTitle>
           <ul style={{ margin: 0, paddingLeft: 18, fontSize: 14, lineHeight: 1.7 }}>
             {signals.map((s) => (
               <li key={s.kind}>{brandSignalLabel(s)}</li>
             ))}
           </ul>
-        </Card>
+        </SectionCard>
       )}
 
       {c.summary && (
-        <Card>
+        <SectionCard>
           <SectionTitle>What they publish</SectionTitle>
           <p style={{ fontSize: 14, margin: 0, lineHeight: 1.6 }}>{c.summary}</p>
           {(c.topics.length > 0 || c.categories.length > 0) && (
@@ -470,10 +494,10 @@ function IndexedCreatorBody({ c, named = false }: { c: IndexedCreatorProfile; na
               ))}
             </div>
           )}
-        </Card>
+        </SectionCard>
       )}
 
-      <Card>
+      <SectionCard>
         <SectionTitle>Channels</SectionTitle>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           {c.platforms.map((p) => (
@@ -500,18 +524,18 @@ function IndexedCreatorBody({ c, named = false }: { c: IndexedCreatorProfile; na
             </div>
           ))}
         </div>
-      </Card>
+      </SectionCard>
 
       {c.productsMentioned.length > 0 && (
-        <Card>
+        <SectionCard>
           <SectionTitle>Products and companies they mention</SectionTitle>
           <div style={{ fontSize: 14, lineHeight: 1.7 }}>
             {c.productsMentioned.map((m) => `${m.name} (${m.count} post${m.count === 1 ? '' : 's'})`).join(' · ')}
           </div>
-        </Card>
+        </SectionCard>
       )}
 
-      <p style={{ fontSize: 12, color: theme.textDim, margin: 0, lineHeight: 1.5 }}>
+      <p style={{ fontSize: 12, color: theme.textDim, margin: 0, padding: flat ? '0 20px 20px' : 0, lineHeight: 1.5 }}>
         Read from their public profiles. Their rates and packages appear once they join OpenPartner and set them.
       </p>
       {inviting && <IndexInviteDialog creator={c} onClose={() => setInviting(false)} />}

@@ -25,7 +25,7 @@ import { ChannelCount, compactCount } from '../../lib/PlatformMark.js';
 import { useMediaQuery } from '../../lib/useMediaQuery.js';
 import { PLATFORMS as CREATOR_PLATFORMS } from '../../lib/NetworkProfileEditor.js';
 import { BookCreatorDialog } from './BookCreatorDialog.js';
-import { CreatorRow, RowFigure } from './CreatorRow.js';
+import { CreatorList, CreatorRow, RowFigure } from './CreatorRow.js';
 import { NetworkCreatorStorefrontPanel } from './NetworkCreatorStorefront.js';
 import { EXTERNAL_CATEGORIES, IndexedCreatorPanel, IndexedCreatorsSection, type ExternalFilters } from './NetworkIndexedCreators.js';
 
@@ -225,7 +225,7 @@ export function AdminNetworkCreators() {
               icon={<Users size={28} strokeWidth={1.25} />}
             />
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <CreatorList>
               {rows.map((r) => (
                 <MemberRow
                   key={r.id}
@@ -234,7 +234,7 @@ export function AdminNetworkCreators() {
                   onSelect={sideBySide ? () => select({ kind: 'member', handle: r.handle }) : undefined}
                 />
               ))}
-            </div>
+            </CreatorList>
           )}
         </section>
       )}
@@ -364,18 +364,29 @@ export function AdminNetworkCreators() {
           <aside
             ref={panel}
             aria-label="Selected creator"
-            style={{ position: 'sticky', top: 16, maxHeight: 'calc(100vh - 32px)', overflowY: 'auto', minWidth: 0 }}
+            style={{
+              position: 'sticky',
+              top: 16,
+              maxHeight: 'calc(100vh - 32px)',
+              overflowY: 'auto',
+              minWidth: 0,
+              // One surface of its own, set apart from the list.
+              background: theme.surface,
+              border: `1px solid ${theme.border}`,
+              borderRadius: 12,
+              boxShadow: '0 1px 2px rgba(0, 0, 0, 0.06), 0 12px 32px rgba(0, 0, 0, 0.08)',
+            }}
           >
             {selected?.kind === 'member' ? (
               <NetworkCreatorStorefrontPanel key={selected.handle} handle={selected.handle} />
             ) : selected?.kind === 'external' ? (
               <IndexedCreatorPanel key={selected.id} id={selected.id} />
             ) : (
-              <EmptyState
-                title="Pick a creator"
-                hint="Their profile, channels and what they offer show here, beside the list."
-                icon={<Users size={28} strokeWidth={1.25} />}
-              />
+              <div style={{ padding: '64px 24px', textAlign: 'center' }}>
+                <Users size={28} strokeWidth={1.25} style={{ color: theme.textDim }} />
+                <div style={{ fontSize: 15, fontWeight: 500, marginTop: 12 }}>Pick a creator</div>
+                <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 6 }}>Their profile, channels and what they offer show here, beside the list.</div>
+              </div>
             )}
           </aside>
         </div>

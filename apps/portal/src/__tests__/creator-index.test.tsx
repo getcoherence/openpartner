@@ -236,7 +236,9 @@ describe('external creators', () => {
     // A click anywhere on a row picks it; its buttons keep their own job.
     const memberRow = screen.getAllByTestId('creator-row')[0]!;
     fireEvent.click(memberRow);
-    expect(await within(panel).findByText(/isn.t taking bookings right now/)).toBeTruthy();
+    expect(await within(panel).findByText(/Not taking bookings right now/)).toBeTruthy();
+    // One surface: the profile's parts are sections of it, not cards.
+    expect(within(panel).getByRole('heading', { name: 'Member Mo' }).closest('section')).toBeTruthy();
     expect(screen.getByTestId('where').textContent).toBe('?creator=mo');
     fireEvent.click(within(memberRow).getByRole('button', { name: 'Book' }));
     expect(screen.getByTestId('where').textContent).toBe('?creator=mo');

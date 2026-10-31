@@ -66,8 +66,8 @@ export function CreatorRow({
         gap: 12,
         padding: '14px 16px',
         background: selected ? theme.surface2 : theme.surface,
-        border: `1px solid ${selected ? theme.accent : theme.borderSubtle}`,
-        borderRadius: theme.radiusSm,
+        // The picked one is marked down its left edge.
+        boxShadow: selected ? `inset 3px 0 0 ${theme.accent}` : undefined,
         cursor: 'pointer',
       }}
     >
@@ -114,6 +114,38 @@ export function CreatorRow({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/** Rows as one list, ruled between, rather than a stack of cards. */
+export function CreatorList({ children }: { children: ReactNode }) {
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gap: 1,
+        background: theme.borderSubtle,
+        border: `1px solid ${theme.borderSubtle}`,
+        borderRadius: 10,
+        overflow: 'hidden',
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/** The side panel's top bar: a word about the creator (`note`), its own
+ *  actions, and the creator's full page. */
+export function PanelBar({ to, note, children }: { to: string; note?: ReactNode; children?: ReactNode }) {
+  return (
+    <div style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '10px 16px' }}>
+      <div style={{ flex: 1, minWidth: 0, fontSize: 12, color: theme.textMuted }}>{note}</div>
+      {children}
+      <TenantLink to={to} style={{ fontSize: 13, color: theme.accentText, textDecoration: 'none' }}>
+        Open full page →
+      </TenantLink>
     </div>
   );
 }

@@ -20,7 +20,9 @@ import { ApiError } from '../creator/creator-api.js';
 import { CreatorProfileView, useCreatorProfile, type PublicProfile } from '../creator/CreatorProfileView.js';
 import { StorefrontSection } from '../creator/StorefrontSection.js';
 import type { StorefrontPackage } from '../creator/storefront-shared.js';
+import { FlatCards, useFlatCards } from '../../lib/Surface.js';
 import { BookCreatorDialog } from './BookCreatorDialog.js';
+import { PanelBar } from './CreatorRow.js';
 import { MessageCreatorDialog } from './NetworkMessages.js';
 
 export function NetworkCreatorStorefrontPage() {
@@ -110,17 +112,19 @@ export function NetworkCreatorStorefrontPanel({ handle }: { handle: string }) {
 
   return (
     <>
-      <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'flex-end', marginBottom: 8 }}>
+      <PanelBar
+        to={`/admin/network/creators/${encodeURIComponent(data.handle)}`}
+        note={!data.bookingsOpen && 'Not taking bookings right now. You can still invite them to your program.'}
+      >
         {data.bookingsOpen && (
           <Button size="sm" variant="secondary" onClick={() => setMessaging(true)}>
             Message
           </Button>
         )}
-        <TenantLink to={`/admin/network/creators/${encodeURIComponent(data.handle)}`} style={{ fontSize: 13, color: theme.accentText, textDecoration: 'none' }}>
-          Open full page →
-        </TenantLink>
-      </div>
-      <StorefrontBody data={data} onBook={setBooking} />
+      </PanelBar>
+      <FlatCards>
+        <StorefrontBody data={data} onBook={setBooking} />
+      </FlatCards>
       <StorefrontDialogs data={data} booking={booking} messaging={messaging} onClose={() => {
           setBooking(undefined);
           setMessaging(false);
@@ -132,9 +136,11 @@ export function NetworkCreatorStorefrontPanel({ handle }: { handle: string }) {
 /** The profile and storefront; a package's Request opens `onBook` (null:
  *  a custom deal). */
 function StorefrontBody({ data, onBook }: { data: PublicProfile; onBook: (packageId: string | null) => void }) {
+  // The side panel says this in its bar.
+  const flat = useFlatCards();
   return (
     <>
-      {!data.bookingsOpen && (
+      {!data.bookingsOpen && !flat && (
         <div
           style={{
             marginBottom: 14,
