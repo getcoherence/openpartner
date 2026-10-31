@@ -403,6 +403,69 @@ describe('ops console: creator index settings', () => {
     expect(screen.queryByRole('button', { name: 'Add address' })).toBeNull();
   });
 
+  it('sets a state ops found for a US creator, marks the hidden ones, and says why one was refused', async () => {
+    let refuse = true;
+    respond = (url, method) => {
+      if (url.endsWith('/creator-index/settings')) {
+        return { status: 200, body: { settings: SETTINGS, defaults: SETTINGS, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {} } };
+      }
+      if (url.endsWith('/creator-index/stats')) {
+        return {
+          status: 200,
+          body: {
+            creators: { byStatus: {}, listed: 3, shownToBrands: 1, hiddenFromBrands: 2, hiddenByRegion: 0, withEmail: 0, withoutEmail: 3 },
+            byCountry: [],
+            candidates: {},
+            rejections: {},
+            invites: {},
+            emailsSent30d: 0,
+            suppressions: {},
+            spend: { thisMonthUsd: 0, budgetUsd: 10 },
+          },
+        };
+      }
+      if (url.endsWith('/creators/b/location') && method === 'PUT') {
+        if (refuse) {
+          refuse = false;
+          return { status: 409, body: { error: 'state_from_profile' } };
+        }
+        return { status: 200, body: { creator: {} } };
+      }
+      const base = { status: 'active', headline: null, country: 'US', brandVisible: true, emailsSent: 0, totalReach: 5_000, platforms: [], contact: null };
+      return {
+        status: 200,
+        body: {
+          creators: [
+            { ...base, id: 'a', name: 'Jo Rivera', region: 'US-TX', location: { text: 'https://jorivera.co/about', from: 'ops' } },
+            { ...base, id: 'b', name: 'Sam Lee', region: null, brandVisible: false, location: { text: 'United States', from: 'linkedin' } },
+            { ...base, id: 'c', name: 'Ana Ruiz', country: 'GB', region: null, location: { text: 'London', from: 'linkedin' } },
+          ],
+        },
+      };
+    };
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    expect(await screen.findByText('jorivera.co/about')).toBeTruthy();
+    expect(screen.getByText(/Set by ops:/)).toBeTruthy();
+    // Only for US creators.
+    expect(screen.getAllByRole('button', { name: 'Change state' })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Set state' }));
+    expect(screen.getByRole('option', { name: 'California (hidden from brands)' })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('State'), { target: { value: 'US-TX' } });
+    fireEvent.change(screen.getByLabelText('Page that shows it'), { target: { value: 'https://samlee.substack.com/about' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('Their profile gives a state. You can only move them to a hidden one, which hides them from brands.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.queryByLabelText('State')).toBeNull());
+    const put = calls.filter((c) => c.method === 'PUT' && c.url === '/api/platform-admin/creator-index/creators/b/location');
+    expect(put.at(-1)!.body).toEqual({ region: 'US-TX', sourceUrl: 'https://samlee.substack.com/about' });
+
+    // Support operators see where, not the control.
+    cleanup();
+    wrap(<CreatorIndexPage operator={{ id: 'pa_2', email: 'support@test', role: 'support' } as never} />);
+    expect(await screen.findByText('jorivera.co/about')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Set state' })).toBeNull();
+  });
+
   it('chooses where queries are searched and whether only partnership-ready creators are kept, and shows ops the evidence', async () => {
     respond = (url, method) => {
       if (url.endsWith('/creator-index/settings') && method === 'PUT') return { status: 200, body: { settings: calls[calls.length - 1]!.body, visibilityChanged: 0 } };
