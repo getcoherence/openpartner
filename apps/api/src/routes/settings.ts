@@ -985,6 +985,7 @@ const INDEX_QUERY_KEYS = [
   'minFollowers',
   'maxFollowers',
   'openToPartnerships',
+  'minEngagement',
   'sort',
   'limit',
   'after',

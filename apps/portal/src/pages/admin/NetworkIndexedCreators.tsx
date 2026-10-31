@@ -28,7 +28,7 @@ import { Button, Card, EmptyState, ErrorBanner, Label, Page, Textarea, formatDat
 import { alpha, theme } from '../../theme.js';
 import { TenantLink } from '../../tenant-link.js';
 import { brandSignalLabel, type PartnershipSignal } from '../../lib/partnership-signals.js';
-import { ChannelCount, ChannelCounts, PlatformMark, compactCount, platformName } from '../../lib/PlatformMark.js';
+import { ChannelCount, ChannelCounts, PlatformMark, compactCount, formatRate, platformName, rateInFull } from '../../lib/PlatformMark.js';
 import { FlatCards, SectionCard, useFlatCards } from '../../lib/Surface.js';
 import { ListingBanner } from '../creator/ListingBanner.js';
 import { CreatorRow, PanelBar, RowFigure } from './CreatorRow.js';
@@ -40,6 +40,9 @@ interface IndexedPlatform {
   followerCount: number | null;
   postsLast30d: number | null;
   avgReactions: number | null;
+  /** Percent; null with too few posts or no follower count. */
+  engagementRate?: number | null;
+  engagementPosts?: number | null;
 }
 
 interface IndexedCreator {
@@ -116,7 +119,9 @@ export interface ExternalFilters {
   maxFollowers?: number;
   /** Only those who already take partnerships. */
   openToPartnerships?: boolean;
-  sort?: 'reach' | 'newest';
+  /** Percent, on the creator's best channel. */
+  minEngagement?: number;
+  sort?: 'reach' | 'newest' | 'engagement';
 }
 
 /** The external creators under the page's filters, a page at a time. Their
@@ -131,9 +136,19 @@ export function useIndexedCreators(filters: ExternalFilters, enabled = true) {
     if (filters.minFollowers && filters.minFollowers > 0) p.set('minFollowers', String(filters.minFollowers));
     if (filters.maxFollowers != null) p.set('maxFollowers', String(filters.maxFollowers));
     if (filters.openToPartnerships) p.set('openToPartnerships', '1');
+    if (filters.minEngagement && filters.minEngagement > 0) p.set('minEngagement', String(filters.minEngagement));
     if (filters.sort && filters.sort !== 'reach') p.set('sort', filters.sort);
     return p.toString();
-  }, [filters.q, filters.categories, filters.platforms, filters.minFollowers, filters.maxFollowers, filters.openToPartnerships, filters.sort]);
+  }, [
+    filters.q,
+    filters.categories,
+    filters.platforms,
+    filters.minFollowers,
+    filters.maxFollowers,
+    filters.openToPartnerships,
+    filters.minEngagement,
+    filters.sort,
+  ]);
 
   const search = useInfiniteQuery({
     queryKey: ['admin-indexed-creators', qs],
@@ -241,7 +256,14 @@ export function ExternalRow({ creator, selected, onSelect }: { creator: IndexedC
         }
         line={creator.headline}
         channels={creator.platforms.map((p) => (
-          <ChannelCount key={p.profileUrl} platform={p.platform} followers={p.followerCount} href={p.profileUrl} />
+          <ChannelCount
+            key={p.profileUrl}
+            platform={p.platform}
+            followers={p.followerCount}
+            href={p.profileUrl}
+            engagementRate={p.engagementRate}
+            engagementPosts={p.engagementPosts}
+          />
         ))}
         side={<RowFigure value={compactCount(creator.totalReach)} caption="followers" />}
         tags={creator.topics}
@@ -279,6 +301,7 @@ const BLOCKERS: Record<string, string> = {
 function channelNumbers(p: IndexedCreatorProfile['platforms'][number]): string[] {
   const out: string[] = [];
   if (p.followerCount != null) out.push(`${p.followerCount.toLocaleString()} followers`);
+  if (p.engagementRate != null) out.push(`${formatRate(p.engagementRate)} engagement`);
   if (p.postsLast30d != null) out.push(`${p.postsLast30d} post${p.postsLast30d === 1 ? '' : 's'} in the last 30 days`);
   if (p.avgReactions != null) out.push(`${p.avgReactions.toLocaleString()} reactions a post`);
   if (p.avgComments != null) out.push(`${p.avgComments.toLocaleString()} comments a post`);
@@ -432,7 +455,15 @@ function IndexedCreatorBody({ c, named = false }: { c: IndexedCreatorProfile; na
         {named && c.headline && <p style={{ fontSize: 14, color: theme.text, margin: '14px 0 0', lineHeight: 1.5 }}>{c.headline}</p>}
         <ChannelCounts style={{ marginTop: 14 }}>
           {c.platforms.map((p) => (
-            <ChannelCount key={p.profileUrl} platform={p.platform} followers={p.followerCount} href={p.profileUrl} size={16} />
+            <ChannelCount
+              key={p.profileUrl}
+              platform={p.platform}
+              followers={p.followerCount}
+              href={p.profileUrl}
+              size={16}
+              engagementRate={p.engagementRate}
+              engagementPosts={p.engagementPosts}
+            />
           ))}
         </ChannelCounts>
         {!c.invite && !c.invitable && (
@@ -477,7 +508,12 @@ function IndexedCreatorBody({ c, named = false }: { c: IndexedCreatorProfile; na
                 {platformName(p.platform)}
                 <ExternalLink size={13} />
               </a>
-              <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 3 }}>{channelNumbers(p).join(' · ') || 'No numbers yet'}</div>
+              <div
+                title={p.engagementRate != null ? rateInFull(p.engagementRate, p.engagementPosts, p.platform) : undefined}
+                style={{ fontSize: 13, color: theme.textMuted, marginTop: 3 }}
+              >
+                {channelNumbers(p).join(' · ') || 'No numbers yet'}
+              </div>
               {p.topPostUrls.length > 0 && (
                 <div style={{ fontSize: 13, marginTop: 4 }}>
                   Top posts:{' '}

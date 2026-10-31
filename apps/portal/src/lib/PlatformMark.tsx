@@ -1,6 +1,7 @@
 /**
  * A creator's channels as platform logos with their follower counts
- * ("[in] 6M"), linking to the profile on that platform.
+ * ("[in] 6M"), linking to the profile on that platform, and the channel's
+ * engagement rate where the Network has one ("[in] 6.1M · 2.4%").
  *
  * The marks are the platforms' own, unaltered:
  *   - LinkedIn: the [in] logo as LinkedIn publishes it at
@@ -74,6 +75,19 @@ export function compactCount(n: number): string {
   return new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(n);
 }
 
+/** An engagement rate, which the Network gives in percent: 2.4%, 12%,
+ *  <0.1%. */
+export function formatRate(rate: number): string {
+  if (rate > 0 && rate < 0.05) return '<0.1%';
+  return `${new Intl.NumberFormat('en', { maximumFractionDigits: rate < 10 ? 1 : 0 }).format(rate)}%`;
+}
+
+/** The rate in full, for a tooltip: "2.41% engagement over 10 posts". */
+export function rateInFull(rate: number, posts: number | null | undefined, platform: string): string {
+  const over = posts ? ` over ${posts} ${platform === 'youtube' ? 'videos' : 'posts'}` : '';
+  return `${rate.toLocaleString('en', { maximumFractionDigits: 2 })}% engagement${over}`;
+}
+
 /** The platform's logo, `size` px tall. Named for screen readers only when
  *  nothing beside it names the platform (`label`). */
 export function PlatformMark({ platform, size = 14, label }: { platform: string; size?: number; label?: string }) {
@@ -96,23 +110,35 @@ export function PlatformMark({ platform, size = 14, label }: { platform: string;
   );
 }
 
-/** One channel: its logo and followers, linking to the profile when there
- *  is one. The full count is in the tooltip. */
+/** One channel: its logo and followers, and its engagement rate when it
+ *  has one, linking to the profile when there is one. The full figures are
+ *  in the tooltip. */
 export function ChannelCount({
   platform,
   followers,
   href,
   verified = false,
   size = 14,
+  engagementRate,
+  engagementPosts,
 }: {
   platform: string;
   followers: number | null;
   href?: string | null;
   verified?: boolean;
   size?: number;
+  /** Percent. */
+  engagementRate?: number | null;
+  /** The posts the rate averages. */
+  engagementPosts?: number | null;
 }) {
   const name = platformName(platform);
-  const full = `${name}${followers != null ? `, ${followers.toLocaleString()} followers` : ''}${verified ? ', verified' : ''}`;
+  const full = [
+    name,
+    ...(followers != null ? [`${followers.toLocaleString()} followers`] : []),
+    ...(engagementRate != null ? [rateInFull(engagementRate, engagementPosts, platform)] : []),
+    ...(verified ? ['verified'] : []),
+  ].join(', ');
   const style: CSSProperties = {
     display: 'inline-flex',
     alignItems: 'center',
@@ -126,6 +152,7 @@ export function ChannelCount({
     <>
       <PlatformMark platform={platform} size={size} label={href ? undefined : name} />
       {followers != null && <span>{compactCount(followers)}</span>}
+      {engagementRate != null && <span style={{ color: theme.textMuted }}>· {formatRate(engagementRate)}</span>}
       {verified && <VerifiedBadge compact />}
     </>
   );

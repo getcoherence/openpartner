@@ -35,6 +35,10 @@ const YOUTUBE: StorefrontChannel = {
   cadence: null,
   followerCountSynced: true,
   viewsPerVideo: 12400,
+  likesPerVideo: 610,
+  commentsPerVideo: 42,
+  engagementRate: 1.3527,
+  engagementPosts: 10,
   statsSyncedAt: '2026-10-20T00:00:00.000Z',
 };
 const SUBSTACK: StorefrontChannel = {
@@ -177,6 +181,10 @@ describe('brand storefront', () => {
     await screen.findByText('Work with Maya');
     expect(screen.getByText('Synced from YouTube')).toBeTruthy();
     expect(screen.getByText('12.4K')).toBeTruthy();
+    // The rate, its figures on hover.
+    expect(screen.getByText('1.4%').parentElement!.getAttribute('title')).toBe(
+      '1.35% engagement over 10 videos: 610 likes and 42 comments per video',
+    );
     expect(screen.getByText('Self-reported')).toBeTruthy();
     expect(screen.getByText('Every Tuesday')).toBeTruthy();
     expect(screen.getByText('A weekly teardown of one developer tool.')).toBeTruthy();

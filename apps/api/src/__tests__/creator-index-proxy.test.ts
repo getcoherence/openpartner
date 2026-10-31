@@ -237,7 +237,7 @@ describe.skipIf(skipIntegration)('creator index: brand side', () => {
 
     for (const b of [await brand({ plan: 'flex', subscribed: true }), await brand({ plan: 'enterprise' })]) {
       const r = await request(app)
-        .get(`/t/${b.slug}/admin/network/indexed-creators?q=sales&openToPartnerships=1&creatorIndex=0&evil=1`)
+        .get(`/t/${b.slug}/admin/network/indexed-creators?q=sales&openToPartnerships=1&minEngagement=2.5&sort=engagement&creatorIndex=0&evil=1`)
         .set('Cookie', b.cookie);
       expect(r.status).toBe(200);
       expect(r.body.total).toBe(1);
@@ -245,6 +245,8 @@ describe.skipIf(skipIntegration)('creator index: brand side', () => {
       expect(sent.get('creatorIndex')).toBe('1');
       expect(sent.get('q')).toBe('sales');
       expect(sent.get('openToPartnerships')).toBe('1');
+      expect(sent.get('minEngagement')).toBe('2.5');
+      expect(sent.get('sort')).toBe('engagement');
       expect(sent.get('evil')).toBeNull();
       expect(last(/indexed-creators/)!.auth).toBe('Bearer vntok_test_index');
     }
