@@ -1970,7 +1970,8 @@ platformAdminRouter.get('/platform-admin/creator-index/creators', requirePlatfor
   const networkUrl = networkOr503(res);
   if (!networkUrl) return;
   const qs = new URLSearchParams();
-  for (const key of ['q', 'status', 'limit']) {
+  // `missing`: address, state, or both, for who ops can still fill in.
+  for (const key of ['q', 'status', 'limit', 'missing']) {
     const v = req.query[key];
     if (typeof v === 'string' && v) qs.set(key, v);
   }

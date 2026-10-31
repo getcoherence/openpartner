@@ -42,6 +42,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  // Folded cards are remembered.
+  window.localStorage.clear();
 });
 
 function wrap(ui: React.ReactNode, path = '/') {
@@ -574,6 +576,62 @@ describe('ops console: creator index settings', () => {
     fireEvent.change(screen.getByDisplayValue('8'), { target: { value: '12' } });
     fireEvent.click(screen.getByText('Save settings'));
     await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({ readConcurrency: 12 }));
+  });
+
+  it('folds Settings and Runs away, remembers it, and lists only who has no address or no state', async () => {
+    respond = (url) => {
+      if (url.endsWith('/creator-index/settings')) {
+        return { status: 200, body: { settings: SETTINGS, defaults: SETTINGS, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {} } };
+      }
+      if (url.endsWith('/creator-index/stats')) {
+        return {
+          status: 200,
+          body: {
+            creators: { byStatus: {}, listed: 3, shownToBrands: 1, hiddenFromBrands: 2 },
+            byCountry: [],
+            candidates: {},
+            rejections: {},
+            invites: {},
+            emailsSent30d: 0,
+            suppressions: {},
+            spend: { thisMonthUsd: 0, budgetUsd: 10 },
+            runs: { discover: { startedAt: new Date().toISOString(), finishedAt: null, result: null } },
+          },
+        };
+      }
+      return { status: 200, body: { creators: [], total: 0 } };
+    };
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    const settings = await screen.findByRole('button', { name: 'Settings' });
+    expect(settings.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.click(screen.getByLabelText('Indexing on'));
+    fireEvent.click(settings);
+    expect(settings.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByLabelText('Indexing on')).toBeNull();
+    // What they'd miss while it's folded.
+    expect(screen.getByText('Unsaved changes')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Runs' }));
+    expect(screen.queryByRole('button', { name: 'Discover now' })).toBeNull();
+    expect(screen.getByText('Discover running…')).toBeTruthy();
+
+    // Still folded next time.
+    cleanup();
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    expect((await screen.findByRole('button', { name: 'Settings' })).getAttribute('aria-expanded')).toBe('false');
+    expect(screen.getByRole('button', { name: 'Runs' }).getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(screen.getByRole('button', { name: 'Runs' }));
+    expect(screen.getByRole('button', { name: 'Discover now' })).toBeTruthy();
+
+    const listed = () => calls.filter((c) => c.url.startsWith('/api/platform-admin/creator-index/creators')).map((c) => c.url);
+    fireEvent.click(screen.getByRole('button', { name: 'No state' }));
+    expect(screen.getByRole('button', { name: 'No state' }).getAttribute('aria-pressed')).toBe('true');
+    await waitFor(() => expect(listed()).toContain('/api/platform-admin/creator-index/creators?missing=state'));
+    expect(screen.getByText(/US creators with no state: hidden from brands until one is set/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'No address' }));
+    await waitFor(() => expect(listed()).toContain('/api/platform-admin/creator-index/creators?missing=address%2Cstate'));
+    expect(await screen.findByText('0 match')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'No state' }));
+    await waitFor(() => expect(listed()).toContain('/api/platform-admin/creator-index/creators?missing=address'));
   });
 
   it('counts the creators listed lately, marks the new ones, and says how Discover went further', async () => {

@@ -391,6 +391,13 @@ describe.skipIf(skipIntegration)('creator index: addresses', () => {
     expect((await request(app).put('/platform-admin/creator-index/creators/ixc_1/contact').set('Cookie', admin).send({ email: 'hello@jorivera.co' })).status).toBe(400);
   });
 
+  it('passes the list’s filters on, and nothing else', async () => {
+    const r = await request(app).get('/platform-admin/creator-index/creators?q=jo&missing=address,state&extra=1').set('Cookie', await operator('support'));
+    expect(r.status).toBe(200);
+    const url = new URL(`http://network${last(/^\/admin\/creator-index\/creators\?/)!.path}`);
+    expect(Object.fromEntries(url.searchParams)).toEqual({ q: 'jo', missing: 'address,state' });
+  });
+
   it('sets a state with the page that shows it, audits both, and passes the Network’s refusal back', async () => {
     const admin = await operator();
     expect((await request(app).put('/platform-admin/creator-index/creators/ixc_1/location').set('Cookie', await operator('support')).send({ region: 'US-TX', sourceUrl: PAGE })).status).toBe(403);
