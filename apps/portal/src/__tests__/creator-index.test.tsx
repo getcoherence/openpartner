@@ -69,6 +69,27 @@ const JO = {
   refreshedAt: null,
 };
 
+const MEMBER = {
+  id: 'crt_1',
+  name: 'Member Mo',
+  handle: 'mo',
+  avatarUrl: null,
+  bio: 'Writes about sales',
+  categories: ['marketing'],
+  audienceLocations: [],
+  audienceAgeRange: null,
+  pastBrands: [],
+  clicks90d: 0,
+  conversions90d: 0,
+  revenue90d: '0',
+  commission90d: '0',
+  topCategories: [],
+  lastAggregatedAt: null,
+  createdAt: '2026-10-01T00:00:00Z',
+  platforms: [],
+  totalReach: 0,
+};
+
 describe('external creators', () => {
   it('lists creators with the badge and invites with a real message', async () => {
     respond = (url, method) =>
@@ -101,26 +122,6 @@ describe('external creators', () => {
   });
 
   it('shows OpenPartner’s creators first and external ones after, under the same filters, and hides external ones for members-only filters', async () => {
-    const MEMBER = {
-      id: 'crt_1',
-      name: 'Member Mo',
-      handle: 'mo',
-      avatarUrl: null,
-      bio: 'Writes about sales',
-      categories: ['marketing'],
-      audienceLocations: [],
-      audienceAgeRange: null,
-      pastBrands: [],
-      clicks90d: 0,
-      conversions90d: 0,
-      revenue90d: '0',
-      commission90d: '0',
-      topCategories: [],
-      lastAggregatedAt: null,
-      createdAt: '2026-10-01T00:00:00Z',
-      platforms: [],
-      totalReach: 0,
-    };
     respond = (url) =>
       url.includes('/indexed-creators')
         ? { status: 200, body: { creators: [JO], nextCursor: null, total: 1 } }
@@ -144,6 +145,25 @@ describe('external creators', () => {
     // Only external creators.
     fireEvent.click(screen.getByRole('button', { name: 'External creators' }));
     expect(screen.queryByText('Member Mo')).toBeNull();
+  });
+
+  it('puts every card’s buttons at its bottom, so they line up across a row', async () => {
+    respond = (url) =>
+      url.includes('/indexed-creators')
+        ? { status: 200, body: { creators: [JO], nextCursor: null, total: 1 } }
+        : { status: 200, body: { creators: [MEMBER] } };
+    wrap(<AdminNetworkCreators />);
+    await screen.findByText('Member Mo');
+    await screen.findByText('Jo Rivera');
+    const rows = screen.getAllByTestId('card-actions');
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      // Pushed down by an auto top margin, inside a card laid out as a column.
+      const pushed = row.style.marginTop === 'auto' ? row : row.parentElement!;
+      expect(pushed.style.marginTop).toBe('auto');
+      expect(pushed.parentElement!.style.display).toBe('flex');
+      expect(pushed.parentElement!.style.flexDirection).toBe('column');
+    }
   });
 
   it('shows an invite already sent, and a creator who can’t be invited', async () => {

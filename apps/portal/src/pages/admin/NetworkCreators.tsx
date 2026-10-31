@@ -293,7 +293,8 @@ function ShowFilter({ show, onChange }: { show: ShowKey; onChange: (s: ShowKey) 
 function CreatorCard({ creator }: { creator: DirectoryRow }) {
   const revenue = Number(creator.revenue90d);
   return (
-    <Card>
+    // A column, so the buttons sit at the bottom and line up across a row.
+    <Card style={{ display: 'flex', flexDirection: 'column' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
         {creator.avatarUrl ? (
           <img src={creator.avatarUrl} alt={creator.name} style={{ width: 44, height: 44, borderRadius: '50%', objectFit: 'cover', background: theme.surface2 }} />
@@ -340,7 +341,7 @@ function CreatorCard({ creator }: { creator: DirectoryRow }) {
           {creator.bio}
         </p>
       )}
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+      <div data-testid="card-actions" style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 'auto' }}>
         <TenantLink to={`/admin/network/creators/${encodeURIComponent(creator.handle)}`} style={{ textDecoration: 'none', flex: 1 }}>
           <Button variant="secondary" style={{ width: '100%' }}>Storefront</Button>
         </TenantLink>

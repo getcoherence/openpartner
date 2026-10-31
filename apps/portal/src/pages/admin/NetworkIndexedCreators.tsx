@@ -245,7 +245,8 @@ function Avatar({ creator, size }: { creator: Pick<IndexedCreator, 'avatarUrl' |
 function IndexedCreatorCard({ creator }: { creator: IndexedCreator }) {
   const [open, setOpen] = useState(false);
   return (
-    <Card>
+    // A column, so the buttons sit at the bottom and line up across a row.
+    <Card style={{ display: 'flex', flexDirection: 'column' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
         <TenantLink to={profilePath(creator.id)} aria-label={`${creator.name}: details`} style={{ display: 'flex' }}>
           <Avatar creator={creator} size={44} />
@@ -294,20 +295,22 @@ function IndexedCreatorCard({ creator }: { creator: IndexedCreator }) {
           ))}
         </div>
       )}
-      {creator.invite ? (
-        <div style={{ fontSize: 13, color: creator.invite.status === 'claimed' ? theme.success : theme.textMuted, marginBottom: 8 }}>
-          {INVITE_STATUS[creator.invite.status] ?? 'Invited.'}
+      <div style={{ marginTop: 'auto' }}>
+        {creator.invite ? (
+          <div style={{ fontSize: 13, color: creator.invite.status === 'claimed' ? theme.success : theme.textMuted, marginBottom: 8 }}>
+            {INVITE_STATUS[creator.invite.status] ?? 'Invited.'}
+          </div>
+        ) : !creator.invitable ? (
+          <div style={{ fontSize: 13, color: theme.textDim, marginBottom: 8 }}>Can&rsquo;t be invited yet</div>
+        ) : null}
+        <div data-testid="card-actions" style={{ display: 'flex', gap: 6 }}>
+          <TenantLink to={profilePath(creator.id)} style={{ textDecoration: 'none', flex: 1 }}>
+            <Button variant="secondary" style={{ width: '100%' }}>View details</Button>
+          </TenantLink>
+          {!creator.invite && creator.invitable && (
+            <Button onClick={() => setOpen(true)} style={{ flex: 1 }}>Invite</Button>
+          )}
         </div>
-      ) : !creator.invitable ? (
-        <div style={{ fontSize: 13, color: theme.textDim, marginBottom: 8 }}>Can&rsquo;t be invited yet</div>
-      ) : null}
-      <div style={{ display: 'flex', gap: 6 }}>
-        <TenantLink to={profilePath(creator.id)} style={{ textDecoration: 'none', flex: 1 }}>
-          <Button variant="secondary" style={{ width: '100%' }}>View details</Button>
-        </TenantLink>
-        {!creator.invite && creator.invitable && (
-          <Button onClick={() => setOpen(true)} style={{ flex: 1 }}>Invite</Button>
-        )}
       </div>
       {open && <IndexInviteDialog creator={creator} onClose={() => setOpen(false)} />}
     </Card>
