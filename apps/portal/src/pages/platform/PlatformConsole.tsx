@@ -38,6 +38,7 @@ import { CountriesPage } from './Countries.js';
 import { ScreeningPage } from './Screening.js';
 import { OwnProgramPage } from './OwnProgram.js';
 import { CreatorIndexPage } from './CreatorIndex.js';
+import { MailboxCallbackPage } from './Mailboxes.js';
 
 const NAV: ReadonlyArray<{ title: string; items: ReadonlyArray<{ to: string; label: string; icon: LucideIcon }> }> = [
   {
@@ -150,6 +151,7 @@ export function PlatformConsole() {
           <Route path="brands" element={<BrandsPage operator={operator} />} />
           <Route path="creators" element={<CreatorsPage operator={operator} />} />
           <Route path="creator-index" element={<CreatorIndexPage operator={operator} />} />
+          <Route path="mailboxes/callback" element={<MailboxCallbackPage />} />
           <Route path="vendors" element={<VendorsPage operator={operator} />} />
           <Route path="marketplace" element={<MarketplacePage operator={operator} />} />
           <Route path="notifications" element={<NotificationsPage operator={operator} />} />

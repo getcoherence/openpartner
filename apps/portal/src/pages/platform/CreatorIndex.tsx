@@ -13,8 +13,10 @@
  *     or no state yet, to fill in by hand.
  *   - The outreach email: "claim your profile", once, to creators no brand
  *     has written to, previewed and sent in small batches.
+ *   - Mailboxes: the outreach email's and brands' invites', each connected
+ *     by Microsoft sign-in (Mailboxes.tsx).
  *
- * Settings and Runs fold away, remembered in this browser.
+ * Settings, Runs and Mailboxes fold away, remembered in this browser.
  *
  * Support operators can look and dry-run the invite and outreach emails;
  * changes, runs and sends need an admin.
@@ -27,6 +29,7 @@ import { Button, Card, ErrorBanner, Input, Label, Page, Select, Table, Textarea,
 import { friendlyPlatformError, papi, PlatformApiError, type PlatformOperator } from './lib.js';
 import { brandSignalLabel, shortUrl, type PartnershipSignal } from '../../lib/partnership-signals.js';
 import { PlatformMark, platformName } from '../../lib/PlatformMark.js';
+import { MailboxesSection, type MailboxState } from './Mailboxes.js';
 
 type DiscoverySource = 'storefronts' | 'sponsorPages' | 'people';
 
@@ -80,10 +83,12 @@ interface SettingsState {
   updatedByEmail: string | null;
   configured: Record<string, boolean>;
   /** The mailbox the outreach email goes from. */
-  outreachMailer?: { configured: boolean; from: string | null };
+  outreachMailer?: MailboxState;
   /** The mailbox brands' invites go from, never the outreach one. Missing
    *  from a Network that predates it: deploy the Network first. */
-  inviteMailer?: { configured: boolean; from: string | null };
+  inviteMailer?: MailboxState;
+  /** Whether a mailbox can be connected by Microsoft sign-in. */
+  mailboxOAuth?: boolean;
 }
 
 interface Stats {
@@ -716,6 +721,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
   const error = save.error ?? seeds.error ?? run.error ?? invites.error ?? outreachPreview.error ?? outreachSend.error ?? remove.error;
   const mailbox = state.data?.outreachMailer;
   const inviteMailbox = state.data?.inviteMailer;
+  const mailboxLost = mailbox?.connection?.status === 'lost' || inviteMailbox?.connection?.status === 'lost';
   const outreachOn = state.data?.settings.outreachEnabled ?? false;
   const preview = outreachPreview.data;
   const running = (Object.entries(s?.runs ?? {}) as Array<[RunKind, IndexRun | undefined]>).filter(([, r]) => r && !r.finishedAt).map(([job]) => JOB_LABEL[job]);
@@ -958,6 +964,10 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
             )}
           </FoldingCard>
 
+          <FoldingCard id="mailboxes" title="Mailboxes" folded={mailboxLost ? <span style={{ color: theme.danger }}>Connection lost</span> : null}>
+            <MailboxesSection outreach={mailbox} invite={inviteMailbox} oauth={!!state.data.mailboxOAuth} canWrite={canWrite} onChange={refresh} />
+          </FoldingCard>
+
           <FoldingCard id="runs" title="Runs" folded={running.length ? `${running.join(', ')} running…` : null}>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {canWrite && (
@@ -975,7 +985,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                 <>Brands&rsquo; invites send from {inviteMailbox.from ?? 'the Network’s invite mailbox'}.</>
               ) : (
                 <span style={{ color: theme.danger }}>
-                  The Network has no invite mailbox set up, so brands&rsquo; invites aren&rsquo;t emailed. They never go from the outreach mailbox.
+                  {inviteMailbox?.connection?.status === 'lost' ? 'The invite mailbox’s connection was lost' : 'The Network has no invite mailbox set up'}, so brands&rsquo; invites aren&rsquo;t emailed. They never go from the outreach mailbox.
                 </span>
               )}
             </div>
@@ -1004,7 +1014,9 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                 {mailbox?.configured ? (
                   <>Sends from {mailbox.from ?? 'the Network’s outreach mailbox'}, a few seconds apart.</>
                 ) : (
-                  <span style={{ color: theme.danger }}>The Network has no outreach mailbox set up, so nothing can be sent.</span>
+                  <span style={{ color: theme.danger }}>
+                    {mailbox?.connection?.status === 'lost' ? 'The outreach mailbox’s connection was lost' : 'The Network has no outreach mailbox set up'}, so nothing can be sent.
+                  </span>
                 )}
               </div>
               <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>

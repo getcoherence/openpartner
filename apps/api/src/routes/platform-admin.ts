@@ -73,6 +73,10 @@ import {
   adminSearchIndexedCreators,
   adminSetCreatorIndexSettings,
   adminBlockCreator,
+  adminCompleteMailboxConnect,
+  adminDisconnectMailbox,
+  adminSetMailboxSendAs,
+  adminStartMailboxConnect,
   adminListCreatorMessages,
   adminListCreators,
   adminListVendors,
@@ -2186,6 +2190,152 @@ platformAdminRouter.post('/platform-admin/creator-index/outreach/run', requirePl
     sendNetworkFailure(res, err);
   }
 });
+
+// The creator index's two mailboxes, connected by Microsoft sign-in
+// (openpartner-network docs/creator-index.md §5.5). The Network holds the
+// app's secret, the PKCE verifier and the tokens; Microsoft redirects the
+// admin's browser back here (/platform/mailboxes/callback), where the ops
+// session ties it to the sign-in, and this relays the code. Admins only, all
+// audited.
+
+const MAILBOX_KINDS = ['outreach', 'invite'] as const;
+type MailboxKindParam = (typeof MAILBOX_KINDS)[number];
+
+function mailboxKindOr404(raw: string | undefined, res: Response): MailboxKindParam | null {
+  if ((MAILBOX_KINDS as readonly string[]).includes(raw ?? '')) return raw as MailboxKindParam;
+  res.status(404).json({ error: 'unknown_mailbox' });
+  return null;
+}
+
+/** Where Microsoft sends the admin back to: registered on the Entra app. */
+export function mailboxRedirectUri(): string {
+  return `${getPortalBaseUrl().replace(/\/$/, '')}/platform/mailboxes/callback`;
+}
+
+/** The Network's reason for a refused sign-in (Microsoft's AADSTS text). */
+function networkErrorDetail(err: unknown): string | null {
+  if (!(err instanceof NetworkAdminError)) return null;
+  const body = err.message.slice(err.message.indexOf('{'));
+  try {
+    const parsed = JSON.parse(body) as { detail?: unknown };
+    return typeof parsed.detail === 'string' ? parsed.detail.slice(0, 300) : null;
+  } catch {
+    return null;
+  }
+}
+
+const sendAsSchema = z.string().trim().max(400).nullable().optional();
+
+platformAdminRouter.post(
+  '/platform-admin/creator-index/mailboxes/:kind/connect',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const kind = mailboxKindOr404(req.params.kind, res);
+    if (!kind) return;
+    const body = z.object({ sendAs: sendAsSchema }).strict().safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    const actor = req.platformAdminActor!;
+    const sendAs = body.data.sendAs || null;
+    try {
+      const started = await adminStartMailboxConnect(networkUrl, kind, { redirectUri: mailboxRedirectUri(), startedByEmail: actor.email, sendAs });
+      await writeAudit(db, { actor, action: 'creator_index.mailbox_connect_start', targetType: 'network_mailbox', targetId: kind, detail: { sendAs } });
+      res.json({ authorizeUrl: started.authorizeUrl });
+    } catch (err) {
+      sendNetworkFailure(res, err);
+    }
+  },
+);
+
+const mailboxCallbackSchema = z
+  .object({
+    state: z.string().trim().min(16).max(200),
+    code: z.string().trim().min(1).max(4000),
+  })
+  .strict();
+
+/** Microsoft's redirect, relayed by the console page: the Network takes the
+ *  state only from the admin who started that sign-in. */
+platformAdminRouter.post(
+  '/platform-admin/creator-index/mailboxes/callback',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = mailboxCallbackSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body' });
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    const actor = req.platformAdminActor!;
+    try {
+      const done = await adminCompleteMailboxConnect(networkUrl, { ...body.data, completedByEmail: actor.email });
+      const connection = done.mailbox.connection;
+      await writeAudit(db, {
+        actor,
+        action: 'creator_index.mailbox_connected',
+        targetType: 'network_mailbox',
+        targetId: done.kind,
+        detail: { account: connection?.account ?? null, sendAs: connection?.sendAs ?? null },
+      });
+      res.json(done);
+    } catch (err) {
+      if (err instanceof NetworkAdminError && err.code) {
+        const detail = networkErrorDetail(err);
+        await writeAudit(db, { actor, action: 'creator_index.mailbox_connect_failed', targetType: 'network_mailbox', detail: { error: err.code, reason: detail } });
+        if (err.status < 500) return res.status(err.status).json({ error: err.code, ...(detail ? { detail } : {}) });
+      }
+      sendNetworkFailure(res, err);
+    }
+  },
+);
+
+/** A shared mailbox the connected user sends as (creators@), or null for
+ *  their own. */
+platformAdminRouter.put(
+  '/platform-admin/creator-index/mailboxes/:kind/send-as',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const kind = mailboxKindOr404(req.params.kind, res);
+    if (!kind) return;
+    const body = z.object({ sendAs: sendAsSchema }).strict().safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    const sendAs = body.data.sendAs || null;
+    try {
+      const result = await adminSetMailboxSendAs(networkUrl, kind, sendAs);
+      await writeAudit(db, { actor: req.platformAdminActor!, action: 'creator_index.mailbox_send_as', targetType: 'network_mailbox', targetId: kind, detail: { sendAs } });
+      res.json(result);
+    } catch (err) {
+      sendNetworkFailure(res, err);
+    }
+  },
+);
+
+/** Forget the connection. The Network then sends as its env sets up, if at
+ *  all. */
+platformAdminRouter.delete(
+  '/platform-admin/creator-index/mailboxes/:kind',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const kind = mailboxKindOr404(req.params.kind, res);
+    if (!kind) return;
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    try {
+      const result = await adminDisconnectMailbox(networkUrl, kind);
+      if (result.removed) {
+        await writeAudit(db, { actor: req.platformAdminActor!, action: 'creator_index.mailbox_disconnect', targetType: 'network_mailbox', targetId: kind });
+      }
+      res.json(result);
+    } catch (err) {
+      sendNetworkFailure(res, err);
+    }
+  },
+);
 
 // --------------------------------------------------------------------------
 // Audit
