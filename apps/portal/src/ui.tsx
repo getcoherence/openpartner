@@ -299,6 +299,8 @@ export function Button({
       style={{
         display: 'inline-flex',
         alignItems: 'center',
+        // A button wider than its label (width: 100%, flex: 1) keeps it centred.
+        justifyContent: 'center',
         gap: 6,
         background: p.bg,
         color: p.color,

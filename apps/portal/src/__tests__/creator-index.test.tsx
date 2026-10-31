@@ -165,6 +165,15 @@ describe('external creators', () => {
       expect(pushed.style.marginTop).toBe('auto');
       expect(pushed.parentElement!.style.display).toBe('flex');
       expect(pushed.parentElement!.style.flexDirection).toBe('column');
+      // Each action an equal share: a padding-free box the button fills,
+      // never a bare button, whose padding would widen its share.
+      const actions = [...row.children] as HTMLElement[];
+      expect(actions.length).toBeGreaterThan(1);
+      for (const a of actions) {
+        expect(a.tagName).not.toBe('BUTTON');
+        expect(a.style.flex).toBe(actions[0]!.style.flex);
+        expect((a.querySelector('button') as HTMLElement).style.width).toBe('100%');
+      }
     }
   });
 
