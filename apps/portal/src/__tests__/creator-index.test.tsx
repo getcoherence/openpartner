@@ -110,7 +110,6 @@ describe('external creators', () => {
     expect(await screen.findByText('Jo Rivera')).toBeTruthy();
     // The badge says what it means on hover.
     expect(screen.getByText('External creator').getAttribute('title')).toMatch(/^Not on OpenPartner yet/);
-    expect(screen.getByText('0 on OpenPartner · 1 external')).toBeTruthy();
     expect(calls.some((c) => c.url === '/api/admin/network/indexed-creators?')).toBe(true);
 
     fireEvent.click(screen.getByRole('button', { name: 'Invite' }));
@@ -147,7 +146,8 @@ describe('external creators', () => {
     const rows = screen.getAllByTestId('creator-row');
     expect(rows.map((r) => r.textContent!.includes('External creator'))).toEqual([false, true]);
     expect(rows[0]!.parentElement).toBe(rows[1]!.parentElement);
-    expect(screen.getByText('1 on OpenPartner · 1 external')).toBeTruthy();
+    // No count line over the list.
+    expect(screen.queryByText(/on OpenPartner ·/)).toBeNull();
 
     // The filters are one bar; each opens below its chip. A shared filter
     // reaches both lists; sales is a topic only external creators have.

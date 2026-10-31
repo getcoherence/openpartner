@@ -220,6 +220,28 @@ code, pre {
   }
 }
 
+/* A scrolling box whose scrollbar shows only while the pointer is over it
+ * (Discover creators' list and side panel). The bar keeps its room either
+ * way, so nothing shifts when it appears. Chromium and Firefox use the
+ * standard properties; Safari the -webkit- ones. */
+.op-scroll-hover {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.op-scroll-hover:hover {
+  scrollbar-color: var(--op-text-dim, #808994) transparent;
+}
+.op-scroll-hover::-webkit-scrollbar {
+  width: 8px;
+}
+.op-scroll-hover::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 8px;
+}
+.op-scroll-hover:hover::-webkit-scrollbar-thumb {
+  background: var(--op-text-dim, #808994);
+}
+
 /* Remove default focus ring, add our own */
 *:focus {
   outline: none;

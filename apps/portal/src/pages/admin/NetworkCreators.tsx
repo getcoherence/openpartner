@@ -258,16 +258,6 @@ export function AdminNetworkCreators() {
   // One list: OpenPartner's creators, then external ones, badged.
   const listColumn = (
     <div style={{ minWidth: 0 }}>
-      {!loading && (memberRows.length > 0 || externalRows.length > 0) && (
-        <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 8 }}>
-          {[
-            showMembers ? `${memberRows.length.toLocaleString()} on OpenPartner` : null,
-            showExternal && !external.planRequired ? `${external.total.toLocaleString()} external` : null,
-          ]
-            .filter(Boolean)
-            .join(' · ')}
-        </div>
-      )}
       {show !== 'members' && memberOnlyFilters && (
         <p style={{ fontSize: 12, color: theme.textMuted, margin: '0 0 8px', lineHeight: 1.5 }}>
           External creators have no sales, audience-location or verification data yet, so they&rsquo;re hidden while those filters
@@ -424,11 +414,16 @@ export function AdminNetworkCreators() {
           ref={split}
           style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 5fr) minmax(0, 6fr)', gap: 20, height: splitHeight ?? undefined }}
         >
-          <div data-testid="creator-list-scroll" style={{ minWidth: 0, overflowY: 'auto', overscrollBehavior: 'contain', paddingRight: 6 }}>
+          <div
+            data-testid="creator-list-scroll"
+            className="op-scroll-hover"
+            style={{ minWidth: 0, overflowY: 'auto', overscrollBehavior: 'contain', paddingRight: 6 }}
+          >
             {listColumn}
           </div>
           <aside
             ref={panel}
+            className="op-scroll-hover"
             aria-label="Selected creator"
             style={{
               overflowY: 'auto',
