@@ -1920,6 +1920,7 @@ const creatorIndexSettingsSchema = z
     discoverySources: z.object({ storefronts: z.boolean(), sponsorPages: z.boolean(), people: z.boolean() }).strict().optional(),
     requirePartnershipSignal: z.boolean().optional(),
     readConcurrency: z.number().int().min(1).max(20).optional(),
+    contactEnrichment: z.object({ creatorData: z.boolean(), ownDomain: z.boolean() }).strict().optional(),
     classifierModel: z.string().trim().min(1).max(60),
   })
   .strict();

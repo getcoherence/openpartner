@@ -157,7 +157,7 @@ export function CreatorIndexClaimPage() {
                 We listed {p.creator.name ?? 'you'} from your public{' '}
                 {p.creator.platforms.map((pl) => PLATFORM_LABEL[pl.platform] ?? pl.platform).join(' and ')} profile
                 {p.creator.platforms.length === 1 ? '' : 's'}
-                {p.creator.email && p.creator.emailFoundOn ? <>, and found {p.creator.email} on {p.creator.emailFoundOn}</> : null}.
+                {p.creator.email && p.creator.emailFoundOn ? <>, and got {p.creator.email} from {p.creator.emailFoundOn}</> : null}.
                 {signals.length > 0 && (
                   <>
                     {' '}We show brands that you take partnerships, from{' '}

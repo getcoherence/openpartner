@@ -48,6 +48,8 @@ interface IndexSettings {
   requirePartnershipSignal?: boolean;
   /** Profiles read at once (1–20). */
   readConcurrency?: number;
+  /** Paid address lookups when a creator published none. */
+  contactEnrichment?: { creatorData: boolean; ownDomain: boolean };
   classifierModel: string;
 }
 
@@ -70,7 +72,17 @@ interface SettingsState {
 }
 
 interface Stats {
-  creators: { byStatus: Record<string, number>; listed: number; shownToBrands: number; hiddenFromBrands: number; openToPartnerships?: number };
+  creators: {
+    byStatus: Record<string, number>;
+    listed: number;
+    shownToBrands: number;
+    hiddenFromBrands: number;
+    /** Of the hidden: by region, and for want of an address. */
+    hiddenByRegion?: number;
+    withEmail?: number;
+    withoutEmail?: number;
+    openToPartnerships?: number;
+  };
   byCountry: Array<{ country: string | null; count: number }>;
   candidates: Record<string, number>;
   rejections: Record<string, number>;
@@ -94,6 +106,15 @@ const RUN_REASONS: Record<string, string> = {
 const reasonText = (r: string) => RUN_REASONS[r] ?? r.replace(/_/g, ' ');
 
 const JOB_LABEL: Record<IndexJob, string> = { discover: 'Discover', read: 'Read', refresh: 'Refresh' };
+
+const PLATFORM_NAME: Record<string, string> = { linkedin: 'LinkedIn', twitter: 'X', youtube: 'YouTube', substack: 'Substack', newsletter: 'Newsletter' };
+
+/** Where an address came from, for ops: a page, or one of the lookups. */
+function contactFrom(source: string): string {
+  if (source === 'via:creator-data') return 'via creator-data lookup';
+  if (source.startsWith('via:own-domain:')) return `via work-email lookup (${source.slice('via:own-domain:'.length)})`;
+  return shortUrl(source);
+}
 
 /** What a finished run did, in one line. */
 function runSummary(job: IndexJob, r: Record<string, unknown> | null): string {
@@ -325,6 +346,11 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                   <div style={{ color: theme.textMuted }}>
                     {s.creators.shownToBrands.toLocaleString()} shown · {s.creators.hiddenFromBrands.toLocaleString()} hidden
                   </div>
+                  {s.creators.withoutEmail != null && (
+                    <div style={{ color: theme.textMuted }}>
+                      {(s.creators.withEmail ?? 0).toLocaleString()} with an email · {s.creators.withoutEmail.toLocaleString()} without (hidden)
+                    </div>
+                  )}
                   {s.creators.openToPartnerships != null && (
                     <div style={{ color: theme.textMuted }}>{s.creators.openToPartnerships.toLocaleString()} open to partnerships</div>
                   )}
@@ -473,6 +499,33 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                 Only index creators who already take partnerships (a storefront, a sponsor page, sponsored posts, or a profile that says so)
               </label>
             </div>
+            <div style={{ marginTop: 14 }}>
+              <Label>When a creator hasn&rsquo;t published an email, look one up</Label>
+              <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+                {(
+                  [
+                    { key: 'ownDomain', label: 'Work email at their own website’s domain' },
+                    { key: 'creatorData', label: 'Creator contact-data lookup (paid per email found)' },
+                  ] as const
+                ).map((o) => {
+                  const lookups = draft.contactEnrichment ?? { creatorData: true, ownDomain: true };
+                  return (
+                    <label key={o.key} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
+                      <input
+                        type="checkbox"
+                        checked={lookups[o.key]}
+                        disabled={!canWrite}
+                        onChange={(e) => setDraft({ ...draft, contactEnrichment: { ...lookups, [o.key]: e.target.checked } })}
+                      />
+                      {o.label}
+                    </label>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 6 }}>
+                Creators without an email are kept but hidden from brands, and looked at again every week.
+              </div>
+            </div>
             {canWrite && (
               <div style={{ display: 'flex', gap: 8, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>
                 <Button onClick={() => save.mutate(draft)} disabled={save.isPending}>{save.isPending ? 'Saving…' : 'Save settings'}</Button>
@@ -573,8 +626,26 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                   ))}
                 </div>,
                 `${c.country ?? '—'}${c.region ? ` (${c.region})` : ''}${c.brandVisible ? '' : ' · hidden'}`,
-                c.totalReach.toLocaleString(),
-                c.contact ? `${c.contact.masked}${c.contact.verified ? '' : ' (unverified)'}` : '—',
+                <div key="r">
+                  <div style={{ fontWeight: 500 }}>{c.totalReach.toLocaleString()}</div>
+                  {c.platforms
+                    .filter((p) => p.followerCount != null)
+                    .map((p) => (
+                      <div key={p.profileUrl} style={{ fontSize: 12, color: theme.textMuted, whiteSpace: 'nowrap' }}>
+                        {PLATFORM_NAME[p.platform] ?? p.platform} {p.followerCount!.toLocaleString()}
+                      </div>
+                    ))}
+                </div>,
+                c.contact ? (
+                  <div key="a">
+                    <div>{`${c.contact.masked}${c.contact.verified ? '' : ' (unverified)'}`}</div>
+                    {c.contact.foundOn && (
+                      <div style={{ fontSize: 12, color: theme.textMuted }}>{contactFrom(c.contact.foundOn)}</div>
+                    )}
+                  </div>
+                ) : (
+                  <span key="a" style={{ color: theme.textMuted }}>none yet · hidden from brands</span>
+                ),
                 `${c.status}${c.emailsSent ? ` · ${c.emailsSent} sent` : ''}`,
                 canWrite && c.status !== 'claimed' ? (
                   <Button

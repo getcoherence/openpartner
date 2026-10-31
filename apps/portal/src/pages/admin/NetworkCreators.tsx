@@ -6,6 +6,10 @@
  * of creator cards. Each card links to the public creator profile so
  * the admin can read the full thing before deciding to invite. Unique
  * angle vs Modash/Aspire: we have actual conversion data per creator.
+ *
+ * External creators (not on OpenPartner yet) follow under the same
+ * filters, badged; members' sales, audience and verification filters
+ * leave them out.
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -18,7 +22,7 @@ import { VerifiedBadge } from '../../lib/VerifiedBadge.js';
 import { PLATFORMS as CREATOR_PLATFORMS } from '../../lib/NetworkProfileEditor.js';
 import { TenantLink } from '../../tenant-link.js';
 import { BookCreatorDialog } from './BookCreatorDialog.js';
-import { IndexedCreatorsSection } from './NetworkIndexedCreators.js';
+import { EXTERNAL_CATEGORIES, IndexedCreatorsSection, type ExternalFilters } from './NetworkIndexedCreators.js';
 
 interface PlatformRow {
   id: string;
@@ -57,6 +61,9 @@ const CATEGORIES = [
   'entertainment', 'news', 'sports',
 ];
 
+/** Members' categories, then external creators' business topics. */
+const ALL_CATEGORIES = [...CATEGORIES, ...EXTERNAL_CATEGORIES.filter((c) => !CATEGORIES.includes(c))];
+
 const PLATFORMS = CREATOR_PLATFORMS.map((p) => ({ value: p.kind, label: p.label }));
 
 type SortKey = 'revenue' | 'followers' | 'newest' | 'name';
@@ -71,11 +78,13 @@ export function AdminNetworkCreators() {
   const [minFollowers, setMinFollowers] = useState<number | ''>('');
   const [minRevenue, setMinRevenue] = useState<number | ''>('');
   const [sort, setSort] = useState<SortKey>('revenue');
-  // Members, or creators the Network listed who haven't joined yet
-  // (NetworkIndexedCreators.tsx). ?tab=index opens the second.
-  const [tab, setTab] = useState<DirectoryTab>(() =>
-    new URLSearchParams(window.location.search).get('tab') === 'index' ? 'index' : 'members',
-  );
+  // One list: OpenPartner's creators first, then external creators the
+  // Network listed who haven't joined (NetworkIndexedCreators.tsx), under
+  // the same filters. ?show=external (or the old ?tab=index) shows only those.
+  const [show, setShow] = useState<ShowKey>(() => {
+    const p = new URLSearchParams(window.location.search);
+    return p.get('show') === 'external' || p.get('tab') === 'index' ? 'external' : p.get('show') === 'members' ? 'members' : 'all';
+  });
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedQ(q.trim()), 250);
@@ -104,29 +113,31 @@ export function AdminNetworkCreators() {
     queryFn: () => api<{ creators: DirectoryRow[] }>(`/admin/network/discover/creators${qs ? '?' + qs : ''}`),
     retry: false,
     staleTime: 30_000,
-    enabled: tab === 'members',
+    enabled: show !== 'external',
   });
 
   const rows = list.data?.creators ?? [];
 
-  if (tab === 'index') {
-    return (
-      <Page
-        title="Discover creators"
-        subtitle="Browse the OpenPartner Network for creators who match your audience. Filter by category, platform, audience size, and past performance."
-      >
-        <DirectoryTabs tab={tab} onChange={setTab} />
-        <IndexedCreatorsSection />
-      </Page>
-    );
-  }
+  // External creators have no sales, audience or verification data, so
+  // these filters leave them out.
+  const memberOnlyFilters = verifiedOnly || (minRevenue !== '' && minRevenue > 0) || locations.trim() !== '';
+  const externalFilters = useMemo<ExternalFilters>(
+    () => ({
+      q: debouncedQ || undefined,
+      categories,
+      platforms,
+      minFollowers: minFollowers === '' ? undefined : minFollowers,
+      sort: sort === 'newest' ? 'newest' : 'reach',
+    }),
+    [debouncedQ, categories, platforms, minFollowers, sort],
+  );
 
   return (
     <Page
       title="Discover creators"
-      subtitle="Browse the OpenPartner Network for creators who match your audience. Filter by category, platform, audience size, and past performance."
+      subtitle="Find creators who match your audience: those on OpenPartner first, then external creators we can invite for you. Filter by category, platform, audience size, and past performance."
     >
-      <DirectoryTabs tab={tab} onChange={setTab} />
+      <ShowFilter show={show} onChange={setShow} />
       <ErrorBanner error={list.error} />
       <Card>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14, marginBottom: 14 }}>
@@ -178,7 +189,7 @@ export function AdminNetworkCreators() {
         <div>
           <Label>Categories (creator must have all selected)</Label>
           <ChipMultiSelect
-            options={CATEGORIES}
+            options={ALL_CATEGORIES}
             selected={categories}
             onChange={setCategories}
           />
@@ -207,39 +218,63 @@ export function AdminNetworkCreators() {
 
       <div style={{ height: 18 }} />
 
-      {list.isLoading ? (
-        <Card>Loading creators…</Card>
-      ) : rows.length === 0 ? (
-        <EmptyState
-          title="No creators match those filters"
-          hint={qs ? 'Loosen the filters, or check back as more creators join.' : 'No creators on the Network yet.'}
-          icon={<Users size={28} strokeWidth={1.25} />}
-        />
-      ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 14 }}>
-          {rows.map((r) => <CreatorCard key={r.id} creator={r} />)}
-        </div>
+      {show !== 'external' && (
+        <section>
+          {show === 'all' && <SectionHeading>On OpenPartner</SectionHeading>}
+          {list.isLoading ? (
+            <Card>Loading creators…</Card>
+          ) : rows.length === 0 ? (
+            <EmptyState
+              title="No creators on OpenPartner match those filters"
+              hint={qs ? 'Loosen the filters, or check back as more creators join.' : 'No creators on the Network yet.'}
+              icon={<Users size={28} strokeWidth={1.25} />}
+            />
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 14 }}>
+              {rows.map((r) => <CreatorCard key={r.id} creator={r} />)}
+            </div>
+          )}
+        </section>
+      )}
+
+      {show !== 'members' && (
+        <section style={{ marginTop: show === 'all' ? 32 : 0 }}>
+          {show === 'all' && <SectionHeading>External creators</SectionHeading>}
+          {memberOnlyFilters ? (
+            <p style={{ fontSize: 13, color: theme.textMuted, margin: 0, lineHeight: 1.5 }}>
+              External creators have no sales, audience-location or verification data yet, so they&rsquo;re hidden while those
+              filters are on.
+            </p>
+          ) : (
+            <IndexedCreatorsSection filters={externalFilters} />
+          )}
+        </section>
       )}
     </Page>
   );
 }
 
-type DirectoryTab = 'members' | 'index';
+type ShowKey = 'all' | 'members' | 'external';
 
-function DirectoryTabs({ tab, onChange }: { tab: DirectoryTab; onChange: (t: DirectoryTab) => void }) {
-  const item = (value: DirectoryTab, label: string) => (
+function SectionHeading({ children }: { children: React.ReactNode }) {
+  return <h2 style={{ fontSize: 15, fontWeight: 600, margin: '0 0 12px' }}>{children}</h2>;
+}
+
+/** Everyone, only OpenPartner's creators, or only external creators. */
+function ShowFilter({ show, onChange }: { show: ShowKey; onChange: (s: ShowKey) => void }) {
+  const item = (value: ShowKey, label: string) => (
     <button
       type="button"
       onClick={() => onChange(value)}
-      aria-pressed={tab === value}
+      aria-pressed={show === value}
       style={{
-        background: 'transparent',
-        border: 0,
-        borderBottom: `2px solid ${tab === value ? theme.accent : 'transparent'}`,
-        color: tab === value ? theme.text : theme.textMuted,
-        fontWeight: tab === value ? 600 : 400,
-        fontSize: 14,
-        padding: '8px 2px',
+        padding: '6px 14px',
+        borderRadius: 999,
+        border: `1px solid ${show === value ? theme.accent : theme.borderSubtle}`,
+        background: show === value ? alpha(theme.accent, 0.12) : 'transparent',
+        color: show === value ? theme.text : theme.textMuted,
+        fontWeight: show === value ? 600 : 400,
+        fontSize: 13,
         cursor: 'pointer',
       }}
     >
@@ -247,9 +282,10 @@ function DirectoryTabs({ tab, onChange }: { tab: DirectoryTab; onChange: (t: Dir
     </button>
   );
   return (
-    <div style={{ display: 'flex', gap: 20, borderBottom: `1px solid ${theme.borderSubtle}`, marginBottom: 16 }}>
+    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+      {item('all', 'Everyone')}
       {item('members', 'On OpenPartner')}
-      {item('index', 'Not on OpenPartner yet')}
+      {item('external', 'External creators')}
     </div>
   );
 }

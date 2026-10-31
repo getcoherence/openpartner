@@ -1,8 +1,10 @@
 /**
- * Discover creators → "Not on OpenPartner yet" (openpartner-network
- * docs/creator-index.md §4, §5). Creators the Network listed from their
- * public profiles who haven't joined. A brand on Flex or Enterprise can
- * search them and invite them to collaborate: the Network emails the
+ * Discover creators → external creators (openpartner-network
+ * docs/creator-index.md §4, §5): creators the Network listed from their
+ * public profiles who haven't joined, shown after OpenPartner's own
+ * creators (NetworkCreators.tsx) under the same filters, each badged
+ * "External creator". Only creators we can email are listed. A brand on
+ * Flex or Enterprise can invite them to collaborate: the Network emails the
  * creator on the brand's behalf, and the message opens as a conversation
  * when they claim their free profile.
  *
@@ -16,12 +18,12 @@
  * what the plan would unlock instead of an error.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useParams } from 'react-router';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ExternalLink, UserPlus, Users } from 'lucide-react';
 import { api, ApiError } from '../../api.js';
-import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Textarea, formatDate } from '../../ui.js';
+import { Button, Card, EmptyState, ErrorBanner, Label, Page, Textarea, formatDate } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
 import { TenantLink } from '../../tenant-link.js';
 import { brandSignalLabel, type PartnershipSignal } from '../../lib/partnership-signals.js';
@@ -72,8 +74,9 @@ interface IndexedCreatorProfile extends Omit<IndexedCreator, 'platforms'> {
 
 const profilePath = (id: string) => `/admin/network/indexed-creators/${encodeURIComponent(id)}`;
 
-/** The Network's vocabulary (creator-index/classify.ts). */
-const CATEGORIES = [
+/** The Network's vocabulary for external creators (creator-index/classify.ts),
+ *  offered alongside members' categories in the shared filter. */
+export const EXTERNAL_CATEGORIES = [
   'sales', 'marketing', 'revops', 'customer-success', 'ai', 'devtools', 'engineering', 'data',
   'product', 'design', 'startups', 'founders', 'leadership', 'hr', 'recruiting', 'career',
   'finance', 'venture-capital', 'ecommerce', 'creator-economy', 'productivity', 'security',
@@ -88,36 +91,44 @@ const PLATFORMS = [
 
 const PLATFORM_LABEL: Record<string, string> = Object.fromEntries(PLATFORMS.map((p) => [p.value, p.label]));
 
-export function IndexedCreatorsSection() {
-  const [q, setQ] = useState('');
-  const [debouncedQ, setDebouncedQ] = useState('');
-  const [category, setCategory] = useState('');
-  const [platform, setPlatform] = useState('');
-  const [locations, setLocations] = useState('');
-  const [minFollowers, setMinFollowers] = useState<number | ''>('');
-  const [openOnly, setOpenOnly] = useState(false);
-  const [sort, setSort] = useState<'reach' | 'newest'>('reach');
+/** What brands see on a creator who hasn't joined (Keith, Oct 31). */
+export const EXTERNAL_BADGE = 'External creator';
 
-  useEffect(() => {
-    const t = window.setTimeout(() => setDebouncedQ(q.trim()), 300);
-    return () => window.clearTimeout(t);
-  }, [q]);
+function ExternalBadge({ size = 10 }: { size?: number }) {
+  return (
+    <span style={{ display: 'inline-block', background: theme.surface2, color: theme.textMuted, fontSize: size, padding: '2px 8px', borderRadius: 10 }}>
+      {EXTERNAL_BADGE}
+    </span>
+  );
+}
+
+/** The Discover creators filters that mean something for external
+ *  creators (NetworkCreators.tsx passes them down). */
+export interface ExternalFilters {
+  q?: string;
+  /** Creator must have all of them. */
+  categories?: string[];
+  /** Creator must have at least one. */
+  platforms?: string[];
+  minFollowers?: number;
+  sort?: 'reach' | 'newest';
+}
+
+/** The external creators under the page's filters, with the badge and
+ *  an Invite button. */
+export function IndexedCreatorsSection({ filters = {} }: { filters?: ExternalFilters }) {
+  const [openOnly, setOpenOnly] = useState(false);
 
   const qs = useMemo(() => {
     const p = new URLSearchParams();
-    if (debouncedQ) p.set('q', debouncedQ);
-    if (category) p.set('categories', category);
-    if (platform) p.set('platforms', platform);
-    const codes = locations
-      .split(',')
-      .map((s) => s.trim().toUpperCase())
-      .filter((s) => /^[A-Z]{2}$/.test(s));
-    if (codes.length > 0) p.set('locations', codes.join(','));
-    if (minFollowers !== '' && minFollowers > 0) p.set('minFollowers', String(minFollowers));
+    if (filters.q) p.set('q', filters.q);
+    if (filters.categories?.length) p.set('categories', filters.categories.join(','));
+    if (filters.platforms?.length) p.set('platforms', filters.platforms.join(','));
+    if (filters.minFollowers && filters.minFollowers > 0) p.set('minFollowers', String(filters.minFollowers));
     if (openOnly) p.set('openToPartnerships', '1');
-    if (sort !== 'reach') p.set('sort', sort);
+    if (filters.sort && filters.sort !== 'reach') p.set('sort', filters.sort);
     return p.toString();
-  }, [debouncedQ, category, platform, locations, minFollowers, openOnly, sort]);
+  }, [filters.q, filters.categories, filters.platforms, filters.minFollowers, filters.sort, openOnly]);
 
   const search = useInfiniteQuery({
     queryKey: ['admin-indexed-creators', qs],
@@ -134,82 +145,33 @@ export function IndexedCreatorsSection() {
 
   if (search.error instanceof ApiError && search.error.status === 402) return <PlanUpsell />;
 
-  const rows = search.data?.pages.flatMap((p) => p.creators) ?? [];
+  const rows = search.data?.pages.flatMap((p) => p.creators ?? []) ?? [];
   const total = search.data?.pages[0]?.total ?? 0;
 
   return (
     <>
-      <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 14px', lineHeight: 1.5 }}>
-        These creators haven&rsquo;t joined OpenPartner. We list them from their public profiles so you can find them. An invite
-        emails them on your behalf, and they reply once they claim their free profile. Prices appear when they set them.
+      <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 10px', lineHeight: 1.5 }}>
+        External creators haven&rsquo;t joined OpenPartner yet. We list them from their public profiles; an invite emails them for
+        you, and they reply once they claim their free profile. Prices appear when they set them.
       </p>
+      <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, marginBottom: 12 }}>
+        <input type="checkbox" checked={openOnly} onChange={(e) => setOpenOnly(e.target.checked)} />
+        Only creators who already do brand partnerships
+      </label>
       <ErrorBanner error={search.error} />
-      <Card>
-        <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 14 }}>
-          <div>
-            <Label>Search</Label>
-            <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name, headline, topic…" />
-          </div>
-          <div>
-            <Label>Category</Label>
-            <Select value={category} onChange={(e) => setCategory(e.target.value)}>
-              <option value="">Any</option>
-              {CATEGORIES.map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </Select>
-          </div>
-          <div>
-            <Label>Platform</Label>
-            <Select value={platform} onChange={(e) => setPlatform(e.target.value)}>
-              <option value="">Any</option>
-              {PLATFORMS.map((p) => (
-                <option key={p.value} value={p.value}>{p.label}</option>
-              ))}
-            </Select>
-          </div>
-          <div>
-            <Label>Countries</Label>
-            <Input value={locations} onChange={(e) => setLocations(e.target.value)} placeholder="US, CA, IN" />
-          </div>
-          <div>
-            <Label>Min. followers</Label>
-            <Input
-              type="number"
-              min={0}
-              value={minFollowers}
-              onChange={(e) => setMinFollowers(e.target.value === '' ? '' : Math.max(0, Number(e.target.value)))}
-              placeholder="5000"
-            />
-          </div>
-          <div>
-            <Label>Sort</Label>
-            <Select value={sort} onChange={(e) => setSort(e.target.value as 'reach' | 'newest')}>
-              <option value="reach">Total followers</option>
-              <option value="newest">Newest</option>
-            </Select>
-          </div>
-        </div>
-        <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, marginTop: 14 }}>
-          <input type="checkbox" checked={openOnly} onChange={(e) => setOpenOnly(e.target.checked)} />
-          Only creators who already do brand partnerships
-        </label>
-      </Card>
-
-      <div style={{ height: 18 }} />
 
       {search.isLoading ? (
         <Card>Loading creators…</Card>
       ) : rows.length === 0 ? (
         <EmptyState
-          title="No creators match those filters"
+          title="No external creators match those filters"
           hint="Loosen the filters. New creators are added every day."
           icon={<Users size={28} strokeWidth={1.25} />}
         />
       ) : (
         <>
           <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 10 }}>
-            {total.toLocaleString()} creator{total === 1 ? '' : 's'} not on OpenPartner yet
+            {total.toLocaleString()} external creator{total === 1 ? '' : 's'}
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 14 }}>
             {rows.map((c) => (
@@ -235,10 +197,11 @@ function PlanUpsell() {
       <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
         <UserPlus size={26} strokeWidth={1.5} style={{ color: theme.accentText, flexShrink: 0 }} />
         <div>
-          <div style={{ fontSize: 15, fontWeight: 600 }}>Search creators who aren&rsquo;t on OpenPartner yet</div>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>See external creators too</div>
           <p style={{ fontSize: 13, color: theme.textMuted, margin: '6px 0 14px', lineHeight: 1.5 }}>
-            Thousands more creators, found from their public profiles, with their audience and the topics they cover. Invite any of
-            them and we&rsquo;ll email them for you. This comes with the Flex and Enterprise plans.
+            Thousands more creators who haven&rsquo;t joined OpenPartner yet, found from their public profiles, with their audience
+            and the topics they cover. Invite any of them and we&rsquo;ll email them for you. This comes with the Flex and Enterprise
+            plans.
           </p>
           <TenantLink to="/admin/billing" style={{ textDecoration: 'none' }}>
             <Button>See plans</Button>
@@ -294,8 +257,8 @@ function IndexedCreatorCard({ creator }: { creator: IndexedCreator }) {
           >
             {creator.name}
           </TenantLink>
-          <span style={{ display: 'inline-block', marginTop: 3, background: theme.surface2, color: theme.textMuted, fontSize: 10, padding: '2px 8px', borderRadius: 10 }}>
-            Not on OpenPartner yet
+          <span style={{ display: 'inline-block', marginTop: 3 }}>
+            <ExternalBadge />
           </span>
           {creator.openToPartnerships && (
             <span style={{ display: 'inline-block', marginTop: 3, marginLeft: 4, background: theme.successSoft, color: theme.success, fontSize: 10, padding: '2px 8px', borderRadius: 10 }}>
@@ -385,8 +348,8 @@ export function IndexedCreatorPage() {
   });
 
   const back = (
-    <TenantLink to="/admin/network/creators?tab=index" style={{ color: theme.textMuted, fontSize: 13, textDecoration: 'none' }}>
-      ← Not on OpenPartner yet
+    <TenantLink to="/admin/network/creators?show=external" style={{ color: theme.textMuted, fontSize: 13, textDecoration: 'none' }}>
+      ← Discover creators
     </TenantLink>
   );
 
@@ -423,7 +386,7 @@ export function IndexedCreatorPage() {
             <Avatar creator={c} size={56} />
             <div style={{ flex: 1, minWidth: 200 }}>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-                <span style={{ background: theme.surface2, color: theme.textMuted, fontSize: 11, padding: '2px 8px', borderRadius: 10 }}>Not on OpenPartner yet</span>
+                <ExternalBadge size={11} />
                 {c.openToPartnerships && (
                   <span style={{ background: theme.successSoft, color: theme.success, fontSize: 11, padding: '2px 8px', borderRadius: 10 }}>Open to partnerships</span>
                 )}
