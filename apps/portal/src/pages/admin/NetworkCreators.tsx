@@ -311,10 +311,7 @@ export function AdminNetworkCreators() {
   );
 
   return (
-    <Page
-      title="Discover creators"
-      subtitle="Find creators who match your audience: those on OpenPartner first, then external creators we can invite for you. Filter by category, platform, audience size, and past performance."
-    >
+    <Page title="Discover creators">
       <div ref={bar} style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 18 }}>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <div style={{ flex: '1 1 260px', minWidth: 0 }}>
