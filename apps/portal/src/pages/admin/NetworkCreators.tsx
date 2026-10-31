@@ -259,10 +259,7 @@ export function AdminNetworkCreators() {
   const listColumn = (
     <div style={{ minWidth: 0 }}>
       {show !== 'members' && memberOnlyFilters && (
-        <p style={{ fontSize: 12, color: theme.textMuted, margin: '0 0 8px', lineHeight: 1.5 }}>
-          External creators have no sales, audience-location or verification data yet, so they&rsquo;re hidden while those filters
-          are on.
-        </p>
+        <p style={{ fontSize: 12, color: theme.textMuted, margin: '0 0 8px' }}>External creators are hidden by these filters.</p>
       )}
       <ErrorBanner error={external.error} />
       {loading ? (
@@ -271,7 +268,7 @@ export function AdminNetworkCreators() {
         !external.planRequired && (
           <EmptyState
             title="No creators match those filters"
-            hint={qs ? 'Loosen the filters. New creators are added every day.' : 'No creators yet.'}
+            hint={qs ? 'Loosen the filters.' : undefined}
             icon={<Users size={28} strokeWidth={1.25} />}
           />
         )
@@ -334,11 +331,9 @@ export function AdminNetworkCreators() {
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
           <FilterMenu label="Categories" count={categories.length || null}>
-            <MenuHint>Creators must have all you pick.</MenuHint>
             <ChipMultiSelect options={ALL_CATEGORIES} selected={categories} onChange={setCategories} />
           </FilterMenu>
           <FilterMenu label="Platforms" count={platforms.length + (verifiedOnly ? 1 : 0) || null}>
-            <MenuHint>Creators must have at least one you pick.</MenuHint>
             <ChipMultiSelect
               options={PLATFORMS.map((p) => p.value)}
               labels={PLATFORMS.reduce<Record<string, string>>((acc, p) => {
@@ -352,10 +347,6 @@ export function AdminNetworkCreators() {
               <input type="checkbox" checked={verifiedOnly} onChange={(e) => setVerifiedOnly(e.target.checked)} />
               Verified accounts only
             </label>
-            <MenuHint>
-              {platforms.length > 0 ? 'Verified on one of the platforms you picked.' : 'The creator proved they own the account.'} On
-              OpenPartner only.
-            </MenuHint>
           </FilterMenu>
           <FilterMenu label="Followers" count={minFollowers !== '' && minFollowers > 0 ? `${compactCount(minFollowers)}+` : null}>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
@@ -383,12 +374,10 @@ export function AdminNetworkCreators() {
               onChange={(e) => setMinRevenue(e.target.value === '' ? '' : Number(e.target.value))}
               placeholder="e.g. 500"
             />
-            <MenuHint>Sales through OpenPartner, so creators on OpenPartner only.</MenuHint>
           </FilterMenu>
           <FilterMenu label="Audience" count={cleanLocations.length || null}>
-            <Label>Audience locations (ISO codes, comma-separated)</Label>
+            <Label>Audience countries</Label>
             <Input value={locations} onChange={(e) => setLocations(e.target.value)} placeholder="US, CA, GB" style={{ fontFamily: theme.fontMono }} />
-            <MenuHint>Where their audience is, as they report it: creators on OpenPartner only.</MenuHint>
           </FilterMenu>
           <ToggleChip on={openOnly} onClick={() => setOpenOnly(!openOnly)} title="External creators who already take brand partnerships">
             Open to partnerships
@@ -441,7 +430,6 @@ export function AdminNetworkCreators() {
               <div style={{ padding: '64px 24px', textAlign: 'center' }}>
                 <Users size={28} strokeWidth={1.25} style={{ color: theme.textDim }} />
                 <div style={{ fontSize: 15, fontWeight: 500, marginTop: 12 }}>Pick a creator</div>
-                <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 6 }}>Their profile, channels and what they offer show here, beside the list.</div>
               </div>
             )}
           </aside>
@@ -451,10 +439,6 @@ export function AdminNetworkCreators() {
       )}
     </Page>
   );
-}
-
-function MenuHint({ children }: { children: React.ReactNode }) {
-  return <div style={{ fontSize: 12, color: theme.textMuted, margin: '8px 0', lineHeight: 1.5 }}>{children}</div>;
 }
 
 const chipStyle = (on: boolean): React.CSSProperties => ({

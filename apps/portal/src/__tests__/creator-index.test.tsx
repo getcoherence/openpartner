@@ -167,11 +167,11 @@ describe('external creators', () => {
     // Members-only data (revenue) leaves external creators out, with a word why.
     fireEvent.click(screen.getByRole('button', { name: /^Sales/ }));
     fireEvent.change(screen.getByPlaceholderText('e.g. 500'), { target: { value: '500' } });
-    expect(await screen.findByText(/External creators have no sales, audience-location or verification data yet/)).toBeTruthy();
+    expect(await screen.findByText('External creators are hidden by these filters.')).toBeTruthy();
 
     // Reset all clears the lot.
     fireEvent.click(screen.getByRole('button', { name: 'Reset all' }));
-    expect(screen.queryByText(/External creators have no sales/)).toBeNull();
+    expect(screen.queryByText('External creators are hidden by these filters.')).toBeNull();
     expect(screen.getByRole('button', { name: 'Open to partnerships' }).getAttribute('aria-pressed')).toBe('false');
 
     // Only external creators.

@@ -503,9 +503,6 @@ function IndexedCreatorBody({ c, named = false }: { c: IndexedCreatorProfile; na
         </SectionCard>
       )}
 
-      <p style={{ fontSize: 12, color: theme.textDim, margin: 0, padding: flat ? '0 20px 20px' : 0, lineHeight: 1.5 }}>
-        Read from their public profiles. Their rates and packages appear once they join OpenPartner and set them.
-      </p>
       {inviting && <IndexInviteDialog creator={c} onClose={() => setInviting(false)} />}
     </div>
   );
