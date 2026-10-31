@@ -1,0 +1,4 @@
+# The API (the OpenAPI spec and its docs page) is not for crawling: Google
+# read the spec's path templates as links and queued them as portal pages.
+User-agent: *
+Disallow: /api/
