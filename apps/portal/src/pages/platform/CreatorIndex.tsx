@@ -167,6 +167,21 @@ const JOB_LABEL: Record<RunKind, string> = { discover: 'Discover', read: 'Read',
 
 const PLATFORM_NAME: Record<string, string> = { linkedin: 'LinkedIn', twitter: 'X', youtube: 'YouTube', substack: 'Substack', newsletter: 'Newsletter' };
 
+/** US states, DC and Puerto Rico, as the Network takes them. */
+const US_STATES: Array<[string, string]> = [
+  ['US-AL', 'Alabama'], ['US-AK', 'Alaska'], ['US-AZ', 'Arizona'], ['US-AR', 'Arkansas'], ['US-CA', 'California'],
+  ['US-CO', 'Colorado'], ['US-CT', 'Connecticut'], ['US-DE', 'Delaware'], ['US-DC', 'District of Columbia'],
+  ['US-FL', 'Florida'], ['US-GA', 'Georgia'], ['US-HI', 'Hawaii'], ['US-ID', 'Idaho'], ['US-IL', 'Illinois'],
+  ['US-IN', 'Indiana'], ['US-IA', 'Iowa'], ['US-KS', 'Kansas'], ['US-KY', 'Kentucky'], ['US-LA', 'Louisiana'],
+  ['US-ME', 'Maine'], ['US-MD', 'Maryland'], ['US-MA', 'Massachusetts'], ['US-MI', 'Michigan'], ['US-MN', 'Minnesota'],
+  ['US-MS', 'Mississippi'], ['US-MO', 'Missouri'], ['US-MT', 'Montana'], ['US-NE', 'Nebraska'], ['US-NV', 'Nevada'],
+  ['US-NH', 'New Hampshire'], ['US-NJ', 'New Jersey'], ['US-NM', 'New Mexico'], ['US-NY', 'New York'],
+  ['US-NC', 'North Carolina'], ['US-ND', 'North Dakota'], ['US-OH', 'Ohio'], ['US-OK', 'Oklahoma'], ['US-OR', 'Oregon'],
+  ['US-PA', 'Pennsylvania'], ['US-PR', 'Puerto Rico'], ['US-RI', 'Rhode Island'], ['US-SC', 'South Carolina'],
+  ['US-SD', 'South Dakota'], ['US-TN', 'Tennessee'], ['US-TX', 'Texas'], ['US-UT', 'Utah'], ['US-VT', 'Vermont'],
+  ['US-VA', 'Virginia'], ['US-WA', 'Washington'], ['US-WV', 'West Virginia'], ['US-WI', 'Wisconsin'], ['US-WY', 'Wyoming'],
+];
+
 /** Where an address came from, for ops: a page, or one of the lookups. */
 function contactFrom(source: string): string {
   if (source === 'via:creator-data') return 'via creator-data lookup';
@@ -349,6 +364,115 @@ function AddressCell({ creator, canWrite, onSaved }: { creator: OpsCreator; canW
         </form>
       )}
       {error && <div style={{ fontSize: 12, color: theme.danger, marginTop: 4 }}>{addressError(error)}</div>}
+    </div>
+  );
+}
+
+/** Why a state couldn't be set, in ops' terms. */
+const STATE_ERRORS: Record<string, string> = {
+  invalid_region: 'Pick a state.',
+  not_us: 'Only a US creator’s state can be set.',
+  state_from_profile: 'Their profile gives a state. You can only move them to a hidden one, which hides them from brands.',
+  invalid_body: 'Give the page’s full web address (https://…), up to 200 characters.',
+  not_found: 'This creator isn’t listed any more.',
+};
+
+function stateError(err: unknown): string {
+  const code = err instanceof Error ? err.message : '';
+  return STATE_ERRORS[code] ?? friendlyPlatformError(err);
+}
+
+/** The Where column: the country and state, what they were read from, and
+ *  for a US creator, a state ops found on a page (admins). Hidden states
+ *  are marked: setting one hides them from brands. */
+function LocationCell({
+  creator,
+  canWrite,
+  hiddenRegions,
+  onSaved,
+}: {
+  creator: OpsCreator;
+  canWrite: boolean;
+  hiddenRegions: string[];
+  onSaved: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [region, setRegion] = useState('');
+  const [page, setPage] = useState('');
+  const save = useMutation({
+    mutationFn: () =>
+      papi(`/platform-admin/creator-index/creators/${encodeURIComponent(creator.id)}/location`, { method: 'PUT', body: { region, sourceUrl: page.trim() } }),
+    onSuccess: () => {
+      setEditing(false);
+      setRegion('');
+      setPage('');
+      onSaved();
+    },
+  });
+  const c = creator;
+  const byOps = c.location?.from === 'ops';
+  return (
+    <div style={{ minWidth: 180 }}>
+      <div>{`${c.country ?? '—'}${c.region ? ` (${c.region})` : ''}${c.brandVisible ? '' : ' · hidden'}`}</div>
+      {c.location &&
+        (byOps ? (
+          <div style={{ fontSize: 12, color: theme.textMuted }}>
+            {'Set by ops: '}
+            <a href={c.location.text} target="_blank" rel="noreferrer noopener" style={{ color: theme.textMuted }}>
+              {shortUrl(c.location.text)}
+            </a>
+          </div>
+        ) : (
+          <div style={{ fontSize: 12, color: theme.textMuted }}>
+            {c.location.from ? `${PLATFORM_NAME[c.location.from] ?? c.location.from}: ` : ''}“{c.location.text}”
+          </div>
+        ))}
+      {canWrite && c.country === 'US' && !editing && (
+        <div style={{ marginTop: 4 }}>
+          <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
+            {c.region ? 'Change state' : 'Set state'}
+          </Button>
+        </div>
+      )}
+      {editing && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            save.mutate();
+          }}
+          style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}
+        >
+          <Select aria-label="State" value={region} onChange={(e) => setRegion(e.target.value)}>
+            <option value="">Pick a state</option>
+            {US_STATES.map(([code, name]) => (
+              <option key={code} value={code}>
+                {hiddenRegions.includes(code) ? `${name} (hidden from brands)` : name}
+              </option>
+            ))}
+          </Select>
+          <Input aria-label="Page that shows it" placeholder="Page that shows it (https://…)" value={page} onChange={(e) => setPage(e.target.value)} />
+          <div style={{ fontSize: 12, color: theme.textMuted }}>
+            A page that says where they live, like a newsletter’s about page. It’s kept with the state for the record.
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <Button type="submit" size="sm" disabled={save.isPending || !region || !page.trim()}>
+              {save.isPending ? 'Saving…' : 'Save'}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                setEditing(false);
+                save.reset();
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </form>
+      )}
+      {save.error && <div style={{ fontSize: 12, color: theme.danger, marginTop: 4 }}>{stateError(save.error)}</div>}
     </div>
   );
 }
@@ -928,14 +1052,16 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                     </div>
                   ))}
                 </div>,
-                <div key="w">
-                  <div>{`${c.country ?? '—'}${c.region ? ` (${c.region})` : ''}${c.brandVisible ? '' : ' · hidden'}`}</div>
-                  {c.location && (
-                    <div style={{ fontSize: 12, color: theme.textMuted }}>
-                      {c.location.from ? `${PLATFORM_NAME[c.location.from] ?? c.location.from}: ` : ''}“{c.location.text}”
-                    </div>
-                  )}
-                </div>,
+                <LocationCell
+                  key={`w-${c.id}`}
+                  creator={c}
+                  canWrite={canWrite && c.status !== 'claimed'}
+                  hiddenRegions={state.data?.settings.hiddenRegions ?? []}
+                  onSaved={() => {
+                    qc.invalidateQueries({ queryKey: ['platform-creator-index-creators'] });
+                    refresh();
+                  }}
+                />,
                 <div key="r">
                   <div style={{ fontWeight: 500 }}>{c.totalReach.toLocaleString()}</div>
                   {c.platforms

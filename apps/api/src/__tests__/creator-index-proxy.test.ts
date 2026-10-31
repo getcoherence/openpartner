@@ -116,6 +116,10 @@ beforeAll(async () => {
             if (body?.sourceUrl === 'https://elsewhere.test/') return json(422, { error: 'not_on_page' });
             return json(200, { creator: { id: 'ixc_1', contact: { masked: 'h••••@jorivera.co', foundOn: body?.sourceUrl, verified: true } } });
           }
+          if (path === '/admin/creator-index/creators/ixc_1/location' && req.method === 'PUT') {
+            if (body?.region === 'US-NY') return json(409, { error: 'state_from_profile' });
+            return json(200, { creator: { id: 'ixc_1', region: body?.region, location: { text: body?.sourceUrl, from: 'ops' } } });
+          }
           if (path.startsWith('/admin/creator-index/creators/') && req.method === 'DELETE') {
             res.writeHead(204);
             return res.end();
@@ -385,6 +389,24 @@ describe.skipIf(skipIntegration)('creator index: addresses', () => {
     const refused = await request(app).put('/platform-admin/creator-index/creators/ixc_1/contact').set('Cookie', admin).send({ email: 'hello@jorivera.co', sourceUrl: 'https://elsewhere.test/' });
     expect([refused.status, refused.body]).toEqual([422, { error: 'not_on_page' }]);
     expect((await request(app).put('/platform-admin/creator-index/creators/ixc_1/contact').set('Cookie', admin).send({ email: 'hello@jorivera.co' })).status).toBe(400);
+  });
+
+  it('sets a state with the page that shows it, audits both, and passes the Network’s refusal back', async () => {
+    const admin = await operator();
+    expect((await request(app).put('/platform-admin/creator-index/creators/ixc_1/location').set('Cookie', await operator('support')).send({ region: 'US-TX', sourceUrl: PAGE })).status).toBe(403);
+    const r = await request(app).put('/platform-admin/creator-index/creators/ixc_1/location').set('Cookie', admin).send({ region: 'US-TX', sourceUrl: ` ${PAGE} ` });
+    expect(r.status).toBe(200);
+    expect(r.body.creator).toEqual({ id: 'ixc_1', region: 'US-TX', location: { text: PAGE, from: 'ops' } });
+    expect(last('/admin/creator-index/creators/ixc_1/location')?.body).toEqual({ region: 'US-TX', sourceUrl: PAGE });
+    const audit = await db(TABLES.PlatformAuditLog).where({ action: 'creator_index.location_set', platformAdminEmail: OPS_EMAIL }).first();
+    expect(audit).toMatchObject({ targetType: 'indexed_creator', targetId: 'ixc_1' });
+    expect(JSON.stringify(audit.detail)).toContain('US-TX');
+    expect(JSON.stringify(audit.detail)).toContain(PAGE);
+
+    const refused = await request(app).put('/platform-admin/creator-index/creators/ixc_1/location').set('Cookie', admin).send({ region: 'US-NY', sourceUrl: PAGE });
+    expect([refused.status, refused.body]).toEqual([409, { error: 'state_from_profile' }]);
+    expect((await request(app).put('/platform-admin/creator-index/creators/ixc_1/location').set('Cookie', admin).send({ region: 'US-TX' })).status).toBe(400);
+    expect((await request(app).put('/platform-admin/creator-index/creators/ixc_1/location').set('Cookie', admin).send({ region: 'US-TX', sourceUrl: `https://x.test/${'a'.repeat(200)}` })).status).toBe(400);
   });
 });
 

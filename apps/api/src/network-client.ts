@@ -1551,6 +1551,15 @@ export async function adminSetIndexedCreatorContact(
   return callNetworkAdmin(networkUrl, 'PUT', `/admin/creator-index/creators/${encodeURIComponent(id)}/contact`, body);
 }
 
+/** A US creator's state ops found (`US-TX`), with the page that shows it. */
+export async function adminSetIndexedCreatorState(
+  networkUrl: string,
+  id: string,
+  body: { region: string; sourceUrl: string },
+): Promise<{ creator: unknown }> {
+  return callNetworkAdmin(networkUrl, 'PUT', `/admin/creator-index/creators/${encodeURIComponent(id)}/location`, body);
+}
+
 export async function adminQueueIndexSeeds(networkUrl: string, urls: string[]): Promise<Record<string, number>> {
   return callNetworkAdmin<Record<string, number>>(networkUrl, 'POST', '/admin/creator-index/seeds', { urls });
 }

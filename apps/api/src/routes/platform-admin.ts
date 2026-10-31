@@ -66,6 +66,7 @@ import {
   adminQueueIndexSeeds,
   adminRemoveIndexedCreator,
   adminSetIndexedCreatorContact,
+  adminSetIndexedCreatorState,
   adminRunCreatorIndexInvites,
   adminRunCreatorIndexJob,
   adminRunCreatorIndexOutreach,
@@ -2052,6 +2053,41 @@ platformAdminRouter.put(
         targetType: 'indexed_creator',
         targetId: req.params.id!,
         detail: { sourceUrl: body.data.sourceUrl },
+      });
+      res.json(result);
+    } catch (err) {
+      sendNetworkFailure(res, err);
+    }
+  },
+);
+
+const indexStateSchema = z
+  .object({
+    region: z.string().trim().min(4).max(6),
+    // The Network keeps it as the location text, which holds 200.
+    sourceUrl: z.string().trim().min(8).max(200),
+  })
+  .strict();
+
+/** A US creator's state ops found, with the page that shows it. The Network
+ *  lets ops set one only where the profiles give none, or a hidden one. */
+platformAdminRouter.put(
+  '/platform-admin/creator-index/creators/:id/location',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = indexStateSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    try {
+      const result = await adminSetIndexedCreatorState(networkUrl, req.params.id!, body.data);
+      await writeAudit(db, {
+        actor: req.platformAdminActor!,
+        action: 'creator_index.location_set',
+        targetType: 'indexed_creator',
+        targetId: req.params.id!,
+        detail: { region: body.data.region, sourceUrl: body.data.sourceUrl },
       });
       res.json(result);
     } catch (err) {
