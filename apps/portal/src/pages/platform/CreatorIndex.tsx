@@ -77,8 +77,8 @@ interface SettingsState {
   configured: Record<string, boolean>;
   /** The mailbox the outreach email goes from. */
   outreachMailer?: { configured: boolean; from: string | null };
-  /** The mailbox brands' invites go from, never the outreach one. A
-   *  Network that predates it sends none. */
+  /** The mailbox brands' invites go from, never the outreach one. Missing
+   *  from a Network that predates it: deploy the Network first. */
   inviteMailer?: { configured: boolean; from: string | null };
 }
 
