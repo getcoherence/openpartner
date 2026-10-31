@@ -66,6 +66,7 @@ import {
   adminRemoveIndexedCreator,
   adminRunCreatorIndexInvites,
   adminRunCreatorIndexJob,
+  adminRunCreatorIndexOutreach,
   adminSearchIndexedCreators,
   adminSetCreatorIndexSettings,
   adminBlockCreator,
@@ -1910,6 +1911,7 @@ const creatorIndexSettingsSchema = z
   .object({
     enabled: z.boolean(),
     invitesEnabled: z.boolean(),
+    outreachEnabled: z.boolean().optional(),
     monthlyBudgetUsd: z.number().int().min(0).max(100_000),
     minFollowers: z.number().int().min(0).max(10_000_000),
     minPostsPer30d: z.number().int().min(0).max(1_000),
@@ -2062,6 +2064,32 @@ platformAdminRouter.post('/platform-admin/creator-index/invites/run', requirePla
       });
     }
     res.json(result);
+  } catch (err) {
+    sendNetworkFailure(res, err);
+  }
+});
+
+const outreachRunSchema = z.object({
+  dryRun: z.boolean().default(true),
+  limit: z.number().int().min(1).max(100).default(50),
+});
+
+/** One batch of the "claim your profile" email (openpartner-network
+ *  docs/creator-index.md §5.5). Anyone on the console can preview who would
+ *  get it; sending takes an admin, and is audited. */
+platformAdminRouter.post('/platform-admin/creator-index/outreach/run', requirePlatformAdmin, async (req, res) => {
+  const body = outreachRunSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const { dryRun, limit } = body.data;
+  if (!dryRun && req.platformAdminActor!.role !== 'admin') return res.status(403).json({ error: 'read_only_operator' });
+  const networkUrl = networkOr503(res);
+  if (!networkUrl) return;
+  try {
+    const result = await adminRunCreatorIndexOutreach(networkUrl, { dryRun, limit });
+    if (!dryRun) {
+      await writeAudit(db, { actor: req.platformAdminActor!, action: 'creator_index.outreach_run', targetType: 'platform', detail: { limit } });
+    }
+    res.status(dryRun ? 200 : 202).json(result);
   } catch (err) {
     sendNetworkFailure(res, err);
   }
