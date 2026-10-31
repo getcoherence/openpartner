@@ -14,7 +14,7 @@
  * leave them out.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { ChevronDown, Users } from 'lucide-react';
@@ -76,6 +76,10 @@ type ShowKey = 'all' | 'members' | 'external';
 
 /** Wide enough for the list and the selected creator side by side. */
 const SIDE_BY_SIDE = '(min-width: 1200px)';
+/** Page's padding under the content, so the columns end at the window's edge. */
+const PAGE_BOTTOM_PADDING = 32;
+/** On a very short window the page scrolls rather than squash the columns. */
+const MIN_SPLIT_HEIGHT = 360;
 
 const FOLLOWER_STEPS = [1_000, 10_000, 50_000, 100_000, 1_000_000];
 
@@ -211,6 +215,30 @@ export function AdminNetworkCreators() {
     if (panel.current) panel.current.scrollTop = 0;
   }, [selectedKey]);
 
+  // Side by side, the page itself stays put: the title and filters stay in
+  // view, and the list and the creator fill the rest of the window, each
+  // scrolling on its own. Refitted when the window or the filter bar (which
+  // wraps) changes size.
+  const bar = useRef<HTMLDivElement>(null);
+  const split = useRef<HTMLDivElement>(null);
+  const [splitHeight, setSplitHeight] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    if (!sideBySide) return;
+    const fit = () => {
+      if (!split.current) return;
+      const top = split.current.getBoundingClientRect().top + window.scrollY;
+      setSplitHeight(Math.max(MIN_SPLIT_HEIGHT, Math.floor(window.innerHeight - top - PAGE_BOTTOM_PADDING)));
+    };
+    fit();
+    window.addEventListener('resize', fit);
+    const resized = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(fit);
+    if (bar.current) resized?.observe(bar.current);
+    return () => {
+      window.removeEventListener('resize', fit);
+      resized?.disconnect();
+    };
+  }, [sideBySide]);
+
   const listColumn = (
     <div style={{ minWidth: 0 }}>
       {show !== 'external' && (
@@ -264,7 +292,7 @@ export function AdminNetworkCreators() {
       title="Discover creators"
       subtitle="Find creators who match your audience: those on OpenPartner first, then external creators we can invite for you. Filter by category, platform, audience size, and past performance."
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 18 }}>
+      <div ref={bar} style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 18 }}>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <div style={{ flex: '1 1 260px', minWidth: 0 }}>
             <Input value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search creators" placeholder="Search name, handle, bio…" />
@@ -359,16 +387,19 @@ export function AdminNetworkCreators() {
       <ErrorBanner error={list.error} />
 
       {sideBySide ? (
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 5fr) minmax(0, 6fr)', gap: 20, alignItems: 'start' }}>
-          {listColumn}
+        <div
+          ref={split}
+          style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 5fr) minmax(0, 6fr)', gap: 20, height: splitHeight ?? undefined }}
+        >
+          <div data-testid="creator-list-scroll" style={{ minWidth: 0, overflowY: 'auto', overscrollBehavior: 'contain', paddingRight: 6 }}>
+            {listColumn}
+          </div>
           <aside
             ref={panel}
             aria-label="Selected creator"
             style={{
-              position: 'sticky',
-              top: 16,
-              maxHeight: 'calc(100vh - 32px)',
               overflowY: 'auto',
+              overscrollBehavior: 'contain',
               minWidth: 0,
               // One surface of its own, set apart from the list.
               background: theme.surface,

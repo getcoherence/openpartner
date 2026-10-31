@@ -140,7 +140,8 @@ export function CreatorList({ children }: { children: ReactNode }) {
  *  actions, and the creator's full page. */
 export function PanelBar({ to, note, children }: { to: string; note?: ReactNode; children?: ReactNode }) {
   return (
-    <div style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '10px 16px' }}>
+    // Stays at the top while the panel scrolls.
+    <div style={{ position: 'sticky', top: 0, zIndex: 2, background: theme.surface, display: 'flex', gap: 12, alignItems: 'center', padding: '10px 16px' }}>
       <div style={{ flex: 1, minWidth: 0, fontSize: 12, color: theme.textMuted }}>{note}</div>
       {children}
       <TenantLink to={to} style={{ fontSize: 13, color: theme.accentText, textDecoration: 'none' }}>

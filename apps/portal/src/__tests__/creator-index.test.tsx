@@ -224,6 +224,10 @@ describe('external creators', () => {
     await screen.findByText('Jo Rivera');
     const panel = screen.getByRole('complementary', { name: 'Selected creator' });
     expect(within(panel).getByText('Pick a creator')).toBeTruthy();
+    // The page stays put: the list and the creator each scroll on their own.
+    expect(screen.getByTestId('creator-list-scroll').style.overflowY).toBe('auto');
+    expect(panel.style.overflowY).toBe('auto');
+    expect(panel.parentElement!.style.height).toMatch(/^\d+px$/);
 
     fireEvent.click(screen.getByRole('button', { name: 'Jo Rivera' }));
     expect(await within(panel).findByText('Writes weekly about outbound sales for SDR teams.')).toBeTruthy();
