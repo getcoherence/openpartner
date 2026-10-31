@@ -1483,6 +1483,8 @@ export interface CreatorIndexSettings {
   requirePartnershipSignal?: boolean;
   /** Profiles read at the same time (1–20). */
   readConcurrency?: number;
+  /** Paid address lookups when a creator published none. */
+  contactEnrichment?: { creatorData: boolean; ownDomain: boolean };
   classifierModel: string;
 }
 

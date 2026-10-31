@@ -306,9 +306,14 @@ describe.skipIf(skipIntegration)('creator index: ops console', () => {
     const withSources = await request(app)
       .put('/platform-admin/creator-index/settings')
       .set('Cookie', cookie)
-      .send({ ...SETTINGS, discoverySources: sources, requirePartnershipSignal: false, readConcurrency: 12 });
+      .send({ ...SETTINGS, discoverySources: sources, requirePartnershipSignal: false, readConcurrency: 12, contactEnrichment: { creatorData: false, ownDomain: true } });
     expect(withSources.status).toBe(200);
-    expect(last('/admin/creator-index/settings')!.body).toMatchObject({ discoverySources: sources, requirePartnershipSignal: false, readConcurrency: 12 });
+    expect(last('/admin/creator-index/settings')!.body).toMatchObject({
+      discoverySources: sources,
+      requirePartnershipSignal: false,
+      readConcurrency: 12,
+      contactEnrichment: { creatorData: false, ownDomain: true },
+    });
     expect((await request(app).put('/platform-admin/creator-index/settings').set('Cookie', cookie).send({ ...SETTINGS, readConcurrency: 50 })).status).toBe(400);
     const partial = await request(app)
       .put('/platform-admin/creator-index/settings')

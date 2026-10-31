@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 /**
  * The creator index in the portal (openpartner-network
- * docs/creator-index.md §4.4, §5.3): the "Not on OpenPartner yet" tab shows
- * listed creators with the badge and an invite that needs a real message;
+ * docs/creator-index.md §4.4, §5.3): Discover creators shows OpenPartner's
+ * creators, then external creators under the same filters, with the badge
+ * and an invite that needs a real message;
  * brands on other plans see what the plan unlocks; creators who already do
  * partnerships are marked and can be shown alone; the claim page shows who
  * is waiting and what we hold, and sends an existing account to sign in; the
@@ -14,6 +15,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { IndexedCreatorPage, IndexedCreatorsSection } from '../pages/admin/NetworkIndexedCreators.js';
+import { AdminNetworkCreators } from '../pages/admin/NetworkCreators.js';
 import { CreatorIndexClaimPage } from '../pages/creator/CreatorIndexClaim.js';
 import { CreatorIndexPage } from '../pages/platform/CreatorIndex.js';
 
@@ -66,7 +68,7 @@ const JO = {
   refreshedAt: null,
 };
 
-describe('Not on OpenPartner yet', () => {
+describe('external creators', () => {
   it('lists creators with the badge and invites with a real message', async () => {
     respond = (url, method) =>
       method === 'POST'
@@ -74,8 +76,8 @@ describe('Not on OpenPartner yet', () => {
         : { status: 200, body: { creators: [JO], nextCursor: null, total: 1 } };
     wrap(<IndexedCreatorsSection />);
     expect(await screen.findByText('Jo Rivera')).toBeTruthy();
-    expect(screen.getByText('Not on OpenPartner yet')).toBeTruthy();
-    expect(screen.getByText('1 creator not on OpenPartner yet')).toBeTruthy();
+    expect(screen.getByText('External creator')).toBeTruthy();
+    expect(screen.getByText('1 external creator')).toBeTruthy();
     expect(calls[0]!.url).toBe('/api/admin/network/indexed-creators?');
 
     fireEvent.click(screen.getByRole('button', { name: 'Invite' }));
@@ -93,8 +95,54 @@ describe('Not on OpenPartner yet', () => {
   it('says what the plan unlocks instead of an error on other plans', async () => {
     respond = () => ({ status: 402, body: { error: 'plan_required', detail: 'Creators not on OpenPartner yet come with the Flex and Enterprise plans.' } });
     wrap(<IndexedCreatorsSection />);
-    expect(await screen.findByText(/Search creators who aren.t on OpenPartner yet/)).toBeTruthy();
+    expect(await screen.findByText('See external creators too')).toBeTruthy();
     expect(screen.getByText('See plans')).toBeTruthy();
+  });
+
+  it('shows OpenPartner’s creators first and external ones after, under the same filters, and hides external ones for members-only filters', async () => {
+    const MEMBER = {
+      id: 'crt_1',
+      name: 'Member Mo',
+      handle: 'mo',
+      avatarUrl: null,
+      bio: 'Writes about sales',
+      categories: ['marketing'],
+      audienceLocations: [],
+      audienceAgeRange: null,
+      pastBrands: [],
+      clicks90d: 0,
+      conversions90d: 0,
+      revenue90d: '0',
+      commission90d: '0',
+      topCategories: [],
+      lastAggregatedAt: null,
+      createdAt: '2026-10-01T00:00:00Z',
+      platforms: [],
+      totalReach: 0,
+    };
+    respond = (url) =>
+      url.includes('/indexed-creators')
+        ? { status: 200, body: { creators: [JO], nextCursor: null, total: 1 } }
+        : { status: 200, body: { creators: [MEMBER] } };
+    wrap(<AdminNetworkCreators />);
+    expect(await screen.findByText('Member Mo')).toBeTruthy();
+    expect(await screen.findByText('Jo Rivera')).toBeTruthy();
+    const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent);
+    expect(headings).toEqual(['On OpenPartner', 'External creators']);
+    // There are no tabs any more.
+    expect(screen.queryByText('Not on OpenPartner yet')).toBeNull();
+
+    // A shared filter reaches both lists; sales is a topic only external creators have.
+    fireEvent.click(screen.getByRole('button', { name: 'sales' }));
+    await waitFor(() => expect(calls.some((c) => c.url.includes('/indexed-creators?categories=sales'))).toBe(true));
+
+    // Members-only data (revenue) leaves external creators out, with a word why.
+    fireEvent.change(screen.getByPlaceholderText('e.g. 500'), { target: { value: '500' } });
+    expect(await screen.findByText(/External creators have no sales, audience-location or verification data yet/)).toBeTruthy();
+
+    // Only external creators.
+    fireEvent.click(screen.getByRole('button', { name: 'External creators' }));
+    expect(screen.queryByText('Member Mo')).toBeNull();
   });
 
   it('shows an invite already sent, and a creator who can’t be invited', async () => {
@@ -155,7 +203,7 @@ describe('Not on OpenPartner yet', () => {
       expect(screen.getByText(/12,000 followers · 8 posts in the last 30 days · 100 reactions a post · 12 comments a post/)).toBeTruthy();
       expect(screen.getByText('2').getAttribute('href')).toBe('https://www.linkedin.com/feed/update/2');
       expect(screen.getByText('Clay (3 posts)')).toBeTruthy();
-      expect(screen.getByText('← Not on OpenPartner yet').getAttribute('href')).toBe('/admin/network/creators?tab=index');
+      expect(screen.getByText('← Discover creators').getAttribute('href')).toBe('/admin/network/creators?show=external');
       fireEvent.click(screen.getByText('Invite to collaborate'));
       fireEvent.change(screen.getByPlaceholderText(/Who you are/), { target: { value: 'Hi Jo, we would love to sponsor a post on outbound.' } });
       fireEvent.click(screen.getByText('Send invite'));
@@ -176,7 +224,7 @@ describe('Not on OpenPartner yet', () => {
       cleanup();
       respond = () => ({ status: 402, body: { error: 'plan_required' } });
       profilePage();
-      expect(await screen.findByText(/Search creators who aren.t on OpenPartner yet/)).toBeTruthy();
+      expect(await screen.findByText('See external creators too')).toBeTruthy();
     });
   });
 
@@ -211,6 +259,59 @@ describe('ops console: creator index settings', () => {
     seedQueries: ['B2B sales newsletters'],
     classifierModel: 'gpt-6-luna',
   };
+
+  it('shows reach by platform, where each email came from, and switches the paid lookups', async () => {
+    respond = (url, method) => {
+      if (url.endsWith('/creator-index/settings') && method === 'PUT') return { status: 200, body: { settings: calls[calls.length - 1]!.body, visibilityChanged: 0 } };
+      if (url.endsWith('/creator-index/settings')) {
+        return { status: 200, body: { settings: SETTINGS, defaults: SETTINGS, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {} } };
+      }
+      if (url.endsWith('/creator-index/stats')) {
+        return {
+          status: 200,
+          body: {
+            creators: { byStatus: {}, listed: 16, shownToBrands: 2, hiddenFromBrands: 14, hiddenByRegion: 7, withEmail: 3, withoutEmail: 13 },
+            byCountry: [],
+            candidates: {},
+            rejections: {},
+            invites: {},
+            emailsSent30d: 0,
+            suppressions: {},
+            spend: { thisMonthUsd: 0, budgetUsd: 10 },
+          },
+        };
+      }
+      const base = { status: 'active', headline: null, country: 'US', region: 'US-TX', brandVisible: true, emailsSent: 0 };
+      return {
+        status: 200,
+        body: {
+          creators: [
+            {
+              ...base,
+              id: 'a',
+              name: 'Jo Rivera',
+              totalReach: 48_200,
+              contact: { masked: 'h••••@jorivera.co', foundOn: 'via:creator-data', verified: true },
+              platforms: [
+                { platform: 'linkedin', handle: 'jo', profileUrl: 'https://www.linkedin.com/in/jo', followerCount: 41_000 },
+                { platform: 'youtube', handle: '@jo', profileUrl: 'https://www.youtube.com/@jo', followerCount: 7_200 },
+              ],
+            },
+            { ...base, id: 'b', name: 'Sam Lee', totalReach: 5_000, contact: null, platforms: [] },
+          ],
+        },
+      };
+    };
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    expect(await screen.findByText('LinkedIn 41,000')).toBeTruthy();
+    expect(screen.getByText('YouTube 7,200')).toBeTruthy();
+    expect(screen.getByText('via creator-data lookup')).toBeTruthy();
+    expect(screen.getByText('none yet · hidden from brands')).toBeTruthy();
+    expect(screen.getByText('3 with an email · 13 without (hidden)')).toBeTruthy();
+    fireEvent.click(screen.getByLabelText(/Creator contact-data lookup/));
+    fireEvent.click(screen.getByText('Save settings'));
+    await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({ contactEnrichment: { creatorData: false, ownDomain: true } }));
+  });
 
   it('chooses where queries are searched and whether only partnership-ready creators are kept, and shows ops the evidence', async () => {
     respond = (url, method) => {
@@ -394,7 +495,7 @@ describe('claim page', () => {
         : { status: 200, body: { ok: true, creatorId: 'crt_1', created: true, conversationIds: ['cnv_1', 'cnv_2'] } };
     page();
     expect(await screen.findByText('2 brands want to work with you')).toBeTruthy();
-    expect(screen.getByText(/found partnerships@jo\.co on https:\/\/jo\.co\/contact/)).toBeTruthy();
+    expect(screen.getByText(/got partnerships@jo\.co from https:\/\/jo\.co\/contact/)).toBeTruthy();
     expect(calls.map((c) => c.url)).toEqual(['/api/creator-api/creator-index/claim/preview']);
     fireEvent.click(screen.getByText('Claim my profile and read'));
     expect(await screen.findByText('thread page')).toBeTruthy();
