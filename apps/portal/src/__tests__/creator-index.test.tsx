@@ -146,6 +146,8 @@ describe('external creators', () => {
     const rows = screen.getAllByTestId('creator-row');
     expect(rows.map((r) => r.textContent!.includes('External creator'))).toEqual([false, true]);
     expect(rows[0]!.parentElement).toBe(rows[1]!.parentElement);
+    // Rows never grow wider than the list (a long headline cut off their right-hand side).
+    expect(rows[0]!.parentElement!.style.gridTemplateColumns).toBe('minmax(0, 1fr)');
     // No count line over the list.
     expect(screen.queryByText(/on OpenPartner ·/)).toBeNull();
 
