@@ -31,7 +31,7 @@ import { brandSignalLabel, type PartnershipSignal } from '../../lib/partnership-
 import { ChannelCount, ChannelCounts, PlatformMark, compactCount, platformName } from '../../lib/PlatformMark.js';
 import { FlatCards, SectionCard, useFlatCards } from '../../lib/Surface.js';
 import { ListingBanner } from '../creator/ListingBanner.js';
-import { CreatorList, CreatorRow, PanelBar, RowFigure } from './CreatorRow.js';
+import { CreatorRow, PanelBar, RowFigure } from './CreatorRow.js';
 
 interface IndexedPlatform {
   platform: string;
