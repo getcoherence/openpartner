@@ -6,12 +6,14 @@
  * creators: each with their channels as platform logos and followers, and
  * Invite and Book. The filters sit in one bar, each opening below its chip.
  * On a wide screen the selected creator shows beside the list (kept in the
- * URL: ?creator=, ?external=); otherwise a click opens their page. Unique
- * angle vs Modash/Aspire: we have actual conversion data per creator.
+ * URL: ?creator=, ?external=); otherwise a click opens their page.
  *
  * External creators (not on OpenPartner yet) follow in the same list under
- * the same filters, badged; members' sales, audience and verification
- * filters leave them out.
+ * the same filters, badged. They have no audience or verification data, so
+ * those filters leave them out.
+ *
+ * There's no sales filter or sort: the Network withholds creators' 90-day
+ * numbers, which sum every brand's results (creator-directory.ts).
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -79,7 +81,7 @@ const ALL_CATEGORIES = [...CATEGORIES, ...EXTERNAL_CATEGORIES.filter((c) => !CAT
 
 const PLATFORMS = CREATOR_PLATFORMS.map((p) => ({ value: p.kind, label: p.label }));
 
-type SortKey = 'revenue' | 'followers' | 'newest' | 'name';
+type SortKey = 'followers' | 'newest' | 'name';
 type ShowKey = 'all' | 'members' | 'external';
 
 /** Wide enough for the list and the selected creator side by side. */
@@ -89,7 +91,23 @@ const PAGE_BOTTOM_PADDING = 32;
 /** On a very short window the page scrolls rather than squash the columns. */
 const MIN_SPLIT_HEIGHT = 360;
 
-const FOLLOWER_STEPS = [1_000, 10_000, 50_000, 100_000, 1_000_000];
+type Count = number | '';
+
+/** Common follower ranges, [at least, at most]. */
+const FOLLOWER_RANGES: Array<[Count, Count]> = [
+  ['', 1_000],
+  [1_000, 10_000],
+  [10_000, 50_000],
+  [50_000, 100_000],
+  [100_000, 1_000_000],
+  [1_000_000, ''],
+];
+
+/** "1K–10K", "Up to 1K", "1M+". */
+function rangeLabel(min: Count, max: Count): string {
+  if (min === '' || min === 0) return max === '' ? 'Any' : `Up to ${compactCount(max)}`;
+  return max === '' ? `${compactCount(min)}+` : `${compactCount(min)}–${compactCount(max)}`;
+}
 
 /** The creator beside the list, kept in the URL: ?creator=<handle> for
  *  OpenPartner's, ?external=<id> for an external one. */
@@ -105,10 +123,10 @@ export function AdminNetworkCreators() {
   const [verifiedOnly, setVerifiedOnly] = useState(false);
   /** Audience countries, ISO codes. */
   const [locations, setLocations] = useState<string[]>([]);
-  const [minFollowers, setMinFollowers] = useState<number | ''>('');
-  const [minRevenue, setMinRevenue] = useState<number | ''>('');
+  const [minFollowers, setMinFollowers] = useState<Count>('');
+  const [maxFollowers, setMaxFollowers] = useState<Count>('');
   const [openOnly, setOpenOnly] = useState(false);
-  const [sort, setSort] = useState<SortKey>('revenue');
+  const [sort, setSort] = useState<SortKey>('followers');
 
   // One list: OpenPartner's creators first, then external creators the
   // Network listed who haven't joined (NetworkIndexedCreators.tsx), under
@@ -158,10 +176,11 @@ export function AdminNetworkCreators() {
     if (verifiedOnly) p.set('verified', 'true');
     if (locations.length > 0) p.set('locations', locations.join(','));
     if (minFollowers !== '' && minFollowers > 0) p.set('minFollowers', String(minFollowers));
-    if (minRevenue !== '' && minRevenue > 0) p.set('minRevenue90d', String(minRevenue));
-    if (sort !== 'revenue') p.set('sort', sort);
+    if (maxFollowers !== '') p.set('maxFollowers', String(maxFollowers));
+    // The Network's own default is newest.
+    if (sort !== 'newest') p.set('sort', sort);
     return p.toString();
-  }, [debouncedQ, categories, platforms, verifiedOnly, locations, minFollowers, minRevenue, sort]);
+  }, [debouncedQ, categories, platforms, verifiedOnly, locations, minFollowers, maxFollowers, sort]);
 
   const list = useQuery({
     queryKey: ['admin-discover-creators', qs],
@@ -175,17 +194,18 @@ export function AdminNetworkCreators() {
 
   // External creators have no sales, audience or verification data, so
   // these filters leave them out.
-  const memberOnlyFilters = verifiedOnly || (minRevenue !== '' && minRevenue > 0) || locations.length > 0;
+  const memberOnlyFilters = verifiedOnly || locations.length > 0;
   const externalFilters = useMemo<ExternalFilters>(
     () => ({
       q: debouncedQ || undefined,
       categories,
       platforms,
       minFollowers: minFollowers === '' ? undefined : minFollowers,
+      maxFollowers: maxFollowers === '' ? undefined : maxFollowers,
       openToPartnerships: openOnly,
       sort: sort === 'newest' ? 'newest' : 'reach',
     }),
-    [debouncedQ, categories, platforms, minFollowers, openOnly, sort],
+    [debouncedQ, categories, platforms, minFollowers, maxFollowers, openOnly, sort],
   );
 
   const filtered =
@@ -194,7 +214,7 @@ export function AdminNetworkCreators() {
     platforms.length > 0 ||
     verifiedOnly ||
     minFollowers !== '' ||
-    minRevenue !== '' ||
+    maxFollowers !== '' ||
     locations.length > 0 ||
     openOnly;
   const resetAll = () => {
@@ -203,7 +223,7 @@ export function AdminNetworkCreators() {
     setPlatforms([]);
     setVerifiedOnly(false);
     setMinFollowers('');
-    setMinRevenue('');
+    setMaxFollowers('');
     setLocations([]);
     setOpenOnly(false);
   };
@@ -251,9 +271,6 @@ export function AdminNetworkCreators() {
   // One list: OpenPartner's creators, then external ones, badged.
   const listColumn = (
     <div style={{ minWidth: 0 }}>
-      {show !== 'members' && memberOnlyFilters && (
-        <p style={{ fontSize: 12, color: theme.textMuted, margin: '0 0 8px' }}>External creators are hidden by these filters.</p>
-      )}
       <ErrorBanner error={external.error} />
       {loading ? (
         <Card>Loading creators…</Card>
@@ -315,7 +332,6 @@ export function AdminNetworkCreators() {
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.textMuted }}>
             Sort by
             <Select value={sort} onChange={(e) => setSort(e.target.value as SortKey)} style={{ width: 'auto' }}>
-              <option value="revenue">90-day revenue</option>
               <option value="followers">Total followers</option>
               <option value="newest">Newest</option>
               <option value="name">Name (A-Z)</option>
@@ -341,32 +357,43 @@ export function AdminNetworkCreators() {
               Verified accounts only
             </label>
           </FilterMenu>
-          <FilterMenu label="Followers" count={minFollowers !== '' && minFollowers > 0 ? `${compactCount(minFollowers)}+` : null}>
+          <FilterMenu label="Followers" count={minFollowers === '' && maxFollowers === '' ? null : rangeLabel(minFollowers, maxFollowers)}>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
-              {FOLLOWER_STEPS.map((n) => (
-                <ToggleChip key={n} on={minFollowers === n} onClick={() => setMinFollowers(minFollowers === n ? '' : n)}>
-                  {compactCount(n)}+
-                </ToggleChip>
-              ))}
+              {FOLLOWER_RANGES.map(([min, max]) => {
+                const on = minFollowers === min && maxFollowers === max;
+                return (
+                  <ToggleChip
+                    key={rangeLabel(min, max)}
+                    on={on}
+                    onClick={() => {
+                      setMinFollowers(on ? '' : min);
+                      setMaxFollowers(on ? '' : max);
+                    }}
+                  >
+                    {rangeLabel(min, max)}
+                  </ToggleChip>
+                );
+              })}
             </div>
-            <Label>Or at least</Label>
-            <Input
-              type="number"
-              min={0}
-              value={minFollowers}
-              onChange={(e) => setMinFollowers(e.target.value === '' ? '' : Number(e.target.value))}
-              placeholder="e.g. 10000"
-            />
-          </FilterMenu>
-          <FilterMenu label="Sales" count={minRevenue !== '' && minRevenue > 0 ? `$${minRevenue.toLocaleString()}+` : null}>
-            <Label>Min 90-day revenue ($)</Label>
-            <Input
-              type="number"
-              min={0}
-              value={minRevenue}
-              onChange={(e) => setMinRevenue(e.target.value === '' ? '' : Number(e.target.value))}
-              placeholder="e.g. 500"
-            />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Input
+                type="number"
+                min={0}
+                aria-label="At least"
+                placeholder="Min"
+                value={minFollowers}
+                onChange={(e) => setMinFollowers(e.target.value === '' ? '' : Number(e.target.value))}
+              />
+              <span style={{ color: theme.textMuted }}>–</span>
+              <Input
+                type="number"
+                min={0}
+                aria-label="At most"
+                placeholder="Max"
+                value={maxFollowers}
+                onChange={(e) => setMaxFollowers(e.target.value === '' ? '' : Number(e.target.value))}
+              />
+            </div>
           </FilterMenu>
           <FilterMenu label="Audience" count={locations.length === 0 ? null : locations.length <= 2 ? locations.join(', ') : locations.length}>
             <CountryMultiSelect selected={locations} onChange={setLocations} />
@@ -550,7 +577,6 @@ function FilterMenu({ label, count, children }: { label: string; count: string |
 const MENU_WIDTH = 340;
 
 function MemberRow({ creator, selected, onSelect }: { creator: DirectoryRow; selected: boolean; onSelect?: () => void }) {
-  const revenue = Number(creator.revenue90d);
   return (
     <CreatorRow
       name={creator.name}
@@ -576,17 +602,7 @@ function MemberRow({ creator, selected, onSelect }: { creator: DirectoryRow; sel
           : undefined
       }
       side={
-        <RowFigure
-          value={creator.totalReach > 0 ? compactCount(creator.totalReach) : '—'}
-          caption={
-            revenue > 0
-              ? `$${revenue.toLocaleString(undefined, { maximumFractionDigits: 0 })} in 90 days`
-              : creator.clicks90d > 0
-                ? `${creator.clicks90d.toLocaleString()} clicks in 90 days`
-                : 'followers'
-          }
-          accent={revenue > 0}
-        />
+        <RowFigure value={creator.totalReach > 0 ? compactCount(creator.totalReach) : '—'} caption="followers" />
       }
       tags={creator.categories}
       actions={

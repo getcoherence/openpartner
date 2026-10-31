@@ -132,7 +132,7 @@ describe('external creators', () => {
     expect(screen.getByText('See plans')).toBeTruthy();
   });
 
-  it('shows OpenPartner’s creators first and external ones after, under the same filters, and hides external ones for members-only filters', async () => {
+  it('shows OpenPartner’s creators first and external ones after, under the same filters, and leaves external ones out of members-only filters', async () => {
     respond = (url) =>
       url.includes('/indexed-creators')
         ? { status: 200, body: { creators: [JO], nextCursor: null, total: 1 } }
@@ -164,22 +164,32 @@ describe('external creators', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open to partnerships' }));
     await waitFor(() => expect(calls.some((c) => c.url.includes('/indexed-creators?categories=sales&openToPartnerships=1'))).toBe(true));
 
-    // Members-only data (revenue) leaves external creators out, with a word why.
-    fireEvent.click(screen.getByRole('button', { name: /^Sales/ }));
-    fireEvent.change(screen.getByPlaceholderText('e.g. 500'), { target: { value: '500' } });
-    expect(await screen.findByText('External creators are hidden by these filters.')).toBeTruthy();
+    // Followers is a range: a common one, or any two numbers. Both lists get it.
+    fireEvent.click(screen.getByRole('button', { name: /^Followers/ }));
+    fireEvent.click(screen.getByRole('button', { name: '1K–10K' }));
+    expect(screen.getByRole('button', { name: /^Followers.*1K–10K/ })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('At most'), { target: { value: '5000' } });
+    await waitFor(() => expect(calls.some((c) => c.url.includes('/discover/creators?') && c.url.includes('minFollowers=1000&maxFollowers=5000'))).toBe(true));
+    await waitFor(() => expect(calls.some((c) => c.url.includes('/indexed-creators?') && c.url.includes('minFollowers=1000&maxFollowers=5000'))).toBe(true));
+    expect(screen.getByRole('button', { name: /^Followers.*1K–5K/ })).toBeTruthy();
 
-    // Audience is countries by name, picked from a list.
+    // There's no sales filter: the Network withholds those numbers.
+    expect(screen.queryByRole('button', { name: /^Sales/ })).toBeNull();
+
+    // Audience is countries by name, picked from a list. External creators
+    // have no audience data, so they're left out, without a word.
     fireEvent.click(screen.getByRole('button', { name: /^Audience/ }));
     fireEvent.change(screen.getByLabelText('Search countries'), { target: { value: 'united k' } });
     expect(screen.queryByLabelText('France')).toBeNull();
     fireEvent.click(screen.getByLabelText('United Kingdom'));
     await waitFor(() => expect(calls.some((c) => c.url.includes('/discover/creators?') && c.url.includes('locations=GB'))).toBe(true));
     expect(screen.getByRole('button', { name: /^Audience.*GB/ })).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText('Jo Rivera')).toBeNull());
+    expect(screen.queryByText(/hidden by these filters/)).toBeNull();
 
     // Reset all clears the lot.
     fireEvent.click(screen.getByRole('button', { name: 'Reset all' }));
-    expect(screen.queryByText('External creators are hidden by these filters.')).toBeNull();
+    expect(await screen.findByText('Jo Rivera')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Open to partnerships' }).getAttribute('aria-pressed')).toBe('false');
 
     // Only external creators.

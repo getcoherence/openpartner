@@ -113,6 +113,7 @@ export interface ExternalFilters {
   /** Creator must have at least one. */
   platforms?: string[];
   minFollowers?: number;
+  maxFollowers?: number;
   /** Only those who already take partnerships. */
   openToPartnerships?: boolean;
   sort?: 'reach' | 'newest';
@@ -128,10 +129,11 @@ export function useIndexedCreators(filters: ExternalFilters, enabled = true) {
     if (filters.categories?.length) p.set('categories', filters.categories.join(','));
     if (filters.platforms?.length) p.set('platforms', filters.platforms.join(','));
     if (filters.minFollowers && filters.minFollowers > 0) p.set('minFollowers', String(filters.minFollowers));
+    if (filters.maxFollowers != null) p.set('maxFollowers', String(filters.maxFollowers));
     if (filters.openToPartnerships) p.set('openToPartnerships', '1');
     if (filters.sort && filters.sort !== 'reach') p.set('sort', filters.sort);
     return p.toString();
-  }, [filters.q, filters.categories, filters.platforms, filters.minFollowers, filters.openToPartnerships, filters.sort]);
+  }, [filters.q, filters.categories, filters.platforms, filters.minFollowers, filters.maxFollowers, filters.openToPartnerships, filters.sort]);
 
   const search = useInfiniteQuery({
     queryKey: ['admin-indexed-creators', qs],
