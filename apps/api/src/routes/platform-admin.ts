@@ -1919,6 +1919,7 @@ const creatorIndexSettingsSchema = z
     seedQueries: z.array(z.string().trim().min(3).max(200)).max(50),
     discoverySources: z.object({ storefronts: z.boolean(), sponsorPages: z.boolean(), people: z.boolean() }).strict().optional(),
     requirePartnershipSignal: z.boolean().optional(),
+    readConcurrency: z.number().int().min(1).max(20).optional(),
     classifierModel: z.string().trim().min(1).max(60),
   })
   .strict();

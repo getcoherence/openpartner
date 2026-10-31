@@ -72,6 +72,7 @@ import { AdminNetworkComplete } from './pages/admin/NetworkComplete.js';
 import { AdminNetworkRequests } from './pages/admin/NetworkRequests.js';
 import { AdminNetworkCreators } from './pages/admin/NetworkCreators.js';
 import { NetworkCreatorStorefrontPage } from './pages/admin/NetworkCreatorStorefront.js';
+import { IndexedCreatorPage } from './pages/admin/NetworkIndexedCreators.js';
 import { AdminNetworkBookings } from './pages/admin/NetworkBookings.js';
 import { AdminNetworkClaim, AdminNetworkMessages, AdminNetworkThread, useBrandUnreadMessages } from './pages/admin/NetworkMessages.js';
 import { UnreadDot } from './pages/creator/conversation-shared.js';
@@ -394,6 +395,7 @@ function Shell() {
                   <Route path="admin/network/requests" element={<AdminNetworkRequests />} />
                   <Route path="admin/network/creators" element={<AdminNetworkCreators />} />
                   <Route path="admin/network/creators/:handle" element={<NetworkCreatorStorefrontPage />} />
+                  <Route path="admin/network/indexed-creators/:id" element={<IndexedCreatorPage />} />
                   <Route path="admin/network/bookings" element={<AdminNetworkBookings />} />
                   <Route path="admin/network/messages" element={<AdminNetworkMessages />} />
                   <Route path="admin/network/messages/:id" element={<AdminNetworkThread />} />

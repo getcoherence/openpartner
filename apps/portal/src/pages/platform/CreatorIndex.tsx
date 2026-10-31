@@ -18,7 +18,7 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { theme } from '../../theme.js';
-import { Button, Card, ErrorBanner, Input, Label, Page, Select, Table, Textarea } from '../../ui.js';
+import { Button, Card, ErrorBanner, Input, Label, Page, Select, Table, Textarea, formatDate } from '../../ui.js';
 import { friendlyPlatformError, papi, type PlatformOperator } from './lib.js';
 import { brandSignalLabel, shortUrl, type PartnershipSignal } from '../../lib/partnership-signals.js';
 
@@ -46,7 +46,18 @@ interface IndexSettings {
   seedQueries: string[];
   discoverySources?: Record<DiscoverySource, boolean>;
   requirePartnershipSignal?: boolean;
+  /** Profiles read at once (1–20). */
+  readConcurrency?: number;
   classifierModel: string;
+}
+
+type IndexJob = 'discover' | 'read' | 'refresh';
+
+interface IndexRun {
+  startedAt: string;
+  /** Null while it's running. */
+  finishedAt: string | null;
+  result: Record<string, unknown> | null;
 }
 
 interface SettingsState {
@@ -67,6 +78,62 @@ interface Stats {
   emailsSent30d: number;
   suppressions: Record<string, number>;
   spend: { thisMonthUsd: number; budgetUsd: number };
+  /** Each job's latest run. */
+  runs?: Partial<Record<IndexJob, IndexRun>>;
+}
+
+/** Why a run stopped or set a platform aside, in ops' words. */
+const RUN_REASONS: Record<string, string> = {
+  budget: 'this month’s budget is spent',
+  youtube_quota: 'the YouTube API quota is used up',
+  youtube_api_disabled: 'the YouTube Data API isn’t enabled for the key',
+  youtube_key_restricted: 'the YouTube key’s restrictions refuse the Network',
+  youtube_not_configured: 'no YouTube key is set',
+  youtube_403: 'YouTube refused the key',
+};
+const reasonText = (r: string) => RUN_REASONS[r] ?? r.replace(/_/g, ' ');
+
+const JOB_LABEL: Record<IndexJob, string> = { discover: 'Discover', read: 'Read', refresh: 'Refresh' };
+
+/** What a finished run did, in one line. */
+function runSummary(job: IndexJob, r: Record<string, unknown> | null): string {
+  if (!r) return '';
+  if (typeof r.error === 'string') return `failed: ${r.error}`;
+  if (r.ran === false) return 'didn’t run (indexing is off, or there’s nothing to search)';
+  const n = (k: string) => (typeof r[k] === 'number' ? (r[k] as number) : 0);
+  const parts =
+    job === 'discover'
+      ? [`${n('searches')} searches`, `${n('found')} found`, `${n('queued')} queued`, n('recent') ? `${n('recent')} searched recently, skipped` : '']
+      : job === 'read'
+        ? [`${n('indexed')} listed`, `${n('rejected')} turned down`, `${n('expanded')} storefronts and pages opened`, n('retried') ? `${n('retried')} to retry` : '', n('deferred') ? `${n('deferred')} waiting` : '', n('failed') ? `${n('failed')} failed` : '']
+        : [`${n('refreshed')} refreshed`, `${n('deleted')} removed`, n('deferred') ? `${n('deferred')} waiting` : '', n('errors') ? `${n('errors')} errors` : ''];
+  return parts.filter(Boolean).join(' · ');
+}
+
+function RunLine({ job, run }: { job: IndexJob; run: IndexRun | undefined }) {
+  if (!run) return null;
+  const running = !run.finishedAt;
+  const r = run.result;
+  const skipped = r && typeof r.skipped === 'object' && r.skipped ? Object.entries(r.skipped as Record<string, string>) : [];
+  return (
+    <div style={{ fontSize: 13, lineHeight: 1.5 }}>
+      <strong>{JOB_LABEL[job]}</strong>{' '}
+      <span style={{ color: theme.textMuted }}>
+        {running
+          ? `running since ${formatDate(run.startedAt, { relative: true })}…`
+          : `${formatDate(run.finishedAt, { relative: true })}: ${runSummary(job, r)}`}
+      </span>
+      {!running && typeof r?.stoppedBy === 'string' && <div style={{ color: theme.danger }}>Stopped early: {reasonText(r.stoppedBy)}.</div>}
+      {skipped.map(([platform, why]) => (
+        <div key={platform} style={{ color: theme.danger }}>
+          {platform === 'youtube' ? 'YouTube' : platform} set aside: {reasonText(why)}. Those profiles are tried again in an hour.
+        </div>
+      ))}
+      {typeof r?.youtubeApi === 'string' && (
+        <div style={{ color: theme.textMuted }}>YouTube read through the backup source: {reasonText(r.youtubeApi)}.</div>
+      )}
+    </div>
+  );
 }
 
 interface OpsCreator {
@@ -91,6 +158,46 @@ const list = (s: string) =>
     .map((x) => x.trim())
     .filter(Boolean);
 
+const codesIn = (s: string) => list(s).map((c) => c.toUpperCase());
+const linesIn = (s: string) =>
+  s
+    .split('\n')
+    .map((x) => x.trim())
+    .filter(Boolean);
+
+/** A textarea for a list. It keeps the text as typed and hands back the
+ *  parsed list: showing the list joined again would drop a separator the
+ *  moment it's typed (a new line, a comma, a space at the end). Mounted
+ *  afresh, with a new key, when the settings are saved or discarded. */
+function ListTextarea({
+  value,
+  parse,
+  join,
+  rows,
+  disabled,
+  onChange,
+}: {
+  value: string[];
+  parse: (s: string) => string[];
+  join: string;
+  rows: number;
+  disabled: boolean;
+  onChange: (v: string[]) => void;
+}) {
+  const [text, setText] = useState(() => value.join(join));
+  return (
+    <Textarea
+      rows={rows}
+      value={text}
+      disabled={disabled}
+      onChange={(e) => {
+        setText(e.target.value);
+        onChange(parse(e.target.value));
+      }}
+    />
+  );
+}
+
 function Pill({ on, children }: { on: boolean; children: React.ReactNode }) {
   return (
     <span
@@ -112,20 +219,36 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
   const canWrite = operator.role === 'admin';
   const qc = useQueryClient();
   const state = useQuery({ queryKey: ['platform-creator-index'], queryFn: () => papi<SettingsState>('/platform-admin/creator-index/settings') });
-  const stats = useQuery({ queryKey: ['platform-creator-index-stats'], queryFn: () => papi<Stats>('/platform-admin/creator-index/stats') });
+  // While a run is going, and for a little while after one is started (it
+  // notes itself a moment later), the counts and the list refresh themselves.
+  const [watchUntil, setWatchUntil] = useState(0);
+  const poll = (data: Stats | undefined) =>
+    Object.values(data?.runs ?? {}).some((r) => r && !r.finishedAt) || Date.now() < watchUntil ? 4_000 : false;
+  const stats = useQuery({
+    queryKey: ['platform-creator-index-stats'],
+    queryFn: () => papi<Stats>('/platform-admin/creator-index/stats'),
+    refetchInterval: (query) => poll(query.state.data),
+  });
+  const watching = poll(stats.data) !== false;
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ['platform-creator-index'] });
     qc.invalidateQueries({ queryKey: ['platform-creator-index-stats'] });
   };
 
   const [draft, setDraft] = useState<IndexSettings | null>(null);
+  // Bumped when the draft is replaced, so the list boxes show it afresh.
+  const [listsKey, setListsKey] = useState(0);
   useEffect(() => {
     if (state.data && !draft) setDraft(state.data.settings);
   }, [state.data, draft]);
+  const replaceDraft = (s: IndexSettings) => {
+    setDraft(s);
+    setListsKey((k) => k + 1);
+  };
   const save = useMutation({
     mutationFn: (s: IndexSettings) => papi<{ settings: IndexSettings; visibilityChanged: number }>('/platform-admin/creator-index/settings', { method: 'PUT', body: s }),
     onSuccess: (r) => {
-      setDraft(r.settings);
+      replaceDraft(r.settings);
       refresh();
     },
   });
@@ -138,9 +261,13 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
       refresh();
     },
   });
+  // Starts the job on the Network, which runs it in the background.
   const run = useMutation({
-    mutationFn: (job: 'discover' | 'read' | 'refresh') => papi<Record<string, unknown>>(`/platform-admin/creator-index/run/${job}`, { method: 'POST' }),
-    onSuccess: refresh,
+    mutationFn: (job: IndexJob) => papi<Record<string, unknown>>(`/platform-admin/creator-index/run/${job}`, { method: 'POST' }),
+    onSuccess: () => {
+      setWatchUntil(Date.now() + 20_000);
+      refresh();
+    },
   });
   const invites = useMutation({
     mutationFn: (dryRun: boolean) => papi<Record<string, unknown>>('/platform-admin/creator-index/invites/run', { method: 'POST', body: { dryRun } }),
@@ -152,6 +279,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
   const creators = useQuery({
     queryKey: ['platform-creator-index-creators', searchFor],
     queryFn: () => papi<{ creators: OpsCreator[] }>(`/platform-admin/creator-index/creators${searchFor ? `?q=${encodeURIComponent(searchFor)}` : ''}`),
+    refetchInterval: watching ? 4_000 : false,
   });
   const remove = useMutation({
     mutationFn: (id: string) => papi(`/platform-admin/creator-index/creators/${encodeURIComponent(id)}`, { method: 'DELETE' }),
@@ -257,6 +385,17 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                 <Input type="number" min={7} max={90} value={draft.refreshDays} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, refreshDays: Math.min(90, Math.max(7, Math.round(Number(e.target.value) || 30))) })} />
               </div>
               <div>
+                <Label>Profiles read at once</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={draft.readConcurrency ?? 8}
+                  disabled={!canWrite}
+                  onChange={(e) => setDraft({ ...draft, readConcurrency: Math.min(20, Math.max(1, Math.round(Number(e.target.value) || 8))) })}
+                />
+              </div>
+              <div>
                 <Label>Classifier model</Label>
                 <Select value={draft.classifierModel} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, classifierModel: e.target.value })}>
                   {state.data.classifierModels.map((m) => (
@@ -268,20 +407,39 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
             <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginTop: 14 }}>
               <div>
                 <Label>Never indexed (countries)</Label>
-                <Textarea rows={3} value={draft.excludedCountries.join(', ')} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, excludedCountries: list(e.target.value).map((c) => c.toUpperCase()) })} />
+                <ListTextarea
+                  key={`excluded-${listsKey}`}
+                  rows={3}
+                  value={draft.excludedCountries}
+                  parse={codesIn}
+                  join=", "
+                  disabled={!canWrite}
+                  onChange={(v) => setDraft({ ...draft, excludedCountries: v })}
+                />
               </div>
               <div>
                 <Label>Hidden from brands until they claim (regions)</Label>
-                <Textarea rows={3} value={draft.hiddenRegions.join(', ')} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, hiddenRegions: list(e.target.value).map((c) => c.toUpperCase()) })} />
+                <ListTextarea
+                  key={`hidden-${listsKey}`}
+                  rows={3}
+                  value={draft.hiddenRegions}
+                  parse={codesIn}
+                  join=", "
+                  disabled={!canWrite}
+                  onChange={(v) => setDraft({ ...draft, hiddenRegions: v })}
+                />
               </div>
             </div>
             <div style={{ marginTop: 14 }}>
               <Label>Seed queries (one per line; topics, never people)</Label>
-              <Textarea
+              <ListTextarea
+                key={`seeds-${listsKey}`}
                 rows={4}
-                value={draft.seedQueries.join('\n')}
+                value={draft.seedQueries}
+                parse={linesIn}
+                join={'\n'}
                 disabled={!canWrite}
-                onChange={(e) => setDraft({ ...draft, seedQueries: e.target.value.split('\n').map((x) => x.trim()).filter(Boolean) })}
+                onChange={(v) => setDraft({ ...draft, seedQueries: v })}
               />
             </div>
             <div style={{ marginTop: 14 }}>
@@ -318,7 +476,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
             {canWrite && (
               <div style={{ display: 'flex', gap: 8, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>
                 <Button onClick={() => save.mutate(draft)} disabled={save.isPending}>{save.isPending ? 'Saving…' : 'Save settings'}</Button>
-                <Button variant="secondary" onClick={() => setDraft(state.data!.settings)}>Discard changes</Button>
+                <Button variant="secondary" onClick={() => replaceDraft(state.data!.settings)}>Discard changes</Button>
                 {save.data && <span style={{ fontSize: 12, color: theme.textMuted }}>Saved. {save.data.visibilityChanged} listings changed visibility.</span>}
               </div>
             )}
@@ -343,9 +501,21 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
               <Button variant="secondary" onClick={() => invites.mutate(true)} disabled={invites.isPending}>Preview invite email run</Button>
               {canWrite && <Button onClick={() => invites.mutate(false)} disabled={invites.isPending}>Send due invite emails</Button>}
             </div>
-            {(run.data || invites.data) && (
+            {run.isSuccess && (
+              <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 10 }}>
+                Started. It runs on the Network in the background; this page updates as creators are read.
+              </div>
+            )}
+            {s?.runs && Object.keys(s.runs).length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 14 }}>
+                {(['discover', 'read', 'refresh'] as const).map((job) => (
+                  <RunLine key={job} job={job} run={s.runs![job]} />
+                ))}
+              </div>
+            )}
+            {invites.data && (
               <pre style={{ marginTop: 12, fontSize: 12, background: theme.surface2, padding: 10, borderRadius: theme.radiusSm, overflowX: 'auto' }}>
-                {JSON.stringify(invites.data ?? run.data, null, 2)}
+                {JSON.stringify(invites.data, null, 2)}
               </pre>
             )}
             {canWrite && (

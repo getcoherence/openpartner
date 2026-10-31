@@ -574,6 +574,8 @@ export function friendlyPlatformError(err: unknown): string {
       return 'That vendor is one of our hosted brands — approve or reject it on the Brands tab.';
     case 'network_not_configured':
       return 'NETWORK_URL / NETWORK_ADMIN_API_KEY aren’t set, so creator reminders can’t reach the Network.';
+    case 'already_running':
+      return 'That job is already running. Its progress shows under Runs.';
     case 'cutover_in_past':
       return 'The cutover can’t be more than a day in the past: it would reprice plans bought under the old pricing.';
     case 'no_cutover':

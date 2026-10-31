@@ -1481,6 +1481,8 @@ export interface CreatorIndexSettings {
   discoverySources?: { storefronts: boolean; sponsorPages: boolean; people: boolean };
   /** Keep only creators who already take partnerships. */
   requirePartnershipSignal?: boolean;
+  /** Profiles read at the same time (1–20). */
+  readConcurrency?: number;
   classifierModel: string;
 }
 
@@ -1526,8 +1528,10 @@ export async function adminQueueIndexSeeds(networkUrl: string, urls: string[]): 
 }
 
 /** Run one of the index jobs now. Reads take most of a minute each. */
+/** Starts the job on the Network, which answers at once ({ started: true })
+ *  and runs it in the background; 409 already_running if it's going. */
 export async function adminRunCreatorIndexJob(networkUrl: string, job: 'discover' | 'read' | 'refresh'): Promise<Record<string, unknown>> {
-  return callNetworkAdmin<Record<string, unknown>>(networkUrl, 'POST', `/admin/creator-index/run/${job}`, {}, {}, 300_000);
+  return callNetworkAdmin<Record<string, unknown>>(networkUrl, 'POST', `/admin/creator-index/run/${job}`, {}, {}, 30_000);
 }
 
 export interface CreatorIndexInviteRunResult {

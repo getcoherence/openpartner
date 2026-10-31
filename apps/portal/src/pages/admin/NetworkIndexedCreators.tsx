@@ -8,16 +8,20 @@
  *
  * Creators who already take partnerships (a sponsorship storefront, a
  * sponsor page, sponsored posts) are marked, and a brand can show only them.
+ * A card opens the creator's page (/admin/network/indexed-creators/:id):
+ * what they publish, each channel's numbers and top posts, the products
+ * they mention, and why they can or can't be invited.
  *
  * Other plans get the plan_required answer from the API, and this shows
  * what the plan would unlock instead of an error.
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { UserPlus, Users } from 'lucide-react';
+import { useParams } from 'react-router';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { ExternalLink, UserPlus, Users } from 'lucide-react';
 import { api, ApiError } from '../../api.js';
-import { Button, Card, EmptyState, ErrorBanner, Input, Label, Select, Textarea } from '../../ui.js';
+import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Textarea, formatDate } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
 import { TenantLink } from '../../tenant-link.js';
 import { brandSignalLabel, type PartnershipSignal } from '../../lib/partnership-signals.js';
@@ -56,6 +60,17 @@ interface SearchPage {
   nextCursor: string | null;
   total: number;
 }
+
+/** One creator's page: every channel with its numbers, and what we read. */
+interface IndexedCreatorProfile extends Omit<IndexedCreator, 'platforms'> {
+  platforms: Array<IndexedPlatform & { avgComments: number | null; avgReposts: number | null; topPostUrls: string[] }>;
+  summary: string | null;
+  productsMentioned: Array<{ name: string; count: number }>;
+  /** Why an invite can't be sent, or null. */
+  blocker: string | null;
+}
+
+const profilePath = (id: string) => `/admin/network/indexed-creators/${encodeURIComponent(id)}`;
 
 /** The Network's vocabulary (creator-index/classify.ts). */
 const CATEGORIES = [
@@ -240,20 +255,45 @@ const INVITE_STATUS: Record<string, string> = {
   claimed: 'Joined. Your message is in Messages.',
 };
 
+function Avatar({ creator, size }: { creator: Pick<IndexedCreator, 'avatarUrl' | 'name'>; size: number }) {
+  return creator.avatarUrl ? (
+    <img src={creator.avatarUrl} alt="" style={{ width: size, height: size, borderRadius: '50%', objectFit: 'cover', background: theme.surface2, flexShrink: 0 }} />
+  ) : (
+    <div
+      style={{
+        width: size,
+        height: size,
+        borderRadius: '50%',
+        background: theme.surface2,
+        color: theme.textMuted,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: Math.round(size * 0.4),
+        fontWeight: 600,
+        flexShrink: 0,
+      }}
+    >
+      {creator.name.charAt(0).toUpperCase()}
+    </div>
+  );
+}
+
 function IndexedCreatorCard({ creator }: { creator: IndexedCreator }) {
   const [open, setOpen] = useState(false);
   return (
     <Card>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
-        {creator.avatarUrl ? (
-          <img src={creator.avatarUrl} alt="" style={{ width: 44, height: 44, borderRadius: '50%', objectFit: 'cover', background: theme.surface2 }} />
-        ) : (
-          <div style={{ width: 44, height: 44, borderRadius: '50%', background: theme.surface2, color: theme.textMuted, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, fontWeight: 600 }}>
-            {creator.name.charAt(0).toUpperCase()}
-          </div>
-        )}
+        <TenantLink to={profilePath(creator.id)} aria-label={`${creator.name}: details`} style={{ display: 'flex' }}>
+          <Avatar creator={creator} size={44} />
+        </TenantLink>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{creator.name}</div>
+          <TenantLink
+            to={profilePath(creator.id)}
+            style={{ display: 'block', fontWeight: 500, color: theme.text, textDecoration: 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+          >
+            {creator.name}
+          </TenantLink>
           <span style={{ display: 'inline-block', marginTop: 3, background: theme.surface2, color: theme.textMuted, fontSize: 10, padding: '2px 8px', borderRadius: 10 }}>
             Not on OpenPartner yet
           </span>
@@ -292,16 +332,194 @@ function IndexedCreatorCard({ creator }: { creator: IndexedCreator }) {
         </div>
       )}
       {creator.invite ? (
-        <div style={{ fontSize: 13, color: creator.invite.status === 'claimed' ? theme.success : theme.textMuted }}>
+        <div style={{ fontSize: 13, color: creator.invite.status === 'claimed' ? theme.success : theme.textMuted, marginBottom: 8 }}>
           {INVITE_STATUS[creator.invite.status] ?? 'Invited.'}
         </div>
-      ) : creator.invitable ? (
-        <Button onClick={() => setOpen(true)} style={{ width: '100%' }}>Invite to collaborate</Button>
-      ) : (
-        <div style={{ fontSize: 13, color: theme.textDim }}>Can&rsquo;t be invited yet</div>
-      )}
+      ) : !creator.invitable ? (
+        <div style={{ fontSize: 13, color: theme.textDim, marginBottom: 8 }}>Can&rsquo;t be invited yet</div>
+      ) : null}
+      <div style={{ display: 'flex', gap: 6 }}>
+        <TenantLink to={profilePath(creator.id)} style={{ textDecoration: 'none', flex: 1 }}>
+          <Button variant="secondary" style={{ width: '100%' }}>View details</Button>
+        </TenantLink>
+        {!creator.invite && creator.invitable && (
+          <Button onClick={() => setOpen(true)} style={{ flex: 1 }}>Invite</Button>
+        )}
+      </div>
       {open && <IndexInviteDialog creator={creator} onClose={() => setOpen(false)} />}
     </Card>
+  );
+}
+
+/** Why an invite can't go out, in the brand's terms. */
+const BLOCKERS: Record<string, string> = {
+  unreachable:
+    'We can’t email them yet: they haven’t published a business email address we can use, or we’ve already emailed them as often as we will (three times).',
+  not_accepting_invites: 'They’ve asked not to receive emails from OpenPartner. They’re still listed, and you can contact them through their own channels.',
+};
+
+/** A channel's numbers, left out when the platform doesn't give them. */
+function channelNumbers(p: IndexedCreatorProfile['platforms'][number]): string[] {
+  const out: string[] = [];
+  if (p.followerCount != null) out.push(`${p.followerCount.toLocaleString()} followers`);
+  if (p.postsLast30d != null) out.push(`${p.postsLast30d} post${p.postsLast30d === 1 ? '' : 's'} in the last 30 days`);
+  if (p.avgReactions != null) out.push(`${p.avgReactions.toLocaleString()} reactions a post`);
+  if (p.avgComments != null) out.push(`${p.avgComments.toLocaleString()} comments a post`);
+  if (p.avgReposts != null) out.push(`${p.avgReposts.toLocaleString()} reposts a post`);
+  return out;
+}
+
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  return <div style={{ fontSize: 12, color: theme.textMuted, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>{children}</div>;
+}
+
+/** /admin/network/indexed-creators/:id — one creator who isn't on
+ *  OpenPartner yet, in full. Flex and Enterprise, like the search. */
+export function IndexedCreatorPage() {
+  const { id = '' } = useParams<{ id: string }>();
+  const [inviting, setInviting] = useState(false);
+  const profile = useQuery({
+    queryKey: ['admin-indexed-creators', 'profile', id],
+    queryFn: () => api<{ creator: IndexedCreatorProfile }>(profilePath(id)).then((r) => r.creator),
+    retry: false,
+  });
+
+  const back = (
+    <TenantLink to="/admin/network/creators?tab=index" style={{ color: theme.textMuted, fontSize: 13, textDecoration: 'none' }}>
+      ← Not on OpenPartner yet
+    </TenantLink>
+  );
+
+  if (profile.error instanceof ApiError && profile.error.status === 402) {
+    return (
+      <Page title="Creator" back={back}>
+        <PlanUpsell />
+      </Page>
+    );
+  }
+  if (profile.error instanceof ApiError && profile.error.status === 404) {
+    return (
+      <Page title="Creator not found" back={back}>
+        <EmptyState title="This creator is no longer listed" hint="They may have joined OpenPartner, or asked to be removed." icon={<Users size={28} strokeWidth={1.25} />} />
+      </Page>
+    );
+  }
+  const c = profile.data;
+  if (!c) {
+    return (
+      <Page title="Creator" back={back}>
+        <ErrorBanner error={profile.error} />
+        {profile.isLoading && <Card>Loading…</Card>}
+      </Page>
+    );
+  }
+
+  const signals = c.partnershipSignals ?? [];
+  return (
+    <Page title={c.name} back={back} subtitle={c.headline ?? undefined}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 860 }}>
+        <Card>
+          <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Avatar creator={c} size={56} />
+            <div style={{ flex: 1, minWidth: 200 }}>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                <span style={{ background: theme.surface2, color: theme.textMuted, fontSize: 11, padding: '2px 8px', borderRadius: 10 }}>Not on OpenPartner yet</span>
+                {c.openToPartnerships && (
+                  <span style={{ background: theme.successSoft, color: theme.success, fontSize: 11, padding: '2px 8px', borderRadius: 10 }}>Open to partnerships</span>
+                )}
+                {c.country && <span style={{ fontSize: 12, color: theme.textDim }}>{c.country}</span>}
+              </div>
+              <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 6 }}>
+                <strong style={{ color: theme.text }}>{c.totalReach.toLocaleString()}</strong> followers across {c.platforms.length} channel
+                {c.platforms.length === 1 ? '' : 's'}
+                {c.refreshedAt && <> · read {formatDate(c.refreshedAt)}</>}
+              </div>
+            </div>
+            <div style={{ minWidth: 200 }}>
+              {c.invite ? (
+                <div style={{ fontSize: 13, color: c.invite.status === 'claimed' ? theme.success : theme.textMuted }}>{INVITE_STATUS[c.invite.status] ?? 'Invited.'}</div>
+              ) : c.invitable ? (
+                <Button onClick={() => setInviting(true)} style={{ width: '100%' }}>Invite to collaborate</Button>
+              ) : (
+                <div style={{ fontSize: 13, color: theme.textDim }}>Can&rsquo;t be invited yet</div>
+              )}
+            </div>
+          </div>
+          {!c.invite && !c.invitable && (
+            <p style={{ fontSize: 13, color: theme.textMuted, margin: '12px 0 0', lineHeight: 1.5 }}>
+              {(c.blocker && BLOCKERS[c.blocker]) ?? BLOCKERS.unreachable}
+            </p>
+          )}
+        </Card>
+
+        {signals.length > 0 && (
+          <Card>
+            <SectionTitle>Why they&rsquo;re open to partnerships</SectionTitle>
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 14, lineHeight: 1.7 }}>
+              {signals.map((s) => (
+                <li key={s.kind}>{brandSignalLabel(s)}</li>
+              ))}
+            </ul>
+          </Card>
+        )}
+
+        {c.summary && (
+          <Card>
+            <SectionTitle>What they publish</SectionTitle>
+            <p style={{ fontSize: 14, margin: 0, lineHeight: 1.6 }}>{c.summary}</p>
+            {(c.topics.length > 0 || c.categories.length > 0) && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 12 }}>
+                {[...c.categories, ...c.topics].map((t) => (
+                  <span key={t} style={{ background: theme.surface2, color: theme.textMuted, fontSize: 11, padding: '2px 8px', borderRadius: 10 }}>{t}</span>
+                ))}
+              </div>
+            )}
+          </Card>
+        )}
+
+        <Card>
+          <SectionTitle>Channels</SectionTitle>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {c.platforms.map((p) => (
+              <div key={p.profileUrl}>
+                <a href={p.profileUrl} target="_blank" rel="noreferrer noopener" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 500, color: theme.text }}>
+                  {PLATFORM_LABEL[p.platform] ?? p.platform}
+                  <ExternalLink size={13} />
+                </a>
+                <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 3 }}>{channelNumbers(p).join(' · ') || 'No numbers yet'}</div>
+                {p.topPostUrls.length > 0 && (
+                  <div style={{ fontSize: 13, marginTop: 4 }}>
+                    Top posts:{' '}
+                    {p.topPostUrls.map((u, i) => (
+                      <span key={u}>
+                        {i > 0 && ' · '}
+                        <a href={u} target="_blank" rel="noreferrer noopener" style={{ color: theme.accentText }}>
+                          {i + 1}
+                        </a>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        {c.productsMentioned.length > 0 && (
+          <Card>
+            <SectionTitle>Products and companies they mention</SectionTitle>
+            <div style={{ fontSize: 14, lineHeight: 1.7 }}>
+              {c.productsMentioned.map((m) => `${m.name} (${m.count} post${m.count === 1 ? '' : 's'})`).join(' · ')}
+            </div>
+          </Card>
+        )}
+
+        <p style={{ fontSize: 12, color: theme.textDim, margin: 0, lineHeight: 1.5 }}>
+          Read from their public profiles. Their rates and packages appear once they join OpenPartner and set them.
+        </p>
+      </div>
+      {inviting && <IndexInviteDialog creator={c} onClose={() => setInviting(false)} />}
+    </Page>
   );
 }
 
