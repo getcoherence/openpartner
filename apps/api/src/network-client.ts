@@ -1530,6 +1530,27 @@ export async function adminRemoveIndexedCreator(networkUrl: string, id: string):
   return callNetworkAdmin<void>(networkUrl, 'DELETE', `/admin/creator-index/creators/${encodeURIComponent(id)}`);
 }
 
+export interface IndexedCreatorContact {
+  address: string;
+  foundOn: string | null;
+  verified: boolean;
+}
+
+/** One indexed creator's address in full (the list shows it masked). */
+export async function adminGetIndexedCreatorContact(networkUrl: string, id: string): Promise<{ contact: IndexedCreatorContact }> {
+  return callNetworkAdmin(networkUrl, 'GET', `/admin/creator-index/creators/${encodeURIComponent(id)}/contact`);
+}
+
+/** Set an address ops found published on `sourceUrl`; the Network reads the
+ *  page and verifies the address first. */
+export async function adminSetIndexedCreatorContact(
+  networkUrl: string,
+  id: string,
+  body: { email: string; sourceUrl: string },
+): Promise<{ creator: unknown }> {
+  return callNetworkAdmin(networkUrl, 'PUT', `/admin/creator-index/creators/${encodeURIComponent(id)}/contact`, body);
+}
+
 export async function adminQueueIndexSeeds(networkUrl: string, urls: string[]): Promise<Record<string, number>> {
   return callNetworkAdmin<Record<string, number>>(networkUrl, 'POST', '/admin/creator-index/seeds', { urls });
 }

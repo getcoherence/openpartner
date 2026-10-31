@@ -334,6 +334,75 @@ describe('ops console: creator index settings', () => {
     await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({ contactEnrichment: { creatorData: false, ownDomain: true } }));
   });
 
+  it('shows an address in full on request, and adds one ops found published, saying why one was refused', async () => {
+    let refuse = true;
+    respond = (url, method) => {
+      if (url.endsWith('/creator-index/settings')) {
+        return { status: 200, body: { settings: SETTINGS, defaults: SETTINGS, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {} } };
+      }
+      if (url.endsWith('/creator-index/stats')) {
+        return {
+          status: 200,
+          body: {
+            creators: { byStatus: {}, listed: 2, shownToBrands: 1, hiddenFromBrands: 1, hiddenByRegion: 0, withEmail: 1, withoutEmail: 1 },
+            byCountry: [],
+            candidates: {},
+            rejections: {},
+            invites: {},
+            emailsSent30d: 0,
+            suppressions: {},
+            spend: { thisMonthUsd: 0, budgetUsd: 10 },
+          },
+        };
+      }
+      if (url.endsWith('/creators/a/contact')) return { status: 200, body: { contact: { address: 'hello@jorivera.co', foundOn: 'via:creator-data', verified: true } } };
+      if (url.endsWith('/creators/b/contact') && method === 'PUT') {
+        if (refuse) {
+          refuse = false;
+          return { status: 422, body: { error: 'not_on_page' } };
+        }
+        return { status: 200, body: { creator: {} } };
+      }
+      const base = { status: 'active', headline: null, country: 'US', region: 'US-TX', brandVisible: true, emailsSent: 0, totalReach: 5_000, platforms: [] };
+      return {
+        status: 200,
+        body: {
+          creators: [
+            { ...base, id: 'a', name: 'Jo Rivera', contact: { masked: 'h••••@jorivera.co', foundOn: 'via:creator-data', verified: true } },
+            { ...base, id: 'b', name: 'Sam Lee', contact: null },
+          ],
+        },
+      };
+    };
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    expect(await screen.findByText('h••••@jorivera.co')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Show' }));
+    expect(await screen.findByText('hello@jorivera.co')).toBeTruthy();
+    expect(calls.some((c) => c.method === 'GET' && c.url === '/api/platform-admin/creator-index/creators/a/contact')).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Hide' }));
+    expect(screen.getByText('h••••@jorivera.co')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add address' }));
+    fireEvent.change(screen.getByLabelText('Email address'), { target: { value: 'hello@jorivera.co' } });
+    fireEvent.change(screen.getByLabelText('Page it’s published on'), { target: { value: 'https://jorivera.substack.com/about' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('That address isn’t on that page. Give the page that shows it.')).toBeTruthy();
+    const listReads = calls.filter((c) => c.url.includes('/creator-index/creators?') || c.url.endsWith('/creator-index/creators')).length;
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.queryByLabelText('Email address')).toBeNull());
+    const put = calls.filter((c) => c.method === 'PUT' && c.url === '/api/platform-admin/creator-index/creators/b/contact');
+    expect(put.at(-1)!.body).toEqual({ email: 'hello@jorivera.co', sourceUrl: 'https://jorivera.substack.com/about' });
+    // The list is read again, to show the new address masked.
+    await waitFor(() => expect(calls.filter((c) => c.url.includes('/creator-index/creators?') || c.url.endsWith('/creator-index/creators')).length).toBeGreaterThan(listReads));
+
+    // Support operators see the list, not the controls.
+    cleanup();
+    wrap(<CreatorIndexPage operator={{ id: 'pa_2', email: 'support@test', role: 'support' } as never} />);
+    expect(await screen.findByText('h••••@jorivera.co')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Show' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add address' })).toBeNull();
+  });
+
   it('chooses where queries are searched and whether only partnership-ready creators are kept, and shows ops the evidence', async () => {
     respond = (url, method) => {
       if (url.endsWith('/creator-index/settings') && method === 'PUT') return { status: 200, body: { settings: calls[calls.length - 1]!.body, visibilityChanged: 0 } };

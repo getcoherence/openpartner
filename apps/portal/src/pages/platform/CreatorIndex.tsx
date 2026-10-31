@@ -21,7 +21,7 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select, Table, Textarea, formatDate } from '../../ui.js';
-import { friendlyPlatformError, papi, type PlatformOperator } from './lib.js';
+import { friendlyPlatformError, papi, PlatformApiError, type PlatformOperator } from './lib.js';
 import { brandSignalLabel, shortUrl, type PartnershipSignal } from '../../lib/partnership-signals.js';
 
 type DiscoverySource = 'storefronts' | 'sponsorPages' | 'people';
@@ -251,6 +251,107 @@ interface OpsCreator {
 
 /** Listed in the last 24 hours. */
 const isNew = (at: string) => Date.now() - Date.parse(at) < 86_400_000;
+
+/** Why an address couldn't be set, in ops' terms. */
+const ADDRESS_ERRORS: Record<string, string> = {
+  not_on_page: 'That address isn’t on that page. Give the page that shows it.',
+  source_unreadable: 'We couldn’t read that page. It may need a sign-in (LinkedIn’s do): give a public page that shows the address.',
+  refuses_unsolicited: 'That page asks not to be sent unsolicited email, so the address can’t be used.',
+  suppressed: 'Whoever owns this address asked to be removed from the index.',
+  undeliverable: 'That address doesn’t accept mail.',
+  invalid_email: 'That isn’t a contact address we can use (role addresses like privacy@ aren’t).',
+  invalid_body: 'Give the email, and the page’s full web address (https://…).',
+  not_found: 'This creator isn’t listed any more.',
+};
+
+function addressError(err: unknown): string {
+  const code = err instanceof Error ? err.message : '';
+  if (ADDRESS_ERRORS[code]) return ADDRESS_ERRORS[code];
+  if (err instanceof PlatformApiError && err.status === 502) return 'Couldn’t check the address just now. Try again in a minute.';
+  return friendlyPlatformError(err);
+}
+
+/** The Address column: masked, with Show for one in full, and Add or Change
+ *  for an address ops found published somewhere (admins). */
+function AddressCell({ creator, canWrite, onSaved }: { creator: OpsCreator; canWrite: boolean; onSaved: () => void }) {
+  const path = `/platform-admin/creator-index/creators/${encodeURIComponent(creator.id)}/contact`;
+  const [shown, setShown] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [email, setEmail] = useState('');
+  const [page, setPage] = useState('');
+  const show = useMutation({
+    mutationFn: () => papi<{ contact: { address: string } }>(path),
+    onSuccess: (r) => setShown(r.contact.address),
+  });
+  const save = useMutation({
+    mutationFn: () => papi(path, { method: 'PUT', body: { email: email.trim(), sourceUrl: page.trim() } }),
+    onSuccess: () => {
+      setEditing(false);
+      setShown(null);
+      setEmail('');
+      setPage('');
+      onSaved();
+    },
+  });
+  const c = creator.contact;
+  const error = save.error ?? show.error;
+  return (
+    <div style={{ minWidth: 220 }}>
+      {c ? (
+        <>
+          <div style={{ wordBreak: 'break-all' }}>{`${shown ?? c.masked}${c.verified ? '' : ' (unverified)'}`}</div>
+          {c.foundOn && <div style={{ fontSize: 12, color: theme.textMuted }}>{contactFrom(c.foundOn)}</div>}
+        </>
+      ) : (
+        <span style={{ color: theme.textMuted }}>none yet · hidden from brands</span>
+      )}
+      {canWrite && !editing && (
+        <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+          {c && (
+            <Button variant="ghost" size="sm" disabled={show.isPending} onClick={() => (shown ? setShown(null) : show.mutate())}>
+              {shown ? 'Hide' : 'Show'}
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
+            {c ? 'Change' : 'Add address'}
+          </Button>
+        </div>
+      )}
+      {editing && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            save.mutate();
+          }}
+          style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}
+        >
+          <Input type="email" aria-label="Email address" placeholder="name@example.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <Input aria-label="Page it’s published on" placeholder="Page it’s on (https://…)" value={page} onChange={(e) => setPage(e.target.value)} />
+          <div style={{ fontSize: 12, color: theme.textMuted }}>
+            We read the page to check the address is on it, then verify it. The invite tells them we found it on that page.
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <Button type="submit" size="sm" disabled={save.isPending || !email.trim() || !page.trim()}>
+              {save.isPending ? 'Checking…' : 'Save'}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                setEditing(false);
+                save.reset();
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </form>
+      )}
+      {error && <div style={{ fontSize: 12, color: theme.danger, marginTop: 4 }}>{addressError(error)}</div>}
+    </div>
+  );
+}
 
 const list = (s: string) =>
   s
@@ -845,16 +946,15 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                       </div>
                     ))}
                 </div>,
-                c.contact ? (
-                  <div key="a">
-                    <div>{`${c.contact.masked}${c.contact.verified ? '' : ' (unverified)'}`}</div>
-                    {c.contact.foundOn && (
-                      <div style={{ fontSize: 12, color: theme.textMuted }}>{contactFrom(c.contact.foundOn)}</div>
-                    )}
-                  </div>
-                ) : (
-                  <span key="a" style={{ color: theme.textMuted }}>none yet · hidden from brands</span>
-                ),
+                <AddressCell
+                  key={`a-${c.id}`}
+                  creator={c}
+                  canWrite={canWrite && c.status !== 'claimed'}
+                  onSaved={() => {
+                    qc.invalidateQueries({ queryKey: ['platform-creator-index-creators'] });
+                    refresh();
+                  }}
+                />,
                 <div key="s">
                   <div>{`${c.status}${c.emailsSent ? ` · ${c.emailsSent} sent` : ''}`}</div>
                   {c.listedAt && (
