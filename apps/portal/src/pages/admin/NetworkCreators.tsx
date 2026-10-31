@@ -5,8 +5,9 @@
  * Network's /vendors/me/discover/creators) and browse a filtered list of
  * creators: each with their channels as platform logos and followers, and
  * Invite and Book. The filters sit in one bar, each opening below its chip.
- * On a wide screen the selected creator shows beside the list (kept in the
- * URL: ?creator=, ?external=); otherwise a click opens their page.
+ * The picked creator shows beside the list on a wide screen, and over it,
+ * from the right, on a narrower one (kept in the URL: ?creator=,
+ * ?external=).
  *
  * External creators (not on OpenPartner yet) follow in the same list under
  * the same filters, badged. They have no audience or verification data, so
@@ -19,7 +20,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { ChevronDown, Users } from 'lucide-react';
+import { ChevronDown, Users, X } from 'lucide-react';
 import { api, ApiError } from '../../api.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Textarea } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
@@ -140,14 +141,14 @@ export function AdminNetworkCreators() {
     : externalParam
       ? { kind: 'external', id: externalParam }
       : null;
-  const updateParams = (change: (p: URLSearchParams) => void) =>
+  const updateParams = (change: (p: URLSearchParams) => void, replace = true) =>
     setParams(
       (prev) => {
         const next = new URLSearchParams(prev);
         change(next);
         return next;
       },
-      { replace: true },
+      { replace },
     );
   const setShow = (value: ShowKey) =>
     updateParams((p) => {
@@ -155,12 +156,19 @@ export function AdminNetworkCreators() {
       if (value === 'all') p.delete('show');
       else p.set('show', value);
     });
+  // Over the list (a narrow screen), a pick is a step in the history, so
+  // Back closes it.
   const select = (s: Exclude<Selected, null>) =>
     updateParams((p) => {
       p.delete('creator');
       p.delete('external');
       if (s.kind === 'member') p.set('creator', s.handle);
       else p.set('external', s.id);
+    }, sideBySide);
+  const unselect = () =>
+    updateParams((p) => {
+      p.delete('creator');
+      p.delete('external');
     });
 
   useEffect(() => {
@@ -228,6 +236,13 @@ export function AdminNetworkCreators() {
     setOpenOnly(false);
   };
 
+  const detail =
+    selected?.kind === 'member' ? (
+      <NetworkCreatorStorefrontPanel key={selected.handle} handle={selected.handle} />
+    ) : selected?.kind === 'external' ? (
+      <IndexedCreatorPanel key={selected.id} id={selected.id} />
+    ) : null;
+
   // A newly picked creator starts at the top of the panel.
   const panel = useRef<HTMLElement>(null);
   const selectedKey = selected ? `${selected.kind}:${selected.kind === 'member' ? selected.handle : selected.id}` : '';
@@ -288,16 +303,16 @@ export function AdminNetworkCreators() {
             <MemberRow
               key={r.id}
               creator={r}
-              selected={sideBySide && selected?.kind === 'member' && selected.handle === r.handle}
-              onSelect={sideBySide ? () => select({ kind: 'member', handle: r.handle }) : undefined}
+              selected={selected?.kind === 'member' && selected.handle === r.handle}
+              onSelect={() => select({ kind: 'member', handle: r.handle })}
             />
           ))}
           {externalRows.map((c) => (
             <ExternalRow
               key={c.id}
               creator={c}
-              selected={sideBySide && selected?.kind === 'external' && selected.id === c.id}
-              onSelect={sideBySide ? () => select({ kind: 'external', id: c.id }) : undefined}
+              selected={selected?.kind === 'external' && selected.id === c.id}
+              onSelect={() => select({ kind: 'external', id: c.id })}
             />
           ))}
         </CreatorList>
@@ -441,11 +456,7 @@ export function AdminNetworkCreators() {
               boxShadow: '0 1px 2px rgba(0, 0, 0, 0.06), 0 12px 32px rgba(0, 0, 0, 0.08)',
             }}
           >
-            {selected?.kind === 'member' ? (
-              <NetworkCreatorStorefrontPanel key={selected.handle} handle={selected.handle} />
-            ) : selected?.kind === 'external' ? (
-              <IndexedCreatorPanel key={selected.id} id={selected.id} />
-            ) : (
+            {detail ?? (
               <div style={{ padding: '64px 24px', textAlign: 'center' }}>
                 <Users size={28} strokeWidth={1.25} style={{ color: theme.textDim }} />
                 <div style={{ fontSize: 15, fontWeight: 500, marginTop: 12 }}>Pick a creator</div>
@@ -454,9 +465,62 @@ export function AdminNetworkCreators() {
           </aside>
         </div>
       ) : (
-        listColumn
+        <>
+          {listColumn}
+          {detail && <DetailSheet onClose={unselect}>{detail}</DetailSheet>}
+        </>
       )}
     </Page>
+  );
+}
+
+/** On a narrower screen the picked creator opens over the list, from the
+ *  right: the whole width on a phone. ×, Escape, the backdrop or Back
+ *  closes it. */
+function DetailSheet({ onClose, children }: { onClose: () => void; children: React.ReactNode }) {
+  const close = useRef(onClose);
+  close.current = onClose;
+  useEffect(() => {
+    const escape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') close.current();
+    };
+    document.addEventListener('keydown', escape);
+    // The page underneath stays put.
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', escape);
+      document.body.style.overflow = overflow;
+    };
+  }, []);
+  return (
+    <div
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      style={{ position: 'fixed', inset: 0, zIndex: 40, display: 'flex', justifyContent: 'flex-end', background: theme.overlay }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Selected creator"
+        style={{ width: 'min(560px, 100vw)', height: '100%', display: 'flex', flexDirection: 'column', background: theme.surface, boxShadow: theme.shadowDrawer }}
+      >
+        <div style={{ display: 'flex', padding: '8px 8px 0' }}>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            style={{ display: 'inline-flex', padding: 8, background: 'none', border: 'none', borderRadius: theme.radiusSm, color: theme.textMuted, cursor: 'pointer' }}
+          >
+            <X size={18} />
+          </button>
+        </div>
+        <div className="op-scroll-hover" style={{ flex: 1, overflowY: 'auto', overscrollBehavior: 'contain' }}>
+          {children}
+        </div>
+      </div>
+    </div>
   );
 }
 
