@@ -75,6 +75,9 @@ interface Stats {
   creators: {
     byStatus: Record<string, number>;
     listed: number;
+    /** Listed in the last 24 hours and 7 days. */
+    listedLast24h?: number;
+    listedLast7d?: number;
     shownToBrands: number;
     hiddenFromBrands: number;
     /** Of the hidden: by region, and for want of an address. */
@@ -124,7 +127,13 @@ function runSummary(job: IndexJob, r: Record<string, unknown> | null): string {
   const n = (k: string) => (typeof r[k] === 'number' ? (r[k] as number) : 0);
   const parts =
     job === 'discover'
-      ? [`${n('searches')} searches`, `${n('found')} found`, `${n('queued')} queued`, n('recent') ? `${n('recent')} searched recently, skipped` : '']
+      ? [
+          `${n('searches')} searches`,
+          n('deeper') ? `${n('deeper')} of them deeper` : '',
+          `${n('found')} found`,
+          `${n('queued')} new`,
+          n('recent') ? `${n('recent')} seed searches made this month` : '',
+        ]
       : job === 'read'
         ? [`${n('indexed')} listed`, `${n('rejected')} turned down`, `${n('expanded')} storefronts and pages opened`, n('retried') ? `${n('retried')} to retry` : '', n('deferred') ? `${n('deferred')} waiting` : '', n('failed') ? `${n('failed')} failed` : '']
         : [`${n('refreshed')} refreshed`, `${n('deleted')} removed`, n('deferred') ? `${n('deferred')} waiting` : '', n('errors') ? `${n('errors')} errors` : ''];
@@ -150,6 +159,12 @@ function RunLine({ job, run }: { job: IndexJob; run: IndexRun | undefined }) {
           {platform === 'youtube' ? 'YouTube' : platform} set aside: {reasonText(why)}. Those profiles are tried again in an hour.
         </div>
       ))}
+      {!running && job === 'discover' && Array.isArray(r?.related) && r.related.length > 0 && (
+        <div style={{ color: theme.textMuted }}>Related queries searched: {(r.related as string[]).join(' · ')}</div>
+      )}
+      {!running && job === 'discover' && r?.ran === true && r.searches === 0 && !r.stoppedBy && (
+        <div style={{ color: theme.textMuted }}>Nothing left to search on these topics this month. Add new seed queries to find more.</div>
+      )}
       {typeof r?.youtubeApi === 'string' && (
         <div style={{ color: theme.textMuted }}>YouTube read through the backup source: {reasonText(r.youtubeApi)}.</div>
       )}
@@ -164,14 +179,21 @@ interface OpsCreator {
   headline: string | null;
   country: string | null;
   region: string | null;
+  /** What the country was read from: the location as the channel gives it. */
+  location?: { text: string; from: string | null } | null;
   brandVisible: boolean;
   totalReach: number;
   contact: { masked: string; foundOn: string | null; verified: boolean } | null;
   emailsSent: number;
+  /** When they were listed. */
+  listedAt?: string;
   platforms: Array<{ platform: string; handle: string | null; profileUrl: string; followerCount: number | null }>;
   /** With the page each was read from. */
   partnershipSignals?: PartnershipSignal[];
 }
+
+/** Listed in the last 24 hours. */
+const isNew = (at: string) => Date.now() - Date.parse(at) < 86_400_000;
 
 const list = (s: string) =>
   s
@@ -299,7 +321,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
   const [searchFor, setSearchFor] = useState('');
   const creators = useQuery({
     queryKey: ['platform-creator-index-creators', searchFor],
-    queryFn: () => papi<{ creators: OpsCreator[] }>(`/platform-admin/creator-index/creators${searchFor ? `?q=${encodeURIComponent(searchFor)}` : ''}`),
+    queryFn: () => papi<{ creators: OpsCreator[]; total?: number }>(`/platform-admin/creator-index/creators${searchFor ? `?q=${encodeURIComponent(searchFor)}` : ''}`),
     refetchInterval: watching ? 4_000 : false,
   });
   const remove = useMutation({
@@ -343,6 +365,11 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                 <div>
                   <Label>Listed</Label>
                   <div style={{ fontSize: 20, fontWeight: 600 }}>{s.creators.listed.toLocaleString()}</div>
+                  {s.creators.listedLast24h != null && (
+                    <div style={{ color: s.creators.listedLast24h > 0 ? theme.success : theme.textMuted }}>
+                      +{s.creators.listedLast24h.toLocaleString()} in the last 24 hours · +{(s.creators.listedLast7d ?? 0).toLocaleString()} this week
+                    </div>
+                  )}
                   <div style={{ color: theme.textMuted }}>
                     {s.creators.shownToBrands.toLocaleString()} shown · {s.creators.hiddenFromBrands.toLocaleString()} hidden
                   </div>
@@ -487,7 +514,8 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                 })}
               </div>
               <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 6 }}>
-                A query is searched again in each place after 30 days, so new queries are what find new creators.
+                Each query is searched once a month. Discover again goes further on the same topics: each query once more for up to 100 results, then
+                related queries written from it (up to 20 per query).
               </div>
               <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14, marginTop: 10 }}>
                 <input
@@ -588,7 +616,18 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
           </Card>
 
           <Card>
-            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>Listed creators</div>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+              <div style={{ fontSize: 15, fontWeight: 600 }}>Listed creators</div>
+              {creators.data?.total != null && (
+                <span style={{ fontSize: 13, color: theme.textMuted }}>
+                  {searchFor ? `${creators.data.total.toLocaleString()} match` : `${creators.data.total.toLocaleString()} in all`}
+                  {creators.data.total > creators.data.creators.length ? `, newest ${creators.data.creators.length} shown` : ''}
+                </span>
+              )}
+              {!searchFor && (s?.creators.listedLast24h ?? 0) > 0 && (
+                <span style={{ fontSize: 13, color: theme.success }}>{s!.creators.listedLast24h!.toLocaleString()} new in the last 24 hours</span>
+              )}
+            </div>
             <form
               onSubmit={(e) => {
                 e.preventDefault();
@@ -625,7 +664,14 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                     </div>
                   ))}
                 </div>,
-                `${c.country ?? '—'}${c.region ? ` (${c.region})` : ''}${c.brandVisible ? '' : ' · hidden'}`,
+                <div key="w">
+                  <div>{`${c.country ?? '—'}${c.region ? ` (${c.region})` : ''}${c.brandVisible ? '' : ' · hidden'}`}</div>
+                  {c.location && (
+                    <div style={{ fontSize: 12, color: theme.textMuted }}>
+                      {c.location.from ? `${PLATFORM_NAME[c.location.from] ?? c.location.from}: ` : ''}“{c.location.text}”
+                    </div>
+                  )}
+                </div>,
                 <div key="r">
                   <div style={{ fontWeight: 500 }}>{c.totalReach.toLocaleString()}</div>
                   {c.platforms
@@ -646,7 +692,14 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                 ) : (
                   <span key="a" style={{ color: theme.textMuted }}>none yet · hidden from brands</span>
                 ),
-                `${c.status}${c.emailsSent ? ` · ${c.emailsSent} sent` : ''}`,
+                <div key="s">
+                  <div>{`${c.status}${c.emailsSent ? ` · ${c.emailsSent} sent` : ''}`}</div>
+                  {c.listedAt && (
+                    <div style={{ fontSize: 12, color: isNew(c.listedAt) ? theme.success : theme.textMuted, whiteSpace: 'nowrap' }}>
+                      {isNew(c.listedAt) ? 'new · ' : ''}listed {formatDate(c.listedAt, { relative: true })}
+                    </div>
+                  )}
+                </div>,
                 canWrite && c.status !== 'claimed' ? (
                   <Button
                     key="r"
