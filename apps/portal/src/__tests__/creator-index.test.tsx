@@ -6,9 +6,10 @@
  * and an invite that needs a real message;
  * brands on other plans see what the plan unlocks; creators who already do
  * partnerships are marked and can be shown alone; the claim page shows who
- * is waiting and what we hold, and sends an existing account to sign in; the
- * ops console picks where to search and whether to keep only creators who
- * take partnerships.
+ * is waiting and what we hold, and sends an existing account to sign in, or
+ * with no brand waiting, lands them in their account; the ops console picks
+ * where to search and whether to keep only creators who take partnerships,
+ * and previews and sends the outreach email in batches.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -458,6 +459,109 @@ describe('ops console: creator index settings', () => {
     fireEvent.click(screen.getByText('Discard changes'));
     expect(screen.getByDisplayValue('DE')).toBeTruthy();
   });
+
+  describe('the outreach email', () => {
+    const STATS = {
+      creators: { byStatus: {}, listed: 3, shownToBrands: 2, hiddenFromBrands: 1 },
+      byCountry: [],
+      candidates: {},
+      rejections: {},
+      invites: {},
+      emailsSent30d: 0,
+      outreachSent: 4,
+      suppressions: {},
+      spend: { thisMonthUsd: 0, budgetUsd: 10 },
+      runs: { outreach: { startedAt: new Date(Date.now() - 120_000).toISOString(), finishedAt: new Date(Date.now() - 60_000).toISOString(), result: { sent: 3, skipped: 1, failed: 0 } } },
+    };
+    const PREVIEW = {
+      dryRun: true,
+      enabled: false,
+      mailerConfigured: true,
+      sender: 'keith@openpartner.test',
+      due: 2,
+      candidates: 2,
+      excluded: { invite_waiting: 1, country_not_cleared: 2, published_address_only: 1 },
+      countriesNotCleared: { JP: 1, BR: 1 },
+      targets: [
+        {
+          id: 'ixc_1',
+          name: 'Jo Rivera',
+          country: 'US',
+          region: 'US-CA',
+          shownToBrands: false,
+          totalReach: 40000,
+          address: 'p••••••@jo.co',
+          addressFoundOn: 'https://jo.co/contact',
+          opening: 'I came across your sponsorship page (jo.co/sponsor) while looking for creators who already work with brands.',
+        },
+        { id: 'ixc_2', name: 'Sam Lee', country: 'IN', region: null, shownToBrands: true, totalReach: 9000, address: 's••••@sam.in', addressFoundOn: 'via:creator-data', opening: 'I came across your LinkedIn profile (linkedin.com/in/sam) while looking for creators who already work with brands.', skip: 'member' },
+      ],
+    };
+
+    function respondWith(opts: { outreachEnabled: boolean; mailer: { configured: boolean; from: string | null } }) {
+      respond = (url, method) => {
+        if (url.endsWith('/creator-index/settings')) {
+          return {
+            status: 200,
+            body: { settings: { ...SETTINGS, outreachEnabled: opts.outreachEnabled }, defaults: SETTINGS, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {}, outreachMailer: opts.mailer },
+          };
+        }
+        if (url.endsWith('/creator-index/stats')) return { status: 200, body: STATS };
+        if (url.endsWith('/creator-index/outreach/run') && method === 'POST') {
+          const body = calls[calls.length - 1]!.body as { dryRun: boolean };
+          return body.dryRun ? { status: 200, body: { ...PREVIEW, enabled: opts.outreachEnabled } } : { status: 202, body: { started: true } };
+        }
+        return { status: 200, body: { creators: [] } };
+      };
+    }
+
+    it('previews a batch: who, how it opens, who’s skipped and why the rest are left out', async () => {
+      respondWith({ outreachEnabled: false, mailer: { configured: true, from: 'keith@openpartner.test' } });
+      wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+      expect(await screen.findByText(/Sends from keith@openpartner\.test/)).toBeTruthy();
+      expect(screen.getByText('outreach email off')).toBeTruthy();
+      expect(screen.getByText('4 outreach emails sent')).toBeTruthy();
+      expect(screen.getByText(/3 sent · 1 skipped/)).toBeTruthy();
+
+      fireEvent.change(screen.getByDisplayValue('50'), { target: { value: '20' } });
+      fireEvent.click(screen.getByText('Preview batch'));
+      expect(await screen.findByText('Jo Rivera')).toBeTruthy();
+      expect(calls.find((c) => c.url.endsWith('/outreach/run'))?.body).toEqual({ dryRun: true, limit: 20 });
+      expect(screen.getByText(/I came across your sponsorship page \(jo\.co\/sponsor\)/)).toBeTruthy();
+      expect(screen.getByText('US (US-CA) · hidden')).toBeTruthy();
+      expect(screen.getByText('already on OpenPartner: skipped')).toBeTruthy();
+      expect(screen.getByText('via creator-data lookup')).toBeTruthy();
+      expect(screen.getByText(/a brand is waiting \(they get the brands’ email\) 1/)).toBeTruthy();
+      expect(screen.getByText(/not cleared: JP 1, BR 1/)).toBeTruthy();
+      // Off in Settings: nothing to send yet.
+      expect((screen.getByText('Send this batch').closest('button') as HTMLButtonElement).disabled).toBe(true);
+      expect(screen.getByText(/Switch .Outreach email on. in Settings to send/)).toBeTruthy();
+    });
+
+    it('sends a previewed batch after a confirm, and says so', async () => {
+      respondWith({ outreachEnabled: true, mailer: { configured: true, from: 'keith@openpartner.test' } });
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+      fireEvent.click(await screen.findByText('Preview batch'));
+      await screen.findByText('Jo Rivera');
+      fireEvent.click(screen.getByText('Send this batch'));
+      expect(await screen.findByText(/Started\. The Network sends it a few seconds apart/)).toBeTruthy();
+      expect(confirm).toHaveBeenCalledWith('Send the outreach email to 2 creators? Each gets it only once.');
+      expect(calls.filter((c) => c.url.endsWith('/outreach/run')).map((c) => c.body)).toEqual([
+        { dryRun: true, limit: 50 },
+        { dryRun: false, limit: 50 },
+      ]);
+      confirm.mockRestore();
+    });
+
+    it('says when there’s no mailbox to send from, and support can preview but not send', async () => {
+      respondWith({ outreachEnabled: true, mailer: { configured: false, from: null } });
+      wrap(<CreatorIndexPage operator={{ id: 'pa_2', email: 'support@test', role: 'support' } as never} />);
+      expect(await screen.findByText(/The Network has no outreach mailbox set up, so nothing can be sent/)).toBeTruthy();
+      expect(screen.getByText('Preview batch')).toBeTruthy();
+      expect(screen.queryByText('Send this batch')).toBeNull();
+    });
+  });
 });
 
 describe('claim page', () => {
@@ -483,6 +587,7 @@ describe('claim page', () => {
       <Routes>
         <Route path="/creator/claim" element={<CreatorIndexClaimPage />} />
         <Route path="/creator/messages/:id" element={<div>thread page</div>} />
+        <Route path="/creator" element={<div>creator home</div>} />
       </Routes>,
       '/creator/claim?token=tok_123',
     );
@@ -532,6 +637,27 @@ describe('claim page', () => {
     expect(screen.getByText(/your sponsor page/)).toBeTruthy();
     expect(screen.getByText(/2 recent posts marked as sponsored/)).toBeTruthy();
     expect(screen.getByText('jo.co/sponsor').getAttribute('href')).toBe('https://jo.co/sponsor');
+  });
+
+  it('with no brand waiting, offers the claim alone, says whether brands see them, and lands them in their account', async () => {
+    respond = (url) =>
+      url.endsWith('/claim/preview')
+        ? {
+            status: 200,
+            body: {
+              ...PREVIEW,
+              invites: [],
+              creator: { ...PREVIEW.creator, shownToBrands: false, partnershipSignals: [{ kind: 'sponsor_page', count: null, evidence: 'https://jo.co/sponsor' }] },
+            },
+          }
+        : { status: 200, body: { ok: true, creatorId: 'crt_1', created: true, conversationIds: [] } };
+    page();
+    expect(await screen.findByText('Claim your OpenPartner profile')).toBeTruthy();
+    expect(screen.getByText(/It isn.t shown to brands until you claim it/)).toBeTruthy();
+    expect(screen.getByText(/Brands don.t see this listing\. It notes that you take partnerships, from/)).toBeTruthy();
+    expect(screen.queryByText(/want to work with you/)).toBeNull();
+    fireEvent.click(screen.getByText('Claim my profile'));
+    expect(await screen.findByText('creator home')).toBeTruthy();
   });
 
   it('explains an expired link', async () => {
