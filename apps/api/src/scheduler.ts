@@ -261,6 +261,16 @@ const JOBS: ScheduledJob[] = [
     },
   },
   {
+    name: 'network-mailbox-alert',
+    cronExpr: '10,25,40,55 * * * *',
+    description:
+      "Hosted multi-tenant: email the platform admins once when a creator-index mailbox loses its Microsoft connection, which stops it sending until it's reconnected (every 15 minutes)",
+    handler: async () => {
+      const { alertAdminsToLostMailboxes } = await import('./network-mailbox-alert.js');
+      return alertAdminsToLostMailboxes();
+    },
+  },
+  {
     name: 'network-country-access-sync',
     cronExpr: '45 3 * * *',
     description:

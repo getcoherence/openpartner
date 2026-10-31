@@ -812,6 +812,28 @@ export function opsNetworkCreatorsPendingEmail(
   return { subject, text, html: wrap(text, reviewUrl, 'Review creators') };
 }
 
+/** Platform admins: a creator-index mailbox's Microsoft connection was lost
+ *  (revoked, a password change, 90 days unused), so it sends nothing until
+ *  someone reconnects it. */
+export function opsMailboxLostEmail(input: {
+  mailbox: 'outreach' | 'invite';
+  account: string;
+  reason: string | null;
+  consoleUrl: string;
+}): EmailTemplate {
+  const label = input.mailbox === 'outreach' ? 'outreach email' : 'brands’ invites';
+  const subject = `[Action] Reconnect the ${label} mailbox`;
+  const text = [
+    `Microsoft refused the ${label} mailbox's sign-in (${input.account}), so the Network has stopped sending from it.`,
+    ...(input.reason ? [``, `  ${input.reason}`] : []),
+    ``,
+    `Reconnect it in the ops console:`,
+    ``,
+    input.consoleUrl,
+  ].join('\n');
+  return { subject, text, html: wrap(text, input.consoleUrl, 'Reconnect') };
+}
+
 /** Platform ops: a decision was recorded (audit copy to the ops inbox). */
 export function opsBrandDecisionEmail(
   brandName: string,

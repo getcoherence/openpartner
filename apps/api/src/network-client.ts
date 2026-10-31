@@ -1500,9 +1500,78 @@ export interface StoredCreatorIndexSettings {
   /** Which of the Network's data sources have credentials, by its own names. */
   configured: Record<string, boolean>;
   /** The mailbox the outreach email goes from, if the Network has one. */
-  outreachMailer?: { configured: boolean; from: string | null };
+  outreachMailer?: NetworkMailbox;
   /** The mailbox brands' invites go from: never the outreach one. */
-  inviteMailer?: { configured: boolean; from: string | null };
+  inviteMailer?: NetworkMailbox;
+  /** Whether a mailbox can be connected by Microsoft sign-in. */
+  mailboxOAuth?: boolean;
+}
+
+/** One of the creator index's mailboxes on the Network. `via` and
+ *  `connection` are missing from a Network that predates connections. */
+export interface NetworkMailbox {
+  configured: boolean;
+  from: string | null;
+  via?: 'microsoft_account' | 'graph_app' | 'smtp' | 'console' | null;
+  connection?: NetworkMailboxConnection | null;
+}
+
+export interface NetworkMailboxConnection {
+  /** 'lost': Microsoft refused the refresh token; nothing is sent from the
+   *  mailbox until it's reconnected or disconnected. */
+  status: 'connected' | 'lost';
+  account: string;
+  accountName: string | null;
+  sendAs: string | null;
+  sendAsName: string | null;
+  connectedAt: string;
+  connectedByEmail: string;
+  lastRefreshedAt: string | null;
+  lostAt: string | null;
+  lostReason: string | null;
+}
+
+export type NetworkMailboxKind = 'outreach' | 'invite';
+
+/** Both mailboxes, for the lost-connection alert. */
+export async function adminGetMailboxes(
+  networkUrl: string,
+): Promise<{ oauthAvailable: boolean; outreach: NetworkMailbox; invite: NetworkMailbox }> {
+  return callNetworkAdmin(networkUrl, 'GET', '/admin/mailboxes');
+}
+
+/** Start a Microsoft sign-in for one mailbox. The Network keeps the state
+ *  and the PKCE verifier; Microsoft sends the browser back to redirectUri. */
+export async function adminStartMailboxConnect(
+  networkUrl: string,
+  kind: NetworkMailboxKind,
+  body: { redirectUri: string; startedByEmail: string; sendAs?: string | null },
+): Promise<{ authorizeUrl: string; expiresAt: string }> {
+  return callNetworkAdmin(networkUrl, 'POST', `/admin/mailboxes/${kind}/connect`, body);
+}
+
+/** Hand the Network the code Microsoft redirected with; it exchanges it and
+ *  keeps the tokens. */
+export async function adminCompleteMailboxConnect(
+  networkUrl: string,
+  body: { state: string; code: string; completedByEmail: string },
+): Promise<{ kind: NetworkMailboxKind; mailbox: NetworkMailbox }> {
+  return callNetworkAdmin(networkUrl, 'POST', '/admin/mailboxes/connect/complete', body, {}, 20_000);
+}
+
+export async function adminSetMailboxSendAs(
+  networkUrl: string,
+  kind: NetworkMailboxKind,
+  sendAs: string | null,
+): Promise<{ kind: NetworkMailboxKind; mailbox: NetworkMailbox }> {
+  return callNetworkAdmin(networkUrl, 'PUT', `/admin/mailboxes/${kind}/send-as`, { sendAs });
+}
+
+export async function adminDisconnectMailbox(
+  networkUrl: string,
+  kind: NetworkMailboxKind,
+): Promise<{ kind: NetworkMailboxKind; removed: boolean; mailbox: NetworkMailbox }> {
+  return callNetworkAdmin(networkUrl, 'DELETE', `/admin/mailboxes/${kind}`);
 }
 
 export async function adminGetCreatorIndexSettings(networkUrl: string): Promise<StoredCreatorIndexSettings> {
