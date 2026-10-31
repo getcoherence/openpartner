@@ -496,6 +496,38 @@ describe('ops console: creator index settings', () => {
     await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({ contactEnrichment: { creatorData: false, ownDomain: true } }));
   });
 
+  it('sets the members’ budget beside the index’s, and shows what members’ reads spent', async () => {
+    respond = (url, method) => {
+      if (url.endsWith('/creator-index/settings') && method === 'PUT') return { status: 200, body: { settings: calls[calls.length - 1]!.body, visibilityChanged: 0 } };
+      if (url.endsWith('/creator-index/settings')) {
+        const settings = { ...SETTINGS, memberStatsBudgetUsd: 10 };
+        return { status: 200, body: { settings, defaults: settings, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {} } };
+      }
+      if (url.endsWith('/creator-index/stats')) {
+        return {
+          status: 200,
+          body: {
+            creators: { byStatus: {}, listed: 0, shownToBrands: 0, hiddenFromBrands: 0 },
+            byCountry: [],
+            candidates: {},
+            rejections: {},
+            invites: {},
+            emailsSent30d: 0,
+            suppressions: {},
+            spend: { thisMonthUsd: 2, budgetUsd: 10 },
+            memberSpend: { thisMonthUsd: 1.25, budgetUsd: 10 },
+          },
+        };
+      }
+      return { status: 200, body: { creators: [] } };
+    };
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    expect(await screen.findByText('Members: $1.25 of $10')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Members' budget (USD)"), { target: { value: '25' } });
+    fireEvent.click(screen.getByText('Save settings'));
+    await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({ monthlyBudgetUsd: 10, memberStatsBudgetUsd: 25 }));
+  });
+
   it('shows an address in full on request, and adds one ops found published, saying why one was refused', async () => {
     let refuse = true;
     respond = (url, method) => {

@@ -520,7 +520,9 @@ function AddChannelCard({
       <div style={{ fontSize: 12.5, color: theme.textMuted, marginTop: 10, lineHeight: 1.5 }}>
         {platform === 'youtube'
           ? 'Self-reported until you verify it. Once it’s added, Verify gives it a verified badge and keeps your subscribers and views per video up to date.'
-          : platform && VERIFIABLE.has(platform)
+          : platform === 'instagram' || platform === 'tiktok'
+            ? 'Self-reported until you verify it. Once it’s added, Verify gives it a verified badge and keeps your followers and engagement up to date.'
+            : platform && VERIFIABLE.has(platform)
             ? 'Self-reported until you verify it. Once it’s added, Verify gives it a verified badge.'
             : 'Shown to brands as self-reported.'}
       </div>

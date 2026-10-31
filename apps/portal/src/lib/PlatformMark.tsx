@@ -84,7 +84,7 @@ export function formatRate(rate: number): string {
 
 /** The rate in full, for a tooltip: "2.41% engagement over 10 posts". */
 export function rateInFull(rate: number, posts: number | null | undefined, platform: string): string {
-  const over = posts ? ` over ${posts} ${platform === 'youtube' ? 'videos' : 'posts'}` : '';
+  const over = posts ? ` over ${posts} ${platform === 'youtube' || platform === 'tiktok' ? 'videos' : 'posts'}` : '';
   return `${rate.toLocaleString('en', { maximumFractionDigits: 2 })}% engagement${over}`;
 }
 
@@ -121,6 +121,7 @@ export function ChannelCount({
   size = 14,
   engagementRate,
   engagementPosts,
+  readFromProfile = false,
 }: {
   platform: string;
   followers: number | null;
@@ -131,11 +132,13 @@ export function ChannelCount({
   engagementRate?: number | null;
   /** The posts the rate averages. */
   engagementPosts?: number | null;
+  /** The followers were read from their public profile, not typed. */
+  readFromProfile?: boolean;
 }) {
   const name = platformName(platform);
   const full = [
     name,
-    ...(followers != null ? [`${followers.toLocaleString()} followers`] : []),
+    ...(followers != null ? [`${followers.toLocaleString()} followers${readFromProfile ? ' from their public profile' : ''}`] : []),
     ...(engagementRate != null ? [rateInFull(engagementRate, engagementPosts, platform)] : []),
     ...(verified ? ['verified'] : []),
   ].join(', ');
