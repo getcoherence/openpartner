@@ -24,6 +24,7 @@ import {
   type StorefrontChannel,
   type StorefrontPackage,
 } from './storefront-shared.js';
+import { PlatformMark } from '../../lib/PlatformMark.js';
 
 export function StorefrontSection({
   creatorName,
@@ -63,7 +64,8 @@ export function StorefrontSection({
                 <ChannelHeader channel={g.channel} />
               ) : (
                 (groups.length > 1 || g.platform) && (
-                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+                    {g.platform && <PlatformMark platform={g.platform} size={14} />}
                     {g.platform ? (PLATFORM_LABELS[g.platform] ?? g.platform) : 'Across channels'}
                   </div>
                 )
@@ -137,6 +139,7 @@ export function ChannelHeader({ channel }: { channel: StorefrontChannel }) {
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <PlatformMark platform={channel.platform} size={16} />
         <span style={{ fontSize: 14, fontWeight: 600 }}>{label}</span>
         {channel.profileUrl ? (
           <a

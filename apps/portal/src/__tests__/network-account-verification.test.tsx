@@ -324,6 +324,7 @@ describe('brand creator directory', () => {
     await waitFor(() => expect(page.getByText('@pat')).toBeTruthy());
     expect(page.getAllByRole('img', { name: 'Verified' })).toHaveLength(1);
 
+    fireEvent.click(page.getByRole('button', { name: /^Platforms/ }));
     fireEvent.click(page.getByLabelText(/Verified accounts only/));
     await waitFor(() =>
       expect(calls.some((c) => c.url.includes('/admin/network/discover/creators?') && c.url.includes('verified=true'))).toBe(true),

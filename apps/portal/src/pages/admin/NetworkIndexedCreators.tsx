@@ -10,9 +10,10 @@
  *
  * Creators who already take partnerships (a sponsorship storefront, a
  * sponsor page, sponsored posts) are marked, and a brand can show only them.
- * A card opens the creator's page (/admin/network/indexed-creators/:id):
- * what they publish, each channel's numbers and top posts, the products
- * they mention, and why they can or can't be invited.
+ * A row opens the creator (/admin/network/indexed-creators/:id, or the side
+ * panel on a wide screen): what they publish, each channel's numbers and
+ * top posts, the products they mention, and why they can or can't be
+ * invited.
  *
  * Other plans get the plan_required answer from the API, and this shows
  * what the plan would unlock instead of an error.
@@ -27,6 +28,8 @@ import { Button, Card, EmptyState, ErrorBanner, Label, Page, Textarea, formatDat
 import { alpha, theme } from '../../theme.js';
 import { TenantLink } from '../../tenant-link.js';
 import { brandSignalLabel, type PartnershipSignal } from '../../lib/partnership-signals.js';
+import { ChannelCount, ChannelCounts, PlatformMark, compactCount, platformName } from '../../lib/PlatformMark.js';
+import { CreatorRow, RowFigure } from './CreatorRow.js';
 
 interface IndexedPlatform {
   platform: string;
@@ -82,15 +85,6 @@ export const EXTERNAL_CATEGORIES = [
   'finance', 'venture-capital', 'ecommerce', 'creator-economy', 'productivity', 'security',
 ];
 
-const PLATFORMS = [
-  { value: 'linkedin', label: 'LinkedIn' },
-  { value: 'twitter', label: 'X' },
-  { value: 'youtube', label: 'YouTube' },
-  { value: 'substack', label: 'Substack' },
-];
-
-const PLATFORM_LABEL: Record<string, string> = Object.fromEntries(PLATFORMS.map((p) => [p.value, p.label]));
-
 /** What brands see on a creator who hasn't joined (Keith, Oct 31). */
 export const EXTERNAL_BADGE = 'External creator';
 
@@ -111,24 +105,33 @@ export interface ExternalFilters {
   /** Creator must have at least one. */
   platforms?: string[];
   minFollowers?: number;
+  /** Only those who already take partnerships. */
+  openToPartnerships?: boolean;
   sort?: 'reach' | 'newest';
 }
 
-/** The external creators under the page's filters, with the badge and
- *  an Invite button. */
-export function IndexedCreatorsSection({ filters = {} }: { filters?: ExternalFilters }) {
-  const [openOnly, setOpenOnly] = useState(false);
-
+/** The external creators under the page's filters, as rows. On a wide
+ *  screen a click selects one for the side panel (`onSelect`); otherwise
+ *  it opens their page. */
+export function IndexedCreatorsSection({
+  filters = {},
+  selectedId,
+  onSelect,
+}: {
+  filters?: ExternalFilters;
+  selectedId?: string | null;
+  onSelect?: (id: string) => void;
+}) {
   const qs = useMemo(() => {
     const p = new URLSearchParams();
     if (filters.q) p.set('q', filters.q);
     if (filters.categories?.length) p.set('categories', filters.categories.join(','));
     if (filters.platforms?.length) p.set('platforms', filters.platforms.join(','));
     if (filters.minFollowers && filters.minFollowers > 0) p.set('minFollowers', String(filters.minFollowers));
-    if (openOnly) p.set('openToPartnerships', '1');
+    if (filters.openToPartnerships) p.set('openToPartnerships', '1');
     if (filters.sort && filters.sort !== 'reach') p.set('sort', filters.sort);
     return p.toString();
-  }, [filters.q, filters.categories, filters.platforms, filters.minFollowers, filters.sort, openOnly]);
+  }, [filters.q, filters.categories, filters.platforms, filters.minFollowers, filters.openToPartnerships, filters.sort]);
 
   const search = useInfiniteQuery({
     queryKey: ['admin-indexed-creators', qs],
@@ -154,10 +157,6 @@ export function IndexedCreatorsSection({ filters = {} }: { filters?: ExternalFil
         External creators haven&rsquo;t joined OpenPartner yet. We list them from their public profiles; an invite emails them for
         you, and they reply once they claim their free profile. Prices appear when they set them.
       </p>
-      <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, marginBottom: 12 }}>
-        <input type="checkbox" checked={openOnly} onChange={(e) => setOpenOnly(e.target.checked)} />
-        Only creators who already do brand partnerships
-      </label>
       <ErrorBanner error={search.error} />
 
       {search.isLoading ? (
@@ -173,9 +172,9 @@ export function IndexedCreatorsSection({ filters = {} }: { filters?: ExternalFil
           <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 10 }}>
             {total.toLocaleString()} external creator{total === 1 ? '' : 's'}
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 14 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {rows.map((c) => (
-              <IndexedCreatorCard key={c.id} creator={c} />
+              <ExternalRow key={c.id} creator={c} selected={selectedId === c.id} onSelect={onSelect && (() => onSelect(c.id))} />
             ))}
           </div>
           {search.hasNextPage && (
@@ -242,81 +241,58 @@ function Avatar({ creator, size }: { creator: Pick<IndexedCreator, 'avatarUrl' |
   );
 }
 
-function IndexedCreatorCard({ creator }: { creator: IndexedCreator }) {
-  const [open, setOpen] = useState(false);
+function OpenBadge() {
   return (
-    // A column, so the buttons sit at the bottom and line up across a row.
-    <Card style={{ display: 'flex', flexDirection: 'column' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
-        <TenantLink to={profilePath(creator.id)} aria-label={`${creator.name}: details`} style={{ display: 'flex' }}>
-          <Avatar creator={creator} size={44} />
-        </TenantLink>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <TenantLink
-            to={profilePath(creator.id)}
-            style={{ display: 'block', fontWeight: 500, color: theme.text, textDecoration: 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-          >
-            {creator.name}
-          </TenantLink>
-          <span style={{ display: 'inline-block', marginTop: 3 }}>
+    <span style={{ display: 'inline-block', background: theme.successSoft, color: theme.success, fontSize: 10, padding: '2px 8px', borderRadius: 10 }}>
+      Open to partnerships
+    </span>
+  );
+}
+
+function ExternalRow({ creator, selected, onSelect }: { creator: IndexedCreator; selected: boolean; onSelect?: () => void }) {
+  const [open, setOpen] = useState(false);
+  const signals = creator.partnershipSignals ?? [];
+  return (
+    <>
+      <CreatorRow
+        name={creator.name}
+        to={profilePath(creator.id)}
+        selected={selected}
+        onSelect={onSelect}
+        avatar={<Avatar creator={creator} size={44} />}
+        meta={
+          <>
             <ExternalBadge />
-          </span>
-          {creator.openToPartnerships && (
-            <span style={{ display: 'inline-block', marginTop: 3, marginLeft: 4, background: theme.successSoft, color: theme.success, fontSize: 10, padding: '2px 8px', borderRadius: 10 }}>
-              Open to partnerships
-            </span>
-          )}
-        </div>
-        {creator.country && <span style={{ fontSize: 12, color: theme.textDim }}>{creator.country}</span>}
-      </div>
-      {creator.headline && (
-        <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 10px', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-          {creator.headline}
-        </p>
-      )}
-      <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 10 }}>
-        {creator.platforms.map((p, i) => (
-          <span key={p.profileUrl}>
-            {i > 0 && ' · '}
-            <a href={p.profileUrl} target="_blank" rel="noreferrer noopener" style={{ color: theme.textMuted }}>
-              {PLATFORM_LABEL[p.platform] ?? p.platform}
-            </a>
-            {p.followerCount != null && <> {p.followerCount.toLocaleString()}</>}
-          </span>
+            {creator.openToPartnerships && <OpenBadge />}
+            {creator.country && <span style={{ fontSize: 12, color: theme.textDim }}>{creator.country}</span>}
+          </>
+        }
+        line={creator.headline}
+        channels={creator.platforms.map((p) => (
+          <ChannelCount key={p.profileUrl} platform={p.platform} followers={p.followerCount} href={p.profileUrl} />
         ))}
-      </div>
-      {creator.partnershipSignals && creator.partnershipSignals.length > 0 && (
-        <div style={{ fontSize: 12, color: theme.text, marginBottom: 10 }}>{creator.partnershipSignals.map(brandSignalLabel).join(' · ')}</div>
-      )}
-      {creator.topics.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 12 }}>
-          {creator.topics.slice(0, 5).map((t) => (
-            <span key={t} style={{ background: theme.surface2, color: theme.textMuted, fontSize: 10, padding: '2px 7px', borderRadius: 10 }}>{t}</span>
-          ))}
-        </div>
-      )}
-      <div style={{ marginTop: 'auto' }}>
-        {creator.invite ? (
-          <div style={{ fontSize: 13, color: creator.invite.status === 'claimed' ? theme.success : theme.textMuted, marginBottom: 8 }}>
-            {INVITE_STATUS[creator.invite.status] ?? 'Invited.'}
-          </div>
-        ) : !creator.invitable ? (
-          <div style={{ fontSize: 13, color: theme.textDim, marginBottom: 8 }}>Can&rsquo;t be invited yet</div>
-        ) : null}
-        {/* Padding-free flex: 1 boxes, so both buttons get half the row. */}
-        <div data-testid="card-actions" style={{ display: 'flex', gap: 6 }}>
-          <TenantLink to={profilePath(creator.id)} style={{ textDecoration: 'none', flex: 1 }}>
-            <Button variant="secondary" style={{ width: '100%' }}>View details</Button>
-          </TenantLink>
-          {!creator.invite && creator.invitable && (
-            <div style={{ flex: 1 }}>
-              <Button onClick={() => setOpen(true)} style={{ width: '100%' }}>Invite</Button>
-            </div>
-          )}
-        </div>
-      </div>
+        side={<RowFigure value={compactCount(creator.totalReach)} caption="followers" />}
+        tags={creator.topics}
+        note={
+          <>
+            {signals.length > 0 && <div style={{ color: theme.text }}>{signals.map(brandSignalLabel).join(' · ')}</div>}
+            {creator.invite ? (
+              <div style={{ color: creator.invite.status === 'claimed' ? theme.success : theme.textMuted }}>{INVITE_STATUS[creator.invite.status] ?? 'Invited.'}</div>
+            ) : !creator.invitable ? (
+              <div style={{ color: theme.textDim }}>Can&rsquo;t be invited yet</div>
+            ) : null}
+          </>
+        }
+        actions={
+          !creator.invite && creator.invitable ? (
+            <Button size="sm" onClick={() => setOpen(true)}>
+              Invite
+            </Button>
+          ) : undefined
+        }
+      />
       {open && <IndexInviteDialog creator={creator} onClose={() => setOpen(false)} />}
-    </Card>
+    </>
   );
 }
 
@@ -342,16 +318,19 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <div style={{ fontSize: 12, color: theme.textMuted, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>{children}</div>;
 }
 
-/** /admin/network/indexed-creators/:id — one creator who isn't on
- *  OpenPartner yet, in full. Flex and Enterprise, like the search. */
-export function IndexedCreatorPage() {
-  const { id = '' } = useParams<{ id: string }>();
-  const [inviting, setInviting] = useState(false);
-  const profile = useQuery({
+function useIndexedCreator(id: string) {
+  return useQuery({
     queryKey: ['admin-indexed-creators', 'profile', id],
     queryFn: () => api<{ creator: IndexedCreatorProfile }>(profilePath(id)).then((r) => r.creator),
     retry: false,
   });
+}
+
+/** /admin/network/indexed-creators/:id — one creator who isn't on
+ *  OpenPartner yet, in full. Flex and Enterprise, like the search. */
+export function IndexedCreatorPage() {
+  const { id = '' } = useParams<{ id: string }>();
+  const profile = useIndexedCreator(id);
 
   const back = (
     <TenantLink to="/admin/network/creators?show=external" style={{ color: theme.textMuted, fontSize: 13, textDecoration: 'none' }}>
@@ -383,112 +362,160 @@ export function IndexedCreatorPage() {
     );
   }
 
-  const signals = c.partnershipSignals ?? [];
   return (
     <Page title={c.name} back={back} subtitle={c.headline ?? undefined}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 860 }}>
-        <Card>
-          <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
-            <Avatar creator={c} size={56} />
-            <div style={{ flex: 1, minWidth: 200 }}>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-                <ExternalBadge size={11} />
-                {c.openToPartnerships && (
-                  <span style={{ background: theme.successSoft, color: theme.success, fontSize: 11, padding: '2px 8px', borderRadius: 10 }}>Open to partnerships</span>
-                )}
-                {c.country && <span style={{ fontSize: 12, color: theme.textDim }}>{c.country}</span>}
-              </div>
-              <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 6 }}>
-                <strong style={{ color: theme.text }}>{c.totalReach.toLocaleString()}</strong> followers across {c.platforms.length} channel
-                {c.platforms.length === 1 ? '' : 's'}
-                {c.refreshedAt && <> · read {formatDate(c.refreshedAt)}</>}
-              </div>
-            </div>
-            <div style={{ minWidth: 200 }}>
-              {c.invite ? (
-                <div style={{ fontSize: 13, color: c.invite.status === 'claimed' ? theme.success : theme.textMuted }}>{INVITE_STATUS[c.invite.status] ?? 'Invited.'}</div>
-              ) : c.invitable ? (
-                <Button onClick={() => setInviting(true)} style={{ width: '100%' }}>Invite to collaborate</Button>
-              ) : (
-                <div style={{ fontSize: 13, color: theme.textDim }}>Can&rsquo;t be invited yet</div>
+      <div style={{ maxWidth: 860 }}>
+        <IndexedCreatorBody c={c} />
+      </div>
+    </Page>
+  );
+}
+
+/** The same creator beside Discover creators' list on a wide screen. */
+export function IndexedCreatorPanel({ id }: { id: string }) {
+  const profile = useIndexedCreator(id);
+  if (profile.error instanceof ApiError && profile.error.status === 402) return <PlanUpsell />;
+  if (profile.error instanceof ApiError && profile.error.status === 404) {
+    return <EmptyState title="This creator is no longer listed" hint="They may have joined OpenPartner, or asked to be removed." icon={<Users size={28} strokeWidth={1.25} />} />;
+  }
+  const c = profile.data;
+  if (!c) {
+    return (
+      <>
+        <ErrorBanner error={profile.error} />
+        {profile.isLoading && <Card>Loading…</Card>}
+      </>
+    );
+  }
+  return (
+    <>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+        <TenantLink to={profilePath(id)} style={{ fontSize: 13, color: theme.accentText, textDecoration: 'none' }}>
+          Open full page →
+        </TenantLink>
+      </div>
+      <IndexedCreatorBody c={c} named />
+    </>
+  );
+}
+
+/** What we hold on an external creator: their page's body, and the side
+ *  panel's. `named` adds their name and headline, which the page has as
+ *  its title. */
+function IndexedCreatorBody({ c, named = false }: { c: IndexedCreatorProfile; named?: boolean }) {
+  const [inviting, setInviting] = useState(false);
+  const signals = c.partnershipSignals ?? [];
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <Card>
+        <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+          <Avatar creator={c} size={56} />
+          <div style={{ flex: 1, minWidth: 200 }}>
+            {named && <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 6 }}>{c.name}</div>}
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+              <ExternalBadge size={11} />
+              {c.openToPartnerships && (
+                <span style={{ background: theme.successSoft, color: theme.success, fontSize: 11, padding: '2px 8px', borderRadius: 10 }}>Open to partnerships</span>
               )}
+              {c.country && <span style={{ fontSize: 12, color: theme.textDim }}>{c.country}</span>}
+            </div>
+            <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 6 }}>
+              <strong style={{ color: theme.text }}>{c.totalReach.toLocaleString()}</strong> followers across {c.platforms.length} channel
+              {c.platforms.length === 1 ? '' : 's'}
+              {c.refreshedAt && <> · read {formatDate(c.refreshedAt)}</>}
             </div>
           </div>
-          {!c.invite && !c.invitable && (
-            <p style={{ fontSize: 13, color: theme.textMuted, margin: '12px 0 0', lineHeight: 1.5 }}>
-              {(c.blocker && BLOCKERS[c.blocker]) ?? BLOCKERS.unreachable}
-            </p>
+          <div style={{ minWidth: 200 }}>
+            {c.invite ? (
+              <div style={{ fontSize: 13, color: c.invite.status === 'claimed' ? theme.success : theme.textMuted }}>{INVITE_STATUS[c.invite.status] ?? 'Invited.'}</div>
+            ) : c.invitable ? (
+              <Button onClick={() => setInviting(true)} style={{ width: '100%' }}>Invite to collaborate</Button>
+            ) : (
+              <div style={{ fontSize: 13, color: theme.textDim }}>Can&rsquo;t be invited yet</div>
+            )}
+          </div>
+        </div>
+        {named && c.headline && <p style={{ fontSize: 14, color: theme.text, margin: '14px 0 0', lineHeight: 1.5 }}>{c.headline}</p>}
+        <ChannelCounts style={{ marginTop: 14 }}>
+          {c.platforms.map((p) => (
+            <ChannelCount key={p.profileUrl} platform={p.platform} followers={p.followerCount} href={p.profileUrl} size={16} />
+          ))}
+        </ChannelCounts>
+        {!c.invite && !c.invitable && (
+          <p style={{ fontSize: 13, color: theme.textMuted, margin: '12px 0 0', lineHeight: 1.5 }}>
+            {(c.blocker && BLOCKERS[c.blocker]) ?? BLOCKERS.unreachable}
+          </p>
+        )}
+      </Card>
+
+      {signals.length > 0 && (
+        <Card>
+          <SectionTitle>Why they&rsquo;re open to partnerships</SectionTitle>
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 14, lineHeight: 1.7 }}>
+            {signals.map((s) => (
+              <li key={s.kind}>{brandSignalLabel(s)}</li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
+      {c.summary && (
+        <Card>
+          <SectionTitle>What they publish</SectionTitle>
+          <p style={{ fontSize: 14, margin: 0, lineHeight: 1.6 }}>{c.summary}</p>
+          {(c.topics.length > 0 || c.categories.length > 0) && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 12 }}>
+              {[...new Set([...c.categories, ...c.topics])].map((t) => (
+                <span key={t} style={{ background: theme.surface2, color: theme.textMuted, fontSize: 11, padding: '2px 8px', borderRadius: 10 }}>{t}</span>
+              ))}
+            </div>
           )}
         </Card>
+      )}
 
-        {signals.length > 0 && (
-          <Card>
-            <SectionTitle>Why they&rsquo;re open to partnerships</SectionTitle>
-            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 14, lineHeight: 1.7 }}>
-              {signals.map((s) => (
-                <li key={s.kind}>{brandSignalLabel(s)}</li>
-              ))}
-            </ul>
-          </Card>
-        )}
+      <Card>
+        <SectionTitle>Channels</SectionTitle>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {c.platforms.map((p) => (
+            <div key={p.profileUrl}>
+              <a href={p.profileUrl} target="_blank" rel="noreferrer noopener" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 500, color: theme.text }}>
+                <PlatformMark platform={p.platform} size={16} />
+                {platformName(p.platform)}
+                <ExternalLink size={13} />
+              </a>
+              <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 3 }}>{channelNumbers(p).join(' · ') || 'No numbers yet'}</div>
+              {p.topPostUrls.length > 0 && (
+                <div style={{ fontSize: 13, marginTop: 4 }}>
+                  Top posts:{' '}
+                  {p.topPostUrls.map((u, i) => (
+                    <span key={u}>
+                      {i > 0 && ' · '}
+                      <a href={u} target="_blank" rel="noreferrer noopener" style={{ color: theme.accentText }}>
+                        {i + 1}
+                      </a>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </Card>
 
-        {c.summary && (
-          <Card>
-            <SectionTitle>What they publish</SectionTitle>
-            <p style={{ fontSize: 14, margin: 0, lineHeight: 1.6 }}>{c.summary}</p>
-            {(c.topics.length > 0 || c.categories.length > 0) && (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 12 }}>
-                {[...c.categories, ...c.topics].map((t) => (
-                  <span key={t} style={{ background: theme.surface2, color: theme.textMuted, fontSize: 11, padding: '2px 8px', borderRadius: 10 }}>{t}</span>
-                ))}
-              </div>
-            )}
-          </Card>
-        )}
-
+      {c.productsMentioned.length > 0 && (
         <Card>
-          <SectionTitle>Channels</SectionTitle>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            {c.platforms.map((p) => (
-              <div key={p.profileUrl}>
-                <a href={p.profileUrl} target="_blank" rel="noreferrer noopener" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 500, color: theme.text }}>
-                  {PLATFORM_LABEL[p.platform] ?? p.platform}
-                  <ExternalLink size={13} />
-                </a>
-                <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 3 }}>{channelNumbers(p).join(' · ') || 'No numbers yet'}</div>
-                {p.topPostUrls.length > 0 && (
-                  <div style={{ fontSize: 13, marginTop: 4 }}>
-                    Top posts:{' '}
-                    {p.topPostUrls.map((u, i) => (
-                      <span key={u}>
-                        {i > 0 && ' · '}
-                        <a href={u} target="_blank" rel="noreferrer noopener" style={{ color: theme.accentText }}>
-                          {i + 1}
-                        </a>
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
+          <SectionTitle>Products and companies they mention</SectionTitle>
+          <div style={{ fontSize: 14, lineHeight: 1.7 }}>
+            {c.productsMentioned.map((m) => `${m.name} (${m.count} post${m.count === 1 ? '' : 's'})`).join(' · ')}
           </div>
         </Card>
+      )}
 
-        {c.productsMentioned.length > 0 && (
-          <Card>
-            <SectionTitle>Products and companies they mention</SectionTitle>
-            <div style={{ fontSize: 14, lineHeight: 1.7 }}>
-              {c.productsMentioned.map((m) => `${m.name} (${m.count} post${m.count === 1 ? '' : 's'})`).join(' · ')}
-            </div>
-          </Card>
-        )}
-
-        <p style={{ fontSize: 12, color: theme.textDim, margin: 0, lineHeight: 1.5 }}>
-          Read from their public profiles. Their rates and packages appear once they join OpenPartner and set them.
-        </p>
-      </div>
+      <p style={{ fontSize: 12, color: theme.textDim, margin: 0, lineHeight: 1.5 }}>
+        Read from their public profiles. Their rates and packages appear once they join OpenPartner and set them.
+      </p>
       {inviting && <IndexInviteDialog creator={c} onClose={() => setInviting(false)} />}
-    </Page>
+    </div>
   );
 }
 

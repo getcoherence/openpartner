@@ -17,6 +17,7 @@ import { audienceSizeLabel } from '@openpartner/db';
 import { Card } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { VerifiedBadge } from '../../lib/VerifiedBadge.js';
+import { PlatformMark } from '../../lib/PlatformMark.js';
 import { creatorApi } from './creator-api.js';
 import { ListingBanner } from './ListingBanner.js';
 import { PLATFORM_LABELS, type StorefrontChannel, type StorefrontPackage } from './storefront-shared.js';
@@ -130,7 +131,8 @@ export function CreatorProfileView({ data, storefront }: { data: PublicProfile; 
                     color: theme.text,
                   }}
                 >
-                  <div style={{ width: 100, fontSize: 13, color: theme.textMuted }}>
+                  <div style={{ width: 130, display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.textMuted }}>
+                    <PlatformMark platform={p.platform} size={16} />
                     {PLATFORM_LABELS[p.platform] ?? p.platform}
                   </div>
                   <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
