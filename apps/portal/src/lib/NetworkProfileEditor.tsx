@@ -109,11 +109,13 @@ export interface VerificationStart {
   expiresAt: string;
   instructions:
     | { kind: 'youtube_description'; editUrl: string; channelUrl: string | null; text: string }
-    | { kind: 'dns_txt'; host: string; type: 'TXT'; value: string };
+    | { kind: 'dns_txt'; host: string; type: 'TXT'; value: string }
+    | { kind: 'profile_bio'; platform: 'instagram' | 'tiktok'; editUrl: string; profileUrl: string; text: string };
 }
 
-/** Platforms the Network can verify today. TikTok and Instagram follow via OAuth. */
-export const VERIFIABLE: ReadonlySet<Platform> = new Set<Platform>(['youtube', 'website']);
+/** Platforms the Network can verify today: a code in the YouTube channel
+ *  description or the Instagram or TikTok bio, or a DNS record. */
+export const VERIFIABLE: ReadonlySet<Platform> = new Set<Platform>(['youtube', 'website', 'instagram', 'tiktok']);
 
 // Curated category list — covers the most-searched niches across
 // existing creator marketplaces. Brands filter on these in Tier 3.
@@ -862,7 +864,13 @@ function PlatformRowEditor({
         placeholder="followers"
         // Synced from the platform: the Network ignores typed counts.
         disabled={!!existing?.followerCountSynced}
-        title={existing?.followerCountSynced ? `Synced from ${label}` : undefined}
+        title={
+          existing?.followerCountSynced
+            ? platform === 'instagram' || platform === 'tiktok'
+              ? 'From your public profile'
+              : `Synced from ${label}`
+            : undefined
+        }
         style={{ fontSize: 13 }}
       />
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -954,9 +962,13 @@ export function VerifyAccountDialog({
   const data = start.data;
   const youtube = data?.instructions.kind === 'youtube_description' ? data.instructions : null;
   const dns = data?.instructions.kind === 'dns_txt' ? data.instructions : null;
+  const bio = data?.instructions.kind === 'profile_bio' ? data.instructions : null;
+  // A code to paste somewhere visible, rather than a DNS record.
+  const pasted = !!(youtube || bio);
+  const social = platform === 'instagram' || platform === 'tiktok';
   const checkError = check.error ? verificationError(check.error) : null;
   const startError = start.error ? verificationError(start.error) : null;
-  const title = platform === 'youtube' ? 'Verify YouTube account' : `Verify ${label.toLowerCase()}`;
+  const title = platform === 'youtube' || social ? `Verify ${label} account` : `Verify ${label.toLowerCase()}`;
 
   return (
     <div
@@ -1005,7 +1017,9 @@ export function VerifyAccountDialog({
             <div style={{ background: theme.successSoft, border: `1px solid ${alpha(theme.success, 0.333)}`, borderRadius: theme.radiusSm, padding: 12, fontSize: 13, color: theme.success, marginBottom: 14 }}>
               {platform === 'youtube'
                 ? 'Your YouTube account is verified. You can remove the code from your channel description now.'
-                : 'Your website is verified. You can remove the TXT record now.'}
+                : social
+                  ? `Your ${label} account is verified. You can remove the code from your bio now.`
+                  : 'Your website is verified. You can remove the TXT record now.'}
             </div>
             <Button onClick={onClose}>Done</Button>
           </>
@@ -1018,8 +1032,8 @@ export function VerifyAccountDialog({
           </>
         ) : data ? (
           <div style={{ display: 'grid', gap: 16 }}>
-            <VerifyStep n={1} title={youtube ? 'Copy your code' : 'Copy the TXT record value'}>
-              <CopyBox value={youtube ? data.code : dns!.value} large={!!youtube} />
+            <VerifyStep n={1} title={pasted ? 'Copy your code' : 'Copy the TXT record value'}>
+              <CopyBox value={pasted ? data.code : dns!.value} large={pasted} />
               <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
                 Valid until {new Date(data.expiresAt).toLocaleString()}.
               </div>
@@ -1036,6 +1050,13 @@ export function VerifyAccountDialog({
                   {youtube.channelUrl && <ExternalButton href={youtube.channelUrl}>View channel</ExternalButton>}
                 </div>
               </VerifyStep>
+            ) : bio ? (
+              <VerifyStep n={2} title="Add it to your bio">
+                <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 10px', lineHeight: 1.5 }}>
+                  Paste the code anywhere in your {label} bio and save.
+                </p>
+                <ExternalButton href={bio.editUrl}>Open {label}</ExternalButton>
+              </VerifyStep>
             ) : (
               <VerifyStep n={2} title="Add a TXT record at your DNS provider">
                 <p style={{ fontSize: 13, color: theme.textMuted, margin: 0, lineHeight: 1.5 }}>
@@ -1050,7 +1071,9 @@ export function VerifyAccountDialog({
               <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 10px', lineHeight: 1.5 }}>
                 {youtube
                   ? 'Once the description is published, check it here. YouTube can take a minute to show the change.'
-                  : 'Once the record is saved, check it here. DNS changes can take a few minutes to appear.'}
+                  : bio
+                    ? `Once your bio is saved, check it here. ${label} can take a minute to show the change.`
+                    : 'Once the record is saved, check it here. DNS changes can take a few minutes to appear.'}
               </p>
               {checkError && <ErrorBanner error={checkError.message} />}
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>

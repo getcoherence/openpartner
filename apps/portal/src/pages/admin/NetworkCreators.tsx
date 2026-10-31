@@ -51,7 +51,10 @@ interface PlatformRow {
   profileUrl: string | null;
   followerCount: number | null;
   verified: boolean;
-  /** Verified YouTube's, synced (percent). */
+  /** followerCount was read from the platform (a verified account), not
+   *  typed. Absent on an older Network. */
+  followerCountSynced?: boolean;
+  /** A verified YouTube, Instagram or TikTok account's (percent). */
   engagementRate?: number | null;
   engagementPosts?: number | null;
 }
@@ -644,6 +647,7 @@ function MemberRow({ creator, selected, onSelect }: { creator: DirectoryRow; sel
                 verified={p.verified}
                 engagementRate={p.engagementRate}
                 engagementPosts={p.engagementPosts}
+                readFromProfile={!!p.followerCountSynced && (p.platform === 'instagram' || p.platform === 'tiktok')}
               />
             ))
           : undefined

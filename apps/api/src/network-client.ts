@@ -1473,6 +1473,9 @@ export interface CreatorIndexSettings {
    *  Network that predates it doesn't send it. */
   outreachEnabled?: boolean;
   monthlyBudgetUsd: number;
+  /** Members' Instagram and TikTok reads. Optional: an older Network
+   *  doesn't send it. */
+  memberStatsBudgetUsd?: number;
   minFollowers: number;
   minPostsPer30d: number;
   refreshDays: number;

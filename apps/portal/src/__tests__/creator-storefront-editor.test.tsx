@@ -15,6 +15,7 @@ import { CreatorPublicProfilePage } from '../pages/creator/CreatorPublicProfile.
 import { NetworkCreatorStorefrontPage } from '../pages/admin/NetworkCreatorStorefront.js';
 import { CreatorStorefrontPage } from '../pages/creator/CreatorStorefront.js';
 import { CreatorStorefrontSetupPage } from '../pages/creator/CreatorStorefrontSetup.js';
+import { ChannelHeader } from '../pages/creator/StorefrontSection.js';
 import { PLATFORMS } from '../lib/NetworkProfileEditor.js';
 import {
   groupByChannel,
@@ -200,6 +201,33 @@ describe('brand storefront', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Book →' })[0]!);
     const dialog = await screen.findByRole('dialog');
     await waitFor(() => expect((within(dialog).getByDisplayValue(/Dedicated video/) as HTMLSelectElement).value).toBe('a'));
+  });
+});
+
+describe('a channel read from its public profile', () => {
+  it('says so on hover, where a typed count says Self-reported, with no Synced label', () => {
+    render(
+      <ChannelHeader
+        channel={{
+          id: 'cpf_ig',
+          platform: 'instagram',
+          handle: 'mayabuilds',
+          profileUrl: 'https://www.instagram.com/mayabuilds',
+          followerCount: 50_000,
+          verified: true,
+          followerCountSynced: true,
+          likesPerVideo: 100,
+          commentsPerVideo: 20,
+          engagementRate: 0.24,
+          engagementPosts: 6,
+          statsSyncedAt: '2026-10-31T00:00:00.000Z',
+        }}
+      />,
+    );
+    expect(screen.getByText('50K').parentElement!.getAttribute('title')).toBe('From their public profile');
+    expect(screen.queryByText('Self-reported')).toBeNull();
+    expect(screen.queryByText(/Synced from/)).toBeNull();
+    expect(screen.getByText('0.2%').parentElement!.getAttribute('title')).toBe('0.24% engagement over 6 posts: 100 likes and 20 comments per post');
   });
 });
 

@@ -123,8 +123,16 @@ export function ChannelHeader({ channel }: { channel: StorefrontChannel }) {
       <RefreshCw size={11} /> Synced from {label}
     </span>
   );
+  // Instagram and TikTok are read from their public profile, not synced
+  // from the platform: said on hover, where typed counts say "Self-reported".
+  const readFromProfile = !!channel.followerCountSynced && (channel.platform === 'instagram' || channel.platform === 'tiktok');
+  const perUpload = channel.platform === 'youtube' || channel.platform === 'tiktok' ? 'video' : 'post';
   if (channel.followerCount != null) {
-    facts.push(<span key="audience">{strong(channel.followerCount)} {audienceNoun(channel.platform)}</span>);
+    facts.push(
+      <span key="audience" title={readFromProfile ? 'From their public profile' : undefined}>
+        {strong(channel.followerCount)} {audienceNoun(channel.platform)}
+      </span>,
+    );
     if (!channel.followerCountSynced) facts.push(<span key="self" style={{ color: theme.textDim }}>Self-reported</span>);
   }
   if (channel.viewsPerVideo != null) {
@@ -142,13 +150,13 @@ export function ChannelHeader({ channel }: { channel: StorefrontChannel }) {
     facts.push(
       <span
         key="engagement"
-        title={`${rateInFull(channel.engagementRate, channel.engagementPosts, channel.platform)}${perVideo.length ? `: ${perVideo.join(' and ')} per video` : ''}`}
+        title={`${rateInFull(channel.engagementRate, channel.engagementPosts, channel.platform)}${perVideo.length ? `: ${perVideo.join(' and ')} per ${perUpload}` : ''}`}
       >
         <strong style={{ color: theme.text, fontWeight: 600 }}>{formatRate(channel.engagementRate)}</strong> engagement
       </span>,
     );
   }
-  if (channel.followerCountSynced || channel.viewsPerVideo != null) facts.push(synced);
+  if (!readFromProfile && (channel.followerCountSynced || channel.viewsPerVideo != null)) facts.push(synced);
   if (channel.cadence) facts.push(<span key="cadence">{channel.cadence}</span>);
 
   return (

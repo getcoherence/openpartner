@@ -148,11 +148,12 @@ describe('profile editor: platforms', () => {
 });
 
 describe('profile editor: verify buttons and badges', () => {
-  it('offers Verify on unverified YouTube and website rows only', async () => {
-    platforms = [row('youtube'), row('website', { handle: 'pat.dev' }), row('tiktok')];
+  it('offers Verify on unverified YouTube, website, Instagram and TikTok rows only', async () => {
+    platforms = [row('youtube'), row('website', { handle: 'pat.dev' }), row('tiktok'), row('instagram'), row('twitter')];
     const page = renderWith(<CreatorMyProfilePage />, 'creator-my-profile');
-    await waitFor(() => expect(page.getAllByRole('button', { name: 'Verify' })).toHaveLength(2));
-    expect(within(await platformRow(page, 'TikTok')).queryByRole('button', { name: 'Verify' })).toBeNull();
+    await waitFor(() => expect(page.getAllByRole('button', { name: 'Verify' })).toHaveLength(4));
+    expect(within(await platformRow(page, 'TikTok')).getByRole('button', { name: 'Verify' })).toBeTruthy();
+    expect(within(await platformRow(page, 'X / Twitter')).queryByRole('button', { name: 'Verify' })).toBeNull();
   });
 
   it('shows a Verified badge instead of the button once verified', async () => {
@@ -278,6 +279,30 @@ describe('Verify YouTube account dialog', () => {
     const dialog = await waitFor(() => page.getByRole('dialog', { name: 'Verify website' }));
     await waitFor(() => expect(within(dialog).getByText('openpartner-verify=048213')).toBeTruthy());
     expect(within(dialog).getByText('pat.dev')).toBeTruthy();
+  });
+
+  it('asks for the code in the Instagram bio, and says when it’s verified', async () => {
+    platforms = [row('instagram')];
+    startAnswer = {
+      status: 200,
+      body: {
+        platform: 'instagram',
+        method: 'bio_code',
+        code: '048213',
+        expiresAt: START.expiresAt,
+        instructions: { kind: 'profile_bio', platform: 'instagram', editUrl: 'https://www.instagram.com/accounts/edit/', profileUrl: 'https://www.instagram.com/pat', text: '048213' },
+      },
+    };
+    checkAnswers = [{ status: 200, body: { ok: true, platform: row('instagram', { verified: true, followerCountSynced: true }) } }];
+    const page = renderWith(<CreatorMyProfilePage />, 'creator-my-profile');
+    fireEvent.click(await waitFor(() => page.getByRole('button', { name: 'Verify' })));
+    const dialog = await waitFor(() => page.getByRole('dialog', { name: 'Verify Instagram account' }));
+    await waitFor(() => expect(within(dialog).getByText('048213')).toBeTruthy());
+    expect(within(dialog).getByText('Add it to your bio')).toBeTruthy();
+    expect(within(dialog).getByRole('link', { name: /Open Instagram/ }).getAttribute('href')).toBe('https://www.instagram.com/accounts/edit/');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Verify' }));
+    await waitFor(() => expect(within(dialog).getByText(/Your Instagram account is verified\. You can remove the code from your bio now\./)).toBeTruthy());
+    expect(calls.some((c) => c.url === '/api/creator-api/creators/me/platforms/instagram/verify')).toBe(true);
   });
 
   it('docks to the bottom of the screen on mobile', async () => {

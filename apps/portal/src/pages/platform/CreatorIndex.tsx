@@ -49,6 +49,9 @@ interface IndexSettings {
   /** Absent from a Network that predates the outreach email. */
   outreachEnabled?: boolean;
   monthlyBudgetUsd: number;
+  /** Members' Instagram and TikTok reads, a budget of their own. Absent
+   *  from a Network that predates them. */
+  memberStatsBudgetUsd?: number;
   minFollowers: number;
   minPostsPer30d: number;
   refreshDays: number;
@@ -115,6 +118,8 @@ interface Stats {
   outreachSent?: number;
   suppressions: Record<string, number>;
   spend: { thisMonthUsd: number; budgetUsd: number };
+  /** Members' Instagram and TikTok reads. Absent from an older Network. */
+  memberSpend?: { thisMonthUsd: number; budgetUsd: number };
   /** Each job's latest run. */
   runs?: Partial<Record<RunKind, IndexRun>>;
 }
@@ -778,6 +783,11 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                   <Label>Spend this month</Label>
                   <div style={{ fontSize: 20, fontWeight: 600 }}>${s.spend.thisMonthUsd.toFixed(2)}</div>
                   <div style={{ color: theme.textMuted }}>of ${s.spend.budgetUsd} budget</div>
+                  {s.memberSpend && (
+                    <div style={{ color: theme.textMuted }} title="Members' Instagram and TikTok reads">
+                      Members: ${s.memberSpend.thisMonthUsd.toFixed(2)} of ${s.memberSpend.budgetUsd}
+                    </div>
+                  )}
                 </div>
                 <div>
                   <Label>Queue</Label>
@@ -820,6 +830,20 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                 <Label>Monthly budget (USD)</Label>
                 <Input type="number" min={0} value={draft.monthlyBudgetUsd} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, monthlyBudgetUsd: Math.max(0, Math.round(Number(e.target.value) || 0)) })} />
               </div>
+              {draft.memberStatsBudgetUsd != null && (
+                <div>
+                  <Label>Members&rsquo; budget (USD)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    aria-label="Members' budget (USD)"
+                    title="Members' Instagram and TikTok reads: verification and monthly stats"
+                    value={draft.memberStatsBudgetUsd}
+                    disabled={!canWrite}
+                    onChange={(e) => setDraft({ ...draft, memberStatsBudgetUsd: Math.max(0, Math.round(Number(e.target.value) || 0)) })}
+                  />
+                </div>
+              )}
               <div>
                 <Label>Min. followers</Label>
                 <Input type="number" min={0} value={draft.minFollowers} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, minFollowers: Math.max(0, Math.round(Number(e.target.value) || 0)) })} />

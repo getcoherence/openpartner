@@ -1920,6 +1920,7 @@ const creatorIndexSettingsSchema = z
     invitesEnabled: z.boolean(),
     outreachEnabled: z.boolean().optional(),
     monthlyBudgetUsd: z.number().int().min(0).max(100_000),
+    memberStatsBudgetUsd: z.number().int().min(0).max(100_000).optional(),
     minFollowers: z.number().int().min(0).max(10_000_000),
     minPostsPer30d: z.number().int().min(0).max(1_000),
     refreshDays: z.number().int().min(7).max(90),
