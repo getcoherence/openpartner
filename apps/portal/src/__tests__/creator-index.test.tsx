@@ -410,7 +410,7 @@ describe('ops console: creator index settings', () => {
       return { status: 200, body: { creators: [] } };
     };
     wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
-    expect(await screen.findByText(/2 searches · 43 found · 41 queued/)).toBeTruthy();
+    expect(await screen.findByText(/2 searches · 43 found · 41 new/)).toBeTruthy();
     expect(screen.getByText(/running since/)).toBeTruthy();
     expect(screen.getByText(/YouTube set aside: the YouTube API quota is used up/)).toBeTruthy();
 
@@ -422,6 +422,59 @@ describe('ops console: creator index settings', () => {
     fireEvent.change(screen.getByDisplayValue('8'), { target: { value: '12' } });
     fireEvent.click(screen.getByText('Save settings'));
     await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({ readConcurrency: 12 }));
+  });
+
+  it('counts the creators listed lately, marks the new ones, and says how Discover went further', async () => {
+    const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
+    const discover = (result: Record<string, unknown>) => ({ startedAt: hoursAgo(1), finishedAt: hoursAgo(1), result });
+    let run = discover({ ran: true, searches: 6, deeper: 1, related: ['RevOps newsletters', 'cold email outreach'], found: 120, queued: 37, recent: 2 });
+    respond = (url) => {
+      if (url.endsWith('/creator-index/settings')) {
+        return { status: 200, body: { settings: SETTINGS, defaults: SETTINGS, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {} } };
+      }
+      if (url.endsWith('/creator-index/stats')) {
+        return {
+          status: 200,
+          body: {
+            creators: { byStatus: {}, listed: 52, listedLast24h: 37, listedLast7d: 40, shownToBrands: 30, hiddenFromBrands: 22 },
+            byCountry: [],
+            candidates: {},
+            rejections: {},
+            invites: {},
+            emailsSent30d: 0,
+            suppressions: {},
+            spend: { thisMonthUsd: 1.2, budgetUsd: 10 },
+            runs: { discover: run },
+          },
+        };
+      }
+      const base = { status: 'active', headline: null, country: 'US', region: 'US-TX', brandVisible: true, emailsSent: 0, totalReach: 1_000, contact: null, platforms: [] };
+      return {
+        status: 200,
+        body: {
+          creators: [
+            { ...base, id: 'a', name: 'Jo Rivera', listedAt: hoursAgo(2), country: 'KR', region: null, location: { text: 'Seoul, South Korea', from: 'linkedin' } },
+            { ...base, id: 'b', name: 'Sam Lee', listedAt: hoursAgo(72) },
+          ],
+          total: 52,
+        },
+      };
+    };
+    const { unmount } = wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    expect(await screen.findByText('+37 in the last 24 hours · +40 this week')).toBeTruthy();
+    expect(await screen.findByText('52 in all, newest 2 shown')).toBeTruthy();
+    expect(screen.getByText('37 new in the last 24 hours')).toBeTruthy();
+    expect(screen.getAllByText(/^new · listed/)).toHaveLength(1);
+    // Where each country was read from.
+    expect(screen.getByText('LinkedIn: “Seoul, South Korea”')).toBeTruthy();
+    expect(screen.getByText(/6 searches · 1 of them deeper · 120 found · 37 new · 2 seed searches made this month/)).toBeTruthy();
+    expect(screen.getByText('Related queries searched: RevOps newsletters · cold email outreach')).toBeTruthy();
+    unmount();
+
+    // A Discover with nothing left to search says so.
+    run = discover({ ran: true, searches: 0, deeper: 0, related: [], found: 0, queued: 0, recent: 2 });
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    expect(await screen.findByText(/Nothing left to search on these topics this month/)).toBeTruthy();
   });
 
   it('keeps new lines, commas and spaces as they’re typed in the list boxes, and saves the lists', async () => {
