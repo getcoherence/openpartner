@@ -10,9 +10,11 @@
  *     to search them, whether to keep only creators who take partnerships,
  *     model.
  *   - Seed URLs, runs, and search with removal.
+ *   - The outreach email: "claim your profile", once, to creators no brand
+ *     has written to, previewed and sent in small batches.
  *
- * Support operators can look and dry-run the invite email; changes and runs
- * need an admin.
+ * Support operators can look and dry-run the invite and outreach emails;
+ * changes, runs and sends need an admin.
  */
 
 import { useEffect, useState } from 'react';
@@ -37,6 +39,8 @@ const SOURCE_DEFAULTS: Record<DiscoverySource, boolean> = { storefronts: true, s
 interface IndexSettings {
   enabled: boolean;
   invitesEnabled: boolean;
+  /** Absent from a Network that predates the outreach email. */
+  outreachEnabled?: boolean;
   monthlyBudgetUsd: number;
   minFollowers: number;
   minPostsPer30d: number;
@@ -54,6 +58,8 @@ interface IndexSettings {
 }
 
 type IndexJob = 'discover' | 'read' | 'refresh';
+/** What the runs record holds: the jobs, and outreach batches. */
+type RunKind = IndexJob | 'outreach';
 
 interface IndexRun {
   startedAt: string;
@@ -69,6 +75,8 @@ interface SettingsState {
   updatedAt: string | null;
   updatedByEmail: string | null;
   configured: Record<string, boolean>;
+  /** The mailbox the index's emails go from. */
+  outreachMailer?: { configured: boolean; from: string | null };
 }
 
 interface Stats {
@@ -88,11 +96,58 @@ interface Stats {
   rejections: Record<string, number>;
   invites: Record<string, number>;
   emailsSent30d: number;
+  /** Outreach emails ever sent (one per creator). */
+  outreachSent?: number;
   suppressions: Record<string, number>;
   spend: { thisMonthUsd: number; budgetUsd: number };
   /** Each job's latest run. */
-  runs?: Partial<Record<IndexJob, IndexRun>>;
+  runs?: Partial<Record<RunKind, IndexRun>>;
 }
+
+interface OutreachTarget {
+  id: string;
+  name: string | null;
+  country: string | null;
+  region: string | null;
+  shownToBrands: boolean;
+  totalReach: number;
+  address: string;
+  addressFoundOn: string | null;
+  opening: string;
+  skip?: string;
+}
+
+interface OutreachPreview {
+  enabled: boolean;
+  mailerConfigured: boolean;
+  sender: string | null;
+  due: number;
+  candidates: number;
+  excluded: Record<string, number>;
+  countriesNotCleared: Record<string, number>;
+  targets: OutreachTarget[];
+}
+
+/** Why a listed creator isn't in the outreach batch, in ops' words. */
+const OUTREACH_EXCLUDED: Record<string, string> = {
+  already_sent: 'already sent it',
+  invite_waiting: 'a brand is waiting (they get the brands’ email)',
+  emailed_recently: 'emailed in the last 7 days',
+  email_cap: 'had all three emails',
+  muted: 'stopped emails',
+  no_verified_address: 'no verified email',
+  country_not_cleared: 'country not cleared for it',
+  published_address_only: 'Canada, Australia or New Zealand, with an email we looked up rather than one they published',
+};
+
+/** Why a creator in the batch would be skipped when it's sent. */
+const OUTREACH_SKIP: Record<string, string> = {
+  suppressed: 'asked to be removed: skipped',
+  member: 'already on OpenPartner: skipped',
+  nothing_to_name: 'no page to open with: skipped',
+  refuses_unsolicited: 'the page with their email refuses unsolicited email: skipped',
+  source_unreadable: 'the page with their email can’t be read, and their country needs it: skipped',
+};
 
 /** Why a run stopped or set a platform aside, in ops' words. */
 const RUN_REASONS: Record<string, string> = {
@@ -105,7 +160,7 @@ const RUN_REASONS: Record<string, string> = {
 };
 const reasonText = (r: string) => RUN_REASONS[r] ?? r.replace(/_/g, ' ');
 
-const JOB_LABEL: Record<IndexJob, string> = { discover: 'Discover', read: 'Read', refresh: 'Refresh' };
+const JOB_LABEL: Record<RunKind, string> = { discover: 'Discover', read: 'Read', refresh: 'Refresh', outreach: 'Outreach email' };
 
 const PLATFORM_NAME: Record<string, string> = { linkedin: 'LinkedIn', twitter: 'X', youtube: 'YouTube', substack: 'Substack', newsletter: 'Newsletter' };
 
@@ -117,13 +172,15 @@ function contactFrom(source: string): string {
 }
 
 /** What a finished run did, in one line. */
-function runSummary(job: IndexJob, r: Record<string, unknown> | null): string {
+function runSummary(job: RunKind, r: Record<string, unknown> | null): string {
   if (!r) return '';
   if (typeof r.error === 'string') return `failed: ${r.error}`;
   if (r.ran === false) return 'didn’t run (indexing is off, or there’s nothing to search)';
   const n = (k: string) => (typeof r[k] === 'number' ? (r[k] as number) : 0);
   const parts =
-    job === 'discover'
+    job === 'outreach'
+      ? [`${n('sent')} sent`, n('skipped') ? `${n('skipped')} skipped` : '', n('failed') ? `${n('failed')} refused, to retry` : '']
+      : job === 'discover'
       ? [`${n('searches')} searches`, `${n('found')} found`, `${n('queued')} queued`, n('recent') ? `${n('recent')} searched recently, skipped` : '']
       : job === 'read'
         ? [`${n('indexed')} listed`, `${n('rejected')} turned down`, `${n('expanded')} storefronts and pages opened`, n('retried') ? `${n('retried')} to retry` : '', n('deferred') ? `${n('deferred')} waiting` : '', n('failed') ? `${n('failed')} failed` : '']
@@ -131,7 +188,7 @@ function runSummary(job: IndexJob, r: Record<string, unknown> | null): string {
   return parts.filter(Boolean).join(' · ');
 }
 
-function RunLine({ job, run }: { job: IndexJob; run: IndexRun | undefined }) {
+function RunLine({ job, run }: { job: RunKind; run: IndexRun | undefined }) {
   if (!run) return null;
   const running = !run.finishedAt;
   const r = run.result;
@@ -294,6 +351,19 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
     mutationFn: (dryRun: boolean) => papi<Record<string, unknown>>('/platform-admin/creator-index/invites/run', { method: 'POST', body: { dryRun } }),
     onSuccess: refresh,
   });
+  const [batchSize, setBatchSize] = useState(50);
+  const outreachPreview = useMutation({
+    mutationFn: () => papi<OutreachPreview>('/platform-admin/creator-index/outreach/run', { method: 'POST', body: { dryRun: true, limit: batchSize } }),
+  });
+  // Starts the batch on the Network, which sends it a few seconds apart.
+  const outreachSend = useMutation({
+    mutationFn: () => papi<{ started: boolean }>('/platform-admin/creator-index/outreach/run', { method: 'POST', body: { dryRun: false, limit: batchSize } }),
+    onSuccess: () => {
+      outreachPreview.reset();
+      setWatchUntil(Date.now() + 20_000);
+      refresh();
+    },
+  });
 
   const [q, setQ] = useState('');
   const [searchFor, setSearchFor] = useState('');
@@ -312,7 +382,10 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
 
   const s = stats.data;
   const configured = state.data?.configured;
-  const error = save.error ?? seeds.error ?? run.error ?? invites.error ?? remove.error;
+  const error = save.error ?? seeds.error ?? run.error ?? invites.error ?? outreachPreview.error ?? outreachSend.error ?? remove.error;
+  const mailbox = state.data?.outreachMailer;
+  const outreachOn = state.data?.settings.outreachEnabled ?? false;
+  const preview = outreachPreview.data;
 
   return (
     <Page
@@ -329,6 +402,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
               <span style={{ fontSize: 15, fontWeight: 600, marginRight: 4 }}>Status</span>
               <Pill on={state.data.settings.enabled}>{state.data.settings.enabled ? 'indexing on' : 'indexing off'}</Pill>
               <Pill on={state.data.settings.invitesEnabled}>{state.data.settings.invitesEnabled ? 'invite emails on' : 'invite emails off'}</Pill>
+              <Pill on={outreachOn}>{outreachOn ? 'outreach email on' : 'outreach email off'}</Pill>
               {configured && (
                 <span style={{ fontSize: 12, color: theme.textMuted }}>
                   Sources:{' '}
@@ -372,6 +446,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                     {Object.entries(s.invites).map(([k, v]) => `${k} ${v}`).join(' · ') || '—'}
                   </div>
                   <div style={{ color: theme.textMuted }}>{s.emailsSent30d} emails in 30 days</div>
+                  {s.outreachSent != null && <div style={{ color: theme.textMuted }}>{s.outreachSent} outreach emails sent</div>}
                 </div>
               </div>
             )}
@@ -393,7 +468,10 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                 <input type="checkbox" checked={draft.invitesEnabled} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, invitesEnabled: e.target.checked })} />
                 Invite emails on
               </label>
-              <div />
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
+                <input type="checkbox" checked={draft.outreachEnabled ?? false} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, outreachEnabled: e.target.checked })} />
+                Outreach email on
+              </label>
               <div>
                 <Label>Monthly budget (USD)</Label>
                 <Input type="number" min={0} value={draft.monthlyBudgetUsd} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, monthlyBudgetUsd: Math.max(0, Math.round(Number(e.target.value) || 0)) })} />
@@ -561,7 +639,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
             )}
             {s?.runs && Object.keys(s.runs).length > 0 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 14 }}>
-                {(['discover', 'read', 'refresh'] as const).map((job) => (
+                {(['discover', 'read', 'refresh', 'outreach'] as const).map((job) => (
                   <RunLine key={job} job={job} run={s.runs![job]} />
                 ))}
               </div>
@@ -571,6 +649,91 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                 {JSON.stringify(invites.data, null, 2)}
               </pre>
             )}
+            <div style={{ marginTop: 18, paddingTop: 14, borderTop: `1px solid ${theme.borderSubtle}` }}>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>Outreach email</div>
+              <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 4, lineHeight: 1.5 }}>
+                &ldquo;Claim your profile&rdquo;, once ever, to listed creators no brand has written to: the only way in for creators hidden from brands.
+                Biggest reach first. It opens with their own storefront or sponsor page, and counts as one of their three emails.{' '}
+                {mailbox?.configured ? (
+                  <>Sends from {mailbox.from ?? 'the Network’s outreach mailbox'}, a few seconds apart.</>
+                ) : (
+                  <span style={{ color: theme.danger }}>The Network has no outreach mailbox set up, so nothing can be sent.</span>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                <div style={{ width: 120 }}>
+                  <Label>Batch size</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={batchSize}
+                    onChange={(e) => {
+                      setBatchSize(Math.min(100, Math.max(1, Math.round(Number(e.target.value) || 50))));
+                      outreachPreview.reset();
+                    }}
+                  />
+                </div>
+                <Button variant="secondary" onClick={() => outreachPreview.mutate()} disabled={outreachPreview.isPending}>
+                  {outreachPreview.isPending ? 'Previewing…' : 'Preview batch'}
+                </Button>
+                {canWrite && (
+                  <Button
+                    onClick={() => {
+                      if (window.confirm(`Send the outreach email to ${preview?.candidates ?? batchSize} creators? Each gets it only once.`)) outreachSend.mutate();
+                    }}
+                    disabled={!preview || preview.candidates === 0 || !outreachOn || !mailbox?.configured || outreachSend.isPending}
+                  >
+                    Send this batch
+                  </Button>
+                )}
+              </div>
+              {canWrite && !outreachOn && <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 6 }}>Switch &ldquo;Outreach email on&rdquo; in Settings to send.</div>}
+              {outreachSend.isSuccess && (
+                <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 10 }}>
+                  Started. The Network sends it a few seconds apart; the run shows above when it&rsquo;s done.
+                </div>
+              )}
+              {preview && (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontSize: 13 }}>
+                    <strong>{preview.due.toLocaleString()}</strong> due now; this batch takes {preview.candidates.toLocaleString()}.
+                  </div>
+                  {Object.keys(preview.excluded).length > 0 && (
+                    <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 4, lineHeight: 1.5 }}>
+                      Left out:{' '}
+                      {Object.entries(preview.excluded)
+                        .map(([k, v]) => `${OUTREACH_EXCLUDED[k] ?? k.replace(/_/g, ' ')} ${v}`)
+                        .join(' · ')}
+                      {Object.keys(preview.countriesNotCleared).length > 0 &&
+                        ` (not cleared: ${Object.entries(preview.countriesNotCleared)
+                          .map(([k, v]) => `${k} ${v}`)
+                          .join(', ')})`}
+                    </div>
+                  )}
+                  {preview.targets.length > 0 && (
+                    <div style={{ marginTop: 10 }}>
+                      <Table
+                        columns={['Creator', 'Where', 'Reach', 'Email', 'Opens with']}
+                        rows={preview.targets.map((t) => [
+                          <div key="n">
+                            <div style={{ fontWeight: 500 }}>{t.name ?? '—'}</div>
+                            {t.skip && <div style={{ fontSize: 12, color: theme.danger }}>{OUTREACH_SKIP[t.skip] ?? t.skip}</div>}
+                          </div>,
+                          `${t.country ?? '—'}${t.region ? ` (${t.region})` : ''}${t.shownToBrands ? '' : ' · hidden'}`,
+                          t.totalReach.toLocaleString(),
+                          <div key="a">
+                            <div>{t.address}</div>
+                            {t.addressFoundOn && <div style={{ fontSize: 12, color: theme.textMuted }}>{contactFrom(t.addressFoundOn)}</div>}
+                          </div>,
+                          <span key="o" style={{ fontSize: 12 }}>{t.opening}</span>,
+                        ])}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
             {canWrite && (
               <div style={{ marginTop: 16 }}>
                 <Label>Queue URLs: profiles (LinkedIn, X, YouTube), sponsorship storefronts or sponsor pages</Label>

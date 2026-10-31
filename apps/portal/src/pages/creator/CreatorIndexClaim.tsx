@@ -1,8 +1,10 @@
 /**
- * /creator/claim?token=… — where the creator index's invite email lands
- * (openpartner-network docs/creator-index.md §5.3). Brands wanted to work
- * with a creator who isn't on OpenPartner yet; claiming the free profile
- * opens each brand's message as a conversation.
+ * /creator/claim?token=… — where the creator index's emails land
+ * (openpartner-network docs/creator-index.md §5.3, §5.5). Brands wanted to
+ * work with a creator who isn't on OpenPartner yet, and claiming the free
+ * profile opens each brand's message as a conversation. Or no brand has
+ * written yet (the "claim your profile" email), and the creator lands in
+ * their new account.
  *
  *   - Signed in already: the profile is claimed into that account.
  *   - Not signed in, and no account at the address the email went to: one is
@@ -34,6 +36,8 @@ interface ClaimPreview {
     platforms: Array<{ platform: string; handle: string | null; profileUrl: string; followerCount: number | null }>;
     /** Why brands see them as open to partnerships, and where we read it. */
     partnershipSignals?: PartnershipSignal[];
+    /** False while the listing is hidden from brands until they claim. */
+    shownToBrands?: boolean;
   };
   invites: Array<{ brand: string; logoUrl: string | null; preview: string }>;
   expiresAt: string;
@@ -74,7 +78,8 @@ export function CreatorIndexClaimPage() {
     mutationFn: () => creatorApi<ClaimResult>('/creator-index/claim', { method: 'POST', body: { token } }),
     onSuccess: (r) => {
       const first = r.conversationIds[0];
-      navigate(first ? `/creator/messages/${first}` : '/creator/messages');
+      // No brand was waiting: their new account, with its setup steps.
+      navigate(first ? `/creator/messages/${first}` : '/creator');
     },
   });
 
@@ -83,6 +88,8 @@ export function CreatorIndexClaimPage() {
   const existingEmail = claimCode === 'sign_in_required' ? ((claim.error as ApiError).detail as { email?: string } | null)?.email ?? null : null;
   const p = preview.data;
   const signals = p?.creator.partnershipSignals ?? [];
+  const waiting = p?.invites.length ?? 0;
+  const shown = p?.creator.shownToBrands ?? true;
 
   return (
     <div style={{ minHeight: '100vh', background: theme.bg, padding: '64px 20px' }}>
@@ -90,7 +97,7 @@ export function CreatorIndexClaimPage() {
         <Card>
           {!token || preview.error ? (
             <>
-              <div style={{ fontSize: 17, fontWeight: 600 }}>Brands want to work with you</div>
+              <div style={{ fontSize: 17, fontWeight: 600 }}>Your OpenPartner profile</div>
               <div style={{ marginTop: 12, fontSize: 14, color: theme.danger, background: theme.dangerSoft, borderRadius: theme.radiusSm, padding: '10px 12px' }}>
                 {(previewCode && ERRORS[previewCode]) || ERRORS.invalid_or_expired}
               </div>
@@ -112,15 +119,23 @@ export function CreatorIndexClaimPage() {
                 )}
                 <div>
                   <div style={{ fontSize: 17, fontWeight: 600 }}>
-                    {p.invites.length === 1 ? `${p.invites[0]!.brand} wants to work with you` : `${p.invites.length} brands want to work with you`}
+                    {waiting === 0
+                      ? 'Claim your OpenPartner profile'
+                      : waiting === 1
+                        ? `${p.invites[0]!.brand} wants to work with you`
+                        : `${waiting} brands want to work with you`}
                   </div>
                   <div style={{ fontSize: 14, color: theme.textMuted, marginTop: 6, lineHeight: 1.5 }}>
-                    Claim your free OpenPartner profile to read and reply. Brands never see your email address.
+                    {waiting > 0
+                      ? 'Claim your free OpenPartner profile to read and reply. Brands never see your email address.'
+                      : shown
+                        ? 'Brands on OpenPartner can already find you. Claim it free to decide what it says and hear from brands here; they never see your email address.'
+                        : 'It isn’t shown to brands until you claim it. Claiming is free, you decide what it says, and brands never see your email address.'}
                   </div>
                 </div>
               </div>
 
-              <div style={{ marginTop: 18, display: 'grid', gap: 10 }}>
+              <div style={{ marginTop: waiting ? 18 : 0, display: 'grid', gap: 10 }}>
                 {p.invites.map((i, n) => (
                   <div key={n} style={{ border: `1px solid ${theme.borderSubtle}`, borderRadius: theme.radiusSm, padding: '10px 12px' }}>
                     <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{i.brand}</div>
@@ -146,7 +161,7 @@ export function CreatorIndexClaimPage() {
                   )}
                   <div style={{ marginTop: 18 }}>
                     <Button onClick={() => claim.mutate()} disabled={claim.isPending}>
-                      {claim.isPending ? 'Claiming…' : 'Claim my profile and read'}
+                      {claim.isPending ? 'Claiming…' : waiting ? 'Claim my profile and read' : 'Claim my profile'}
                     </Button>
                   </div>
                 </>
@@ -160,7 +175,8 @@ export function CreatorIndexClaimPage() {
                 {p.creator.email && p.creator.emailFoundOn ? <>, and got {p.creator.email} from {p.creator.emailFoundOn}</> : null}.
                 {signals.length > 0 && (
                   <>
-                    {' '}We show brands that you take partnerships, from{' '}
+                    {' '}
+                    {shown ? 'We show brands that you take partnerships, from' : 'Brands don’t see this listing. It notes that you take partnerships, from'}{' '}
                     {signals.map((s, i) => (
                       <span key={s.kind}>
                         {i > 0 && (i === signals.length - 1 ? ' and ' : ', ')}

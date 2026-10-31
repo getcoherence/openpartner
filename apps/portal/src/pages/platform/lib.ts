@@ -576,6 +576,10 @@ export function friendlyPlatformError(err: unknown): string {
       return 'NETWORK_URL / NETWORK_ADMIN_API_KEY aren’t set, so creator reminders can’t reach the Network.';
     case 'already_running':
       return 'That job is already running. Its progress shows under Runs.';
+    case 'outreach_off':
+      return 'Switch the outreach email on in Settings first.';
+    case 'mailer_not_configured':
+      return 'The Network has no outreach mailbox set up, so nothing can be sent.';
     case 'cutover_in_past':
       return 'The cutover can’t be more than a day in the past: it would reprice plans bought under the old pricing.';
     case 'no_cutover':

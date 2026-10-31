@@ -11,7 +11,8 @@
  *      need no plan. A brand in review can't invite.
  *   3. The claim paths pass through the creator portal proxy.
  *   4. The ops console reads and writes the Network's settings with the
- *      admin key, audits writes, and keeps runs to admins.
+ *      admin key, audits writes, and keeps runs to admins. Anyone on it can
+ *      preview an outreach batch; sending one takes an admin.
  *   5. The hourly cron triggers the invite email.
  *
  * A local HTTP server plays the Network. Skipped without DATABASE_URL.
@@ -116,6 +117,11 @@ beforeAll(async () => {
           // The Network starts runs in the background and answers at once.
           if (path === '/admin/creator-index/run/read') return json(202, { started: true });
           if (path === '/admin/creator-index/run/refresh') return json(409, { error: 'already_running' });
+          if (path === '/admin/creator-index/outreach/run') {
+            if (body?.dryRun) return json(200, { dryRun: true, enabled: true, mailerConfigured: true, sender: 'ops@openpartner.test', due: 2, candidates: 2, excluded: {}, countriesNotCleared: {}, targets: [] });
+            if (body?.limit === 7) return json(409, { error: 'mailer_not_configured' });
+            return json(202, { started: true });
+          }
           if (path === '/admin/creator-index/invites/run') {
             return json(200, { ran: true, dryRun: body?.dryRun, candidates: 1, sent: body?.dryRun ? 0 : 1, skipped: 0, failed: 0, expired: 0, unreachable: 0 });
           }
@@ -340,6 +346,42 @@ describe.skipIf(skipIntegration)('creator index: ops console', () => {
     expect((await request(app).delete('/platform-admin/creator-index/creators/ixc_1').set('Cookie', admin)).status).toBe(204);
     expect((await request(app).delete('/platform-admin/creator-index/creators/ixc_gone').set('Cookie', admin)).body).toEqual({ error: 'not_found' });
     expect((await request(app).post('/platform-admin/creator-index/invites/run').set('Cookie', admin).send({ dryRun: false })).body).toMatchObject({ sent: 1 });
+  });
+});
+
+describe.skipIf(skipIntegration)('creator index: the outreach email', () => {
+  it('lets support preview a batch, keeps sending to admins, audits a send, and passes the Network’s refusal back', async () => {
+    const support = await operator('support');
+    const dry = await request(app).post('/platform-admin/creator-index/outreach/run').set('Cookie', support).send({ dryRun: true, limit: 25 });
+    expect(dry.status).toBe(200);
+    expect(dry.body).toMatchObject({ dryRun: true, due: 2, candidates: 2 });
+    expect(last('/admin/creator-index/outreach/run')).toMatchObject({ auth: `Bearer ${NETWORK_ADMIN}`, body: { dryRun: true, limit: 25, publicUrl: networkUrl } });
+    // A body without dryRun is a preview, never a send.
+    expect((await request(app).post('/platform-admin/creator-index/outreach/run').set('Cookie', support).send({})).status).toBe(200);
+    expect(last('/admin/creator-index/outreach/run')!.body).toMatchObject({ dryRun: true, limit: 50 });
+    expect((await request(app).post('/platform-admin/creator-index/outreach/run').set('Cookie', support).send({ dryRun: false })).status).toBe(403);
+
+    const admin = await operator();
+    calls.length = 0;
+    expect((await request(app).post('/platform-admin/creator-index/outreach/run').set('Cookie', admin).send({ dryRun: false, limit: 101 })).status).toBe(400);
+    expect(calls).toHaveLength(0);
+    const sent = await request(app).post('/platform-admin/creator-index/outreach/run').set('Cookie', admin).send({ dryRun: false, limit: 10 });
+    expect(sent.status).toBe(202);
+    expect(sent.body).toEqual({ started: true });
+    expect(last('/admin/creator-index/outreach/run')!.body).toEqual({ dryRun: false, limit: 10, publicUrl: networkUrl });
+    const audit = await db(TABLES.PlatformAuditLog).where({ action: 'creator_index.outreach_run', platformAdminEmail: OPS_EMAIL }).orderBy('createdAt', 'desc').first();
+    expect(audit?.detail).toEqual({ limit: 10 });
+
+    const refused = await request(app).post('/platform-admin/creator-index/outreach/run').set('Cookie', admin).send({ dryRun: false, limit: 7 });
+    expect(refused.status).toBe(409);
+    expect(refused.body).toEqual({ error: 'mailer_not_configured' });
+  });
+
+  it('passes the outreach switch through with the settings', async () => {
+    const cookie = await operator();
+    const put = await request(app).put('/platform-admin/creator-index/settings').set('Cookie', cookie).send({ ...SETTINGS, outreachEnabled: true });
+    expect(put.status).toBe(200);
+    expect(last('/admin/creator-index/settings')!.body).toMatchObject({ outreachEnabled: true });
   });
 });
 

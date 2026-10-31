@@ -1469,6 +1469,9 @@ export async function adminRunStorefrontNudge(
 export interface CreatorIndexSettings {
   enabled: boolean;
   invitesEnabled: boolean;
+  /** Ops can send the "claim your profile" outreach email. Optional: a
+   *  Network that predates it doesn't send it. */
+  outreachEnabled?: boolean;
   monthlyBudgetUsd: number;
   minFollowers: number;
   minPostsPer30d: number;
@@ -1496,6 +1499,8 @@ export interface StoredCreatorIndexSettings {
   updatedByEmail: string | null;
   /** Which of the Network's data sources have credentials, by its own names. */
   configured: Record<string, boolean>;
+  /** The mailbox the index's emails go from, if the Network has one. */
+  outreachMailer?: { configured: boolean; from: string | null };
 }
 
 export async function adminGetCreatorIndexSettings(networkUrl: string): Promise<StoredCreatorIndexSettings> {
@@ -1559,6 +1564,53 @@ export async function adminRunCreatorIndexInvites(networkUrl: string, opts: { dr
     { dryRun: opts.dryRun, publicUrl: networkUrl },
     {},
     // A run's sends happen before the Network answers.
+    90_000,
+  );
+}
+
+export interface CreatorIndexOutreachTarget {
+  id: string;
+  name: string | null;
+  country: string | null;
+  region: string | null;
+  shownToBrands: boolean;
+  totalReach: number;
+  /** Masked by the Network. */
+  address: string;
+  addressFoundOn: string | null;
+  /** How the email would open. */
+  opening: string;
+  skip?: string;
+}
+
+export interface CreatorIndexOutreachPreview {
+  dryRun: true;
+  enabled: boolean;
+  mailerConfigured: boolean;
+  sender: string | null;
+  due: number;
+  candidates: number;
+  excluded: Record<string, number>;
+  countriesNotCleared: Record<string, number>;
+  targets: CreatorIndexOutreachTarget[];
+}
+
+/** The outreach email (§5.5): a dry run answers with the batch; a send
+ *  starts on the Network in the background ({ started: true }), or 409s
+ *  with outreach_off, mailer_not_configured or already_running. The mute
+ *  and remove links point at `networkUrl`. */
+export async function adminRunCreatorIndexOutreach(
+  networkUrl: string,
+  opts: { dryRun: boolean; limit: number },
+): Promise<CreatorIndexOutreachPreview | { started: true }> {
+  return callNetworkAdmin(
+    networkUrl,
+    'POST',
+    '/admin/creator-index/outreach/run',
+    { dryRun: opts.dryRun, limit: opts.limit, publicUrl: networkUrl },
+    {},
+    // A dry run reads every listed creator, and the page each address in
+    // the batch came from.
     90_000,
   );
 }
