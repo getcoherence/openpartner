@@ -342,7 +342,7 @@ function CreatorCard({ creator }: { creator: DirectoryRow }) {
       )}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         <TenantLink to={`/admin/network/creators/${encodeURIComponent(creator.handle)}`} style={{ textDecoration: 'none', flex: 1 }}>
-          <Button variant="secondary" style={{ width: '100%' }}>View storefront</Button>
+          <Button variant="secondary" style={{ width: '100%' }}>Storefront</Button>
         </TenantLink>
         <InviteButton creator={creator} />
         <BookButton creator={creator} />
