@@ -169,6 +169,14 @@ describe('external creators', () => {
     fireEvent.change(screen.getByPlaceholderText('e.g. 500'), { target: { value: '500' } });
     expect(await screen.findByText('External creators are hidden by these filters.')).toBeTruthy();
 
+    // Audience is countries by name, picked from a list.
+    fireEvent.click(screen.getByRole('button', { name: /^Audience/ }));
+    fireEvent.change(screen.getByLabelText('Search countries'), { target: { value: 'united k' } });
+    expect(screen.queryByLabelText('France')).toBeNull();
+    fireEvent.click(screen.getByLabelText('United Kingdom'));
+    await waitFor(() => expect(calls.some((c) => c.url.includes('/discover/creators?') && c.url.includes('locations=GB'))).toBe(true));
+    expect(screen.getByRole('button', { name: /^Audience.*GB/ })).toBeTruthy();
+
     // Reset all clears the lot.
     fireEvent.click(screen.getByRole('button', { name: 'Reset all' }));
     expect(screen.queryByText('External creators are hidden by these filters.')).toBeNull();

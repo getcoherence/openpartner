@@ -21,6 +21,7 @@ import { ChevronDown, Users } from 'lucide-react';
 import { api, ApiError } from '../../api.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Textarea } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
+import { countryOptions } from '../../lib/CountryField.js';
 import { ChannelCount, compactCount } from '../../lib/PlatformMark.js';
 import { useMediaQuery } from '../../lib/useMediaQuery.js';
 import { PLATFORMS as CREATOR_PLATFORMS } from '../../lib/NetworkProfileEditor.js';
@@ -102,7 +103,8 @@ export function AdminNetworkCreators() {
   const [categories, setCategories] = useState<string[]>([]);
   const [platforms, setPlatforms] = useState<string[]>([]);
   const [verifiedOnly, setVerifiedOnly] = useState(false);
-  const [locations, setLocations] = useState('');
+  /** Audience countries, ISO codes. */
+  const [locations, setLocations] = useState<string[]>([]);
   const [minFollowers, setMinFollowers] = useState<number | ''>('');
   const [minRevenue, setMinRevenue] = useState<number | ''>('');
   const [openOnly, setOpenOnly] = useState(false);
@@ -148,27 +150,18 @@ export function AdminNetworkCreators() {
     return () => window.clearTimeout(t);
   }, [q]);
 
-  const cleanLocations = useMemo(
-    () =>
-      locations
-        .split(',')
-        .map((s) => s.trim().toUpperCase())
-        .filter((s) => /^[A-Z]{2}$/.test(s)),
-    [locations],
-  );
-
   const qs = useMemo(() => {
     const p = new URLSearchParams();
     if (debouncedQ) p.set('q', debouncedQ);
     if (categories.length > 0) p.set('categories', categories.join(','));
     if (platforms.length > 0) p.set('platforms', platforms.join(','));
     if (verifiedOnly) p.set('verified', 'true');
-    if (cleanLocations.length > 0) p.set('locations', cleanLocations.join(','));
+    if (locations.length > 0) p.set('locations', locations.join(','));
     if (minFollowers !== '' && minFollowers > 0) p.set('minFollowers', String(minFollowers));
     if (minRevenue !== '' && minRevenue > 0) p.set('minRevenue90d', String(minRevenue));
     if (sort !== 'revenue') p.set('sort', sort);
     return p.toString();
-  }, [debouncedQ, categories, platforms, verifiedOnly, cleanLocations, minFollowers, minRevenue, sort]);
+  }, [debouncedQ, categories, platforms, verifiedOnly, locations, minFollowers, minRevenue, sort]);
 
   const list = useQuery({
     queryKey: ['admin-discover-creators', qs],
@@ -182,7 +175,7 @@ export function AdminNetworkCreators() {
 
   // External creators have no sales, audience or verification data, so
   // these filters leave them out.
-  const memberOnlyFilters = verifiedOnly || (minRevenue !== '' && minRevenue > 0) || locations.trim() !== '';
+  const memberOnlyFilters = verifiedOnly || (minRevenue !== '' && minRevenue > 0) || locations.length > 0;
   const externalFilters = useMemo<ExternalFilters>(
     () => ({
       q: debouncedQ || undefined,
@@ -202,7 +195,7 @@ export function AdminNetworkCreators() {
     verifiedOnly ||
     minFollowers !== '' ||
     minRevenue !== '' ||
-    locations.trim() !== '' ||
+    locations.length > 0 ||
     openOnly;
   const resetAll = () => {
     setQ('');
@@ -211,7 +204,7 @@ export function AdminNetworkCreators() {
     setVerifiedOnly(false);
     setMinFollowers('');
     setMinRevenue('');
-    setLocations('');
+    setLocations([]);
     setOpenOnly(false);
   };
 
@@ -375,9 +368,8 @@ export function AdminNetworkCreators() {
               placeholder="e.g. 500"
             />
           </FilterMenu>
-          <FilterMenu label="Audience" count={cleanLocations.length || null}>
-            <Label>Audience countries</Label>
-            <Input value={locations} onChange={(e) => setLocations(e.target.value)} placeholder="US, CA, GB" style={{ fontFamily: theme.fontMono }} />
+          <FilterMenu label="Audience" count={locations.length === 0 ? null : locations.length <= 2 ? locations.join(', ') : locations.length}>
+            <CountryMultiSelect selected={locations} onChange={setLocations} />
           </FilterMenu>
           <ToggleChip on={openOnly} onClick={() => setOpenOnly(!openOnly)} title="External creators who already take brand partnerships">
             Open to partnerships
@@ -455,6 +447,35 @@ const chipStyle = (on: boolean): React.CSSProperties => ({
   cursor: 'pointer',
   whiteSpace: 'nowrap',
 });
+
+/** Countries by name, searchable, the picked ones first. */
+function CountryMultiSelect({ selected, onChange }: { selected: string[]; onChange: (codes: string[]) => void }) {
+  const options = useMemo(() => countryOptions(), []);
+  const [search, setSearch] = useState('');
+  const needle = search.trim().toLowerCase();
+  const matches = options.filter((o) => !needle || o.name.toLowerCase().includes(needle) || o.code.toLowerCase() === needle);
+  const ordered = [...matches.filter((o) => selected.includes(o.code)), ...matches.filter((o) => !selected.includes(o.code))];
+  const toggle = (code: string) => onChange(selected.includes(code) ? selected.filter((c) => c !== code) : [...selected, code]);
+  return (
+    <>
+      <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search countries" aria-label="Search countries" />
+      <div
+        role="group"
+        aria-label="Audience countries"
+        className="op-scroll-hover"
+        style={{ maxHeight: 240, overflowY: 'auto', marginTop: 8, display: 'flex', flexDirection: 'column' }}
+      >
+        {ordered.map((o) => (
+          <label key={o.code} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 2px', fontSize: 13, color: theme.text, cursor: 'pointer' }}>
+            <input type="checkbox" checked={selected.includes(o.code)} onChange={() => toggle(o.code)} />
+            {o.name}
+          </label>
+        ))}
+        {ordered.length === 0 && <div style={{ fontSize: 13, color: theme.textMuted, padding: '5px 2px' }}>No country matches.</div>}
+      </div>
+    </>
+  );
+}
 
 function ToggleChip({ on, onClick, title, children }: { on: boolean; onClick: () => void; title?: string; children: React.ReactNode }) {
   return (
