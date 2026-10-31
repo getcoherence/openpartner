@@ -1499,8 +1499,10 @@ export interface StoredCreatorIndexSettings {
   updatedByEmail: string | null;
   /** Which of the Network's data sources have credentials, by its own names. */
   configured: Record<string, boolean>;
-  /** The mailbox the index's emails go from, if the Network has one. */
+  /** The mailbox the outreach email goes from, if the Network has one. */
   outreachMailer?: { configured: boolean; from: string | null };
+  /** The mailbox brands' invites go from: never the outreach one. */
+  inviteMailer?: { configured: boolean; from: string | null };
 }
 
 export async function adminGetCreatorIndexSettings(networkUrl: string): Promise<StoredCreatorIndexSettings> {

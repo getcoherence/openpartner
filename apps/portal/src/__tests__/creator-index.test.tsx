@@ -640,12 +640,12 @@ describe('ops console: creator index settings', () => {
       ],
     };
 
-    function respondWith(opts: { outreachEnabled: boolean; mailer: { configured: boolean; from: string | null } }) {
+    function respondWith(opts: { outreachEnabled: boolean; mailer: { configured: boolean; from: string | null }; inviteMailer?: { configured: boolean; from: string | null } }) {
       respond = (url, method) => {
         if (url.endsWith('/creator-index/settings')) {
           return {
             status: 200,
-            body: { settings: { ...SETTINGS, outreachEnabled: opts.outreachEnabled }, defaults: SETTINGS, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {}, outreachMailer: opts.mailer },
+            body: { settings: { ...SETTINGS, outreachEnabled: opts.outreachEnabled }, defaults: SETTINGS, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {}, outreachMailer: opts.mailer, inviteMailer: opts.inviteMailer },
           };
         }
         if (url.endsWith('/creator-index/stats')) return { status: 200, body: STATS };
@@ -658,9 +658,11 @@ describe('ops console: creator index settings', () => {
     }
 
     it('previews a batch: who, how it opens, who’s skipped and why the rest are left out', async () => {
-      respondWith({ outreachEnabled: false, mailer: { configured: true, from: 'keith@openpartner.test' } });
+      respondWith({ outreachEnabled: false, mailer: { configured: true, from: 'keith@openpartner.test' }, inviteMailer: { configured: true, from: 'creators@openpartner.test' } });
       wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
       expect(await screen.findByText(/Sends from keith@openpartner\.test/)).toBeTruthy();
+      // Brands' invites go from a mailbox of their own.
+      expect(screen.getByText('Brands’ invites send from creators@openpartner.test.')).toBeTruthy();
       expect(screen.getByText('outreach email off')).toBeTruthy();
       expect(screen.getByText('4 outreach emails sent')).toBeTruthy();
       expect(screen.getByText(/3 sent · 1 skipped/)).toBeTruthy();
@@ -700,6 +702,7 @@ describe('ops console: creator index settings', () => {
       respondWith({ outreachEnabled: true, mailer: { configured: false, from: null } });
       wrap(<CreatorIndexPage operator={{ id: 'pa_2', email: 'support@test', role: 'support' } as never} />);
       expect(await screen.findByText(/The Network has no outreach mailbox set up, so nothing can be sent/)).toBeTruthy();
+      expect(screen.getByText(/no invite mailbox set up, so brands’ invites aren’t emailed\. They never go from the outreach mailbox/)).toBeTruthy();
       expect(screen.getByText('Preview batch')).toBeTruthy();
       expect(screen.queryByText('Send this batch')).toBeNull();
     });
