@@ -65,8 +65,9 @@ export function CreatorRow({
         display: 'flex',
         gap: 12,
         padding: '14px 16px',
-        background: selected ? theme.surface2 : theme.surface,
-        // The picked one is marked down its left edge.
+        // The picked one: a faint wash of the accent (opaque, since the
+        // list's rules show through gaps), marked down its left edge.
+        background: selected ? `color-mix(in srgb, ${theme.accent} 6%, ${theme.surface})` : theme.surface,
         boxShadow: selected ? `inset 3px 0 0 ${theme.accent}` : undefined,
         cursor: 'pointer',
       }}
