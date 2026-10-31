@@ -62,8 +62,10 @@ import {
   adminCreatorIndexStats,
   adminGetCreatorIndexSettings,
   adminGetIndexedCreator,
+  adminGetIndexedCreatorContact,
   adminQueueIndexSeeds,
   adminRemoveIndexedCreator,
+  adminSetIndexedCreatorContact,
   adminRunCreatorIndexInvites,
   adminRunCreatorIndexJob,
   adminRunCreatorIndexOutreach,
@@ -1999,6 +2001,59 @@ platformAdminRouter.delete(
       await adminRemoveIndexedCreator(networkUrl, req.params.id!);
       await writeAudit(db, { actor: req.platformAdminActor!, action: 'creator_index.remove', targetType: 'indexed_creator', targetId: req.params.id! });
       res.status(204).send();
+    } catch (err) {
+      sendNetworkFailure(res, err);
+    }
+  },
+);
+
+/** One creator's address in full: the list shows them masked. Admins only,
+ *  and each look is in the audit log. */
+platformAdminRouter.get(
+  '/platform-admin/creator-index/creators/:id/contact',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    try {
+      const body = await adminGetIndexedCreatorContact(networkUrl, req.params.id!);
+      await writeAudit(db, { actor: req.platformAdminActor!, action: 'creator_index.contact_view', targetType: 'indexed_creator', targetId: req.params.id! });
+      res.set('Cache-Control', 'no-store').json(body);
+    } catch (err) {
+      sendNetworkFailure(res, err);
+    }
+  },
+);
+
+const indexContactSchema = z
+  .object({
+    email: z.string().trim().min(3).max(254),
+    sourceUrl: z.string().trim().min(8).max(500),
+  })
+  .strict();
+
+/** An address ops found published somewhere, with the page it's on. The
+ *  Network checks the page shows it and that it delivers. */
+platformAdminRouter.put(
+  '/platform-admin/creator-index/creators/:id/contact',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = indexContactSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    try {
+      const result = await adminSetIndexedCreatorContact(networkUrl, req.params.id!, body.data);
+      await writeAudit(db, {
+        actor: req.platformAdminActor!,
+        action: 'creator_index.contact_set',
+        targetType: 'indexed_creator',
+        targetId: req.params.id!,
+        detail: { sourceUrl: body.data.sourceUrl },
+      });
+      res.json(result);
     } catch (err) {
       sendNetworkFailure(res, err);
     }

@@ -109,6 +109,13 @@ beforeAll(async () => {
           if (path === '/admin/creator-index/stats') return json(200, { creators: { listed: 3 } });
           if (path.startsWith('/admin/creator-index/creators?')) return json(200, { creators: [] });
           if (path === '/admin/creator-index/creators/ixc_gone' && req.method === 'DELETE') return json(404, { error: 'not_found' });
+          if (path === '/admin/creator-index/creators/ixc_1/contact' && req.method === 'GET') {
+            return json(200, { contact: { address: 'hello@jorivera.co', foundOn: 'https://jorivera.substack.com/about', verified: true } });
+          }
+          if (path === '/admin/creator-index/creators/ixc_1/contact' && req.method === 'PUT') {
+            if (body?.sourceUrl === 'https://elsewhere.test/') return json(422, { error: 'not_on_page' });
+            return json(200, { creator: { id: 'ixc_1', contact: { masked: 'h••••@jorivera.co', foundOn: body?.sourceUrl, verified: true } } });
+          }
           if (path.startsWith('/admin/creator-index/creators/') && req.method === 'DELETE') {
             res.writeHead(204);
             return res.end();
@@ -346,6 +353,38 @@ describe.skipIf(skipIntegration)('creator index: ops console', () => {
     expect((await request(app).delete('/platform-admin/creator-index/creators/ixc_1').set('Cookie', admin)).status).toBe(204);
     expect((await request(app).delete('/platform-admin/creator-index/creators/ixc_gone').set('Cookie', admin)).body).toEqual({ error: 'not_found' });
     expect((await request(app).post('/platform-admin/creator-index/invites/run').set('Cookie', admin).send({ dryRun: false })).body).toMatchObject({ sent: 1 });
+  });
+});
+
+describe.skipIf(skipIntegration)('creator index: addresses', () => {
+  const PAGE = 'https://jorivera.substack.com/about';
+
+  it('shows one address in full to admins only, uncached and audited', async () => {
+    expect((await request(app).get('/platform-admin/creator-index/creators/ixc_1/contact').set('Cookie', await operator('support'))).status).toBe(403);
+    const r = await request(app).get('/platform-admin/creator-index/creators/ixc_1/contact').set('Cookie', await operator());
+    expect(r.status).toBe(200);
+    expect(r.headers['cache-control']).toBe('no-store');
+    expect(r.body).toEqual({ contact: { address: 'hello@jorivera.co', foundOn: PAGE, verified: true } });
+    expect(last('/admin/creator-index/creators/ixc_1/contact')?.auth).toBe(`Bearer ${NETWORK_ADMIN}`);
+    const audit = await db(TABLES.PlatformAuditLog).where({ action: 'creator_index.contact_view', platformAdminEmail: OPS_EMAIL }).first();
+    expect(audit).toMatchObject({ targetType: 'indexed_creator', targetId: 'ixc_1' });
+  });
+
+  it('sets an address with the page it’s on, audits the page but not the address, and passes the Network’s refusal back', async () => {
+    const admin = await operator();
+    expect((await request(app).put('/platform-admin/creator-index/creators/ixc_1/contact').set('Cookie', await operator('support')).send({ email: 'hello@jorivera.co', sourceUrl: PAGE })).status).toBe(403);
+    const r = await request(app).put('/platform-admin/creator-index/creators/ixc_1/contact').set('Cookie', admin).send({ email: ' hello@jorivera.co ', sourceUrl: PAGE });
+    expect(r.status).toBe(200);
+    expect(r.body.creator.contact).toEqual({ masked: 'h••••@jorivera.co', foundOn: PAGE, verified: true });
+    expect(last('/admin/creator-index/creators/ixc_1/contact')?.body).toEqual({ email: 'hello@jorivera.co', sourceUrl: PAGE });
+    const audit = await db(TABLES.PlatformAuditLog).where({ action: 'creator_index.contact_set', platformAdminEmail: OPS_EMAIL }).first();
+    expect(audit).toMatchObject({ targetId: 'ixc_1' });
+    expect(JSON.stringify(audit.detail)).toContain(PAGE);
+    expect(JSON.stringify(audit.detail)).not.toContain('hello@jorivera');
+
+    const refused = await request(app).put('/platform-admin/creator-index/creators/ixc_1/contact').set('Cookie', admin).send({ email: 'hello@jorivera.co', sourceUrl: 'https://elsewhere.test/' });
+    expect([refused.status, refused.body]).toEqual([422, { error: 'not_on_page' }]);
+    expect((await request(app).put('/platform-admin/creator-index/creators/ixc_1/contact').set('Cookie', admin).send({ email: 'hello@jorivera.co' })).status).toBe(400);
   });
 });
 
