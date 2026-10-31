@@ -9,9 +9,12 @@
  *     never indexed, the regions hidden from brands, seed queries and where
  *     to search them, whether to keep only creators who take partnerships,
  *     model.
- *   - Seed URLs, runs, and search with removal.
+ *   - Seed URLs, runs, and search with removal, or only who has no address
+ *     or no state yet, to fill in by hand.
  *   - The outreach email: "claim your profile", once, to creators no brand
  *     has written to, previewed and sent in small batches.
+ *
+ * Settings and Runs fold away, remembered in this browser.
  *
  * Support operators can look and dry-run the invite and outreach emails;
  * changes, runs and sends need an admin.
@@ -526,6 +529,77 @@ function ListTextarea({
   );
 }
 
+/** A card ops can fold to its title, remembered in this browser. `folded`
+ *  is what they'd miss while it's folded: a run going, unsaved changes. */
+function FoldingCard({ id, title, folded, children }: { id: string; title: string; folded?: React.ReactNode; children: React.ReactNode }) {
+  const key = `op-creator-index-${id}-open`;
+  const [open, setOpen] = useState(() => {
+    try {
+      return window.localStorage.getItem(key) !== '0';
+    } catch {
+      return true;
+    }
+  });
+  const toggle = () => {
+    try {
+      window.localStorage.setItem(key, open ? '0' : '1');
+    } catch {
+      // Not remembered, then.
+    }
+    setOpen(!open);
+  };
+  return (
+    <Card>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: open ? 12 : 0 }}>
+        <button
+          type="button"
+          onClick={toggle}
+          aria-expanded={open}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', padding: 0, color: theme.text, fontSize: 15, fontWeight: 600, cursor: 'pointer' }}
+        >
+          <span aria-hidden="true" style={{ fontSize: 11, color: theme.textMuted, width: 10 }}>
+            {open ? '▼' : '▶'}
+          </span>
+          {title}
+        </button>
+        {!open && folded && <span style={{ fontSize: 12, color: theme.textMuted }}>{folded}</span>}
+      </div>
+      {open && children}
+    </Card>
+  );
+}
+
+/** Narrows the list to who ops can still fill in. */
+type Missing = 'address' | 'state';
+
+function MissingToggle({ on, onClick, children }: { on: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={on}
+      style={{
+        fontSize: 13,
+        fontWeight: 500,
+        padding: '5px 12px',
+        borderRadius: 999,
+        cursor: 'pointer',
+        color: on ? theme.accent : theme.textMuted,
+        background: on ? theme.accentSoft : theme.surface2,
+        border: `1px solid ${on ? theme.accent : theme.border}`,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Settings compared whatever order their keys come in. */
+const settingsKey = (s: IndexSettings) =>
+  JSON.stringify(s, (_k, v: unknown) =>
+    v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v,
+  );
+
 function Pill({ on, children }: { on: boolean; children: React.ReactNode }) {
   return (
     <span
@@ -617,9 +691,15 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
 
   const [q, setQ] = useState('');
   const [searchFor, setSearchFor] = useState('');
+  const [missing, setMissing] = useState<Missing[]>([]);
+  const toggleMissing = (m: Missing) => setMissing((xs) => (xs.includes(m) ? xs.filter((x) => x !== m) : [...xs, m].sort()));
+  const listQuery = new URLSearchParams();
+  if (searchFor) listQuery.set('q', searchFor);
+  if (missing.length) listQuery.set('missing', missing.join(','));
+  const filtered = !!searchFor || missing.length > 0;
   const creators = useQuery({
-    queryKey: ['platform-creator-index-creators', searchFor],
-    queryFn: () => papi<{ creators: OpsCreator[]; total?: number }>(`/platform-admin/creator-index/creators${searchFor ? `?q=${encodeURIComponent(searchFor)}` : ''}`),
+    queryKey: ['platform-creator-index-creators', searchFor, missing.join(',')],
+    queryFn: () => papi<{ creators: OpsCreator[]; total?: number }>(`/platform-admin/creator-index/creators${filtered ? `?${listQuery}` : ''}`),
     refetchInterval: watching ? 4_000 : false,
   });
   const remove = useMutation({
@@ -637,6 +717,8 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
   const inviteMailbox = state.data?.inviteMailer;
   const outreachOn = state.data?.settings.outreachEnabled ?? false;
   const preview = outreachPreview.data;
+  const running = (Object.entries(s?.runs ?? {}) as Array<[RunKind, IndexRun | undefined]>).filter(([, r]) => r && !r.finishedAt).map(([job]) => JOB_LABEL[job]);
+  const unsaved = !!draft && !!state.data && settingsKey(draft) !== settingsKey(state.data.settings);
 
   return (
     <Page
@@ -713,8 +795,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
             )}
           </Card>
 
-          <Card>
-            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>Settings</div>
+          <FoldingCard id="settings" title="Settings" folded={unsaved ? 'Unsaved changes' : null}>
             <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
               <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
                 <input type="checkbox" checked={draft.enabled} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })} />
@@ -874,10 +955,9 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                 {state.data.updatedAt ? ` on ${new Date(state.data.updatedAt).toLocaleString()}` : ''}
               </div>
             )}
-          </Card>
+          </FoldingCard>
 
-          <Card>
-            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>Runs</div>
+          <FoldingCard id="runs" title="Runs" folded={running.length ? `${running.join(', ')} running…` : null}>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {canWrite && (
                 <>
@@ -1014,18 +1094,18 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                 </div>
               </div>
             )}
-          </Card>
+          </FoldingCard>
 
           <Card>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
               <div style={{ fontSize: 15, fontWeight: 600 }}>Listed creators</div>
               {creators.data?.total != null && (
                 <span style={{ fontSize: 13, color: theme.textMuted }}>
-                  {searchFor ? `${creators.data.total.toLocaleString()} match` : `${creators.data.total.toLocaleString()} in all`}
+                  {filtered ? `${creators.data.total.toLocaleString()} match` : `${creators.data.total.toLocaleString()} in all`}
                   {creators.data.total > creators.data.creators.length ? `, newest ${creators.data.creators.length} shown` : ''}
                 </span>
               )}
-              {!searchFor && (s?.creators.listedLast24h ?? 0) > 0 && (
+              {!filtered && (s?.creators.listedLast24h ?? 0) > 0 && (
                 <span style={{ fontSize: 13, color: theme.success }}>{s!.creators.listedLast24h!.toLocaleString()} new in the last 24 hours</span>
               )}
             </div>
@@ -1039,6 +1119,25 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
               <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name, headline, handle or profile URL" />
               <Button type="submit" variant="secondary">Search</Button>
             </form>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
+              <span style={{ fontSize: 13, color: theme.textMuted }}>Only:</span>
+              <MissingToggle on={missing.includes('address')} onClick={() => toggleMissing('address')}>
+                No address
+              </MissingToggle>
+              <MissingToggle on={missing.includes('state')} onClick={() => toggleMissing('state')}>
+                No state
+              </MissingToggle>
+              {missing.length > 0 && (
+                <span style={{ fontSize: 12, color: theme.textMuted }}>
+                  {missing.length === 2
+                    ? 'US creators with neither an address nor a state.'
+                    : missing[0] === 'address'
+                      ? 'Creators with no address: hidden from brands until they have one.'
+                      : 'US creators with no state: hidden from brands until one is set.'}{' '}
+                  Claimed profiles are left out.
+                </span>
+              )}
+            </div>
             <Table
               columns={['Creator', 'Where', 'Reach', 'Address', 'Status', '']}
               rows={(creators.data?.creators ?? []).map((c) => [
