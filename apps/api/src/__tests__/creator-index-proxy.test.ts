@@ -113,7 +113,9 @@ beforeAll(async () => {
             return res.end();
           }
           if (path === '/admin/creator-index/seeds') return json(200, { queued: 1, invalid: 0, duplicate: 0, suppressed: 0, member: 0 });
-          if (path === '/admin/creator-index/run/read') return json(200, { ran: true, indexed: 2 });
+          // The Network starts runs in the background and answers at once.
+          if (path === '/admin/creator-index/run/read') return json(202, { started: true });
+          if (path === '/admin/creator-index/run/refresh') return json(409, { error: 'already_running' });
           if (path === '/admin/creator-index/invites/run') {
             return json(200, { ran: true, dryRun: body?.dryRun, candidates: 1, sent: body?.dryRun ? 0 : 1, skipped: 0, failed: 0, expired: 0, unreachable: 0 });
           }
@@ -304,9 +306,10 @@ describe.skipIf(skipIntegration)('creator index: ops console', () => {
     const withSources = await request(app)
       .put('/platform-admin/creator-index/settings')
       .set('Cookie', cookie)
-      .send({ ...SETTINGS, discoverySources: sources, requirePartnershipSignal: false });
+      .send({ ...SETTINGS, discoverySources: sources, requirePartnershipSignal: false, readConcurrency: 12 });
     expect(withSources.status).toBe(200);
-    expect(last('/admin/creator-index/settings')!.body).toMatchObject({ discoverySources: sources, requirePartnershipSignal: false });
+    expect(last('/admin/creator-index/settings')!.body).toMatchObject({ discoverySources: sources, requirePartnershipSignal: false, readConcurrency: 12 });
+    expect((await request(app).put('/platform-admin/creator-index/settings').set('Cookie', cookie).send({ ...SETTINGS, readConcurrency: 50 })).status).toBe(400);
     const partial = await request(app)
       .put('/platform-admin/creator-index/settings')
       .set('Cookie', cookie)
@@ -323,7 +326,10 @@ describe.skipIf(skipIntegration)('creator index: ops console', () => {
     expect((await request(app).delete('/platform-admin/creator-index/creators/ixc_1').set('Cookie', support)).status).toBe(403);
 
     const admin = await operator();
-    expect((await request(app).post('/platform-admin/creator-index/run/read').set('Cookie', admin)).body).toEqual({ ran: true, indexed: 2 });
+    expect((await request(app).post('/platform-admin/creator-index/run/read').set('Cookie', admin)).body).toEqual({ started: true });
+    const busy = await request(app).post('/platform-admin/creator-index/run/refresh').set('Cookie', admin);
+    expect(busy.status).toBe(409);
+    expect(busy.body).toEqual({ error: 'already_running' });
     expect((await request(app).post('/platform-admin/creator-index/run/nope').set('Cookie', admin)).status).toBe(404);
     expect((await request(app).post('/platform-admin/creator-index/seeds').set('Cookie', admin).send({ urls: ['https://x.com/jo'] })).body).toMatchObject({ queued: 1 });
     expect((await request(app).delete('/platform-admin/creator-index/creators/ixc_1').set('Cookie', admin)).status).toBe(204);
