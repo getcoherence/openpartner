@@ -75,8 +75,11 @@ interface SettingsState {
   updatedAt: string | null;
   updatedByEmail: string | null;
   configured: Record<string, boolean>;
-  /** The mailbox the index's emails go from. */
+  /** The mailbox the outreach email goes from. */
   outreachMailer?: { configured: boolean; from: string | null };
+  /** The mailbox brands' invites go from, never the outreach one. Missing
+   *  from a Network that predates it: deploy the Network first. */
+  inviteMailer?: { configured: boolean; from: string | null };
 }
 
 interface Stats {
@@ -507,6 +510,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
   const configured = state.data?.configured;
   const error = save.error ?? seeds.error ?? run.error ?? invites.error ?? outreachPreview.error ?? outreachSend.error ?? remove.error;
   const mailbox = state.data?.outreachMailer;
+  const inviteMailbox = state.data?.inviteMailer;
   const outreachOn = state.data?.settings.outreachEnabled ?? false;
   const preview = outreachPreview.data;
 
@@ -760,6 +764,15 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
               )}
               <Button variant="secondary" onClick={() => invites.mutate(true)} disabled={invites.isPending}>Preview invite email run</Button>
               {canWrite && <Button onClick={() => invites.mutate(false)} disabled={invites.isPending}>Send due invite emails</Button>}
+            </div>
+            <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 10 }}>
+              {inviteMailbox?.configured ? (
+                <>Brands&rsquo; invites send from {inviteMailbox.from ?? 'the Network’s invite mailbox'}.</>
+              ) : (
+                <span style={{ color: theme.danger }}>
+                  The Network has no invite mailbox set up, so brands&rsquo; invites aren&rsquo;t emailed. They never go from the outreach mailbox.
+                </span>
+              )}
             </div>
             {run.isSuccess && (
               <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 10 }}>
