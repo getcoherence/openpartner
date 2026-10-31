@@ -26,6 +26,7 @@ import { theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select, Table, Textarea, formatDate } from '../../ui.js';
 import { friendlyPlatformError, papi, PlatformApiError, type PlatformOperator } from './lib.js';
 import { brandSignalLabel, shortUrl, type PartnershipSignal } from '../../lib/partnership-signals.js';
+import { PlatformMark, platformName } from '../../lib/PlatformMark.js';
 
 type DiscoverySource = 'storefronts' | 'sponsorPages' | 'people';
 
@@ -1145,8 +1146,16 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                   <div style={{ fontWeight: 500 }}>{c.name ?? '—'}</div>
                   <div style={{ fontSize: 12, color: theme.textMuted }}>
                     {c.platforms.map((p) => (
-                      <a key={p.profileUrl} href={p.profileUrl} target="_blank" rel="noreferrer noopener" style={{ color: theme.textMuted, marginRight: 8 }}>
-                        {p.platform}
+                      <a
+                        key={p.profileUrl}
+                        href={p.profileUrl}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        aria-label={platformName(p.platform)}
+                        title={platformName(p.platform)}
+                        style={{ display: 'inline-flex', color: theme.textMuted, marginRight: 8, marginTop: 4 }}
+                      >
+                        <PlatformMark platform={p.platform} size={14} />
                       </a>
                     ))}
                   </div>
@@ -1179,8 +1188,13 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                   {c.platforms
                     .filter((p) => p.followerCount != null)
                     .map((p) => (
-                      <div key={p.profileUrl} style={{ fontSize: 12, color: theme.textMuted, whiteSpace: 'nowrap' }}>
-                        {PLATFORM_NAME[p.platform] ?? p.platform} {p.followerCount!.toLocaleString()}
+                      <div
+                        key={p.profileUrl}
+                        title={`${platformName(p.platform)} ${p.followerCount!.toLocaleString()}`}
+                        style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: theme.textMuted, whiteSpace: 'nowrap', marginTop: 2 }}
+                      >
+                        <PlatformMark platform={p.platform} size={12} label={platformName(p.platform)} />
+                        {p.followerCount!.toLocaleString()}
                       </div>
                     ))}
                 </div>,

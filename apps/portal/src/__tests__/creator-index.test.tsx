@@ -12,10 +12,10 @@
  * and previews and sends the outreach email in batches.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { IndexedCreatorPage, IndexedCreatorsSection } from '../pages/admin/NetworkIndexedCreators.js';
+import { IndexedCreatorPage } from '../pages/admin/NetworkIndexedCreators.js';
 import { AdminNetworkCreators } from '../pages/admin/NetworkCreators.js';
 import { CreatorIndexClaimPage } from '../pages/creator/CreatorIndexClaim.js';
 import { CreatorIndexPage } from '../pages/platform/CreatorIndex.js';
@@ -93,16 +93,24 @@ const MEMBER = {
 };
 
 describe('external creators', () => {
-  it('lists creators with the badge and invites with a real message', async () => {
-    respond = (url, method) =>
+  /** Discover creators' answers: external creators, and OpenPartner's own. */
+  const discover =
+    (external: { status: number; body: unknown }, members: unknown[] = []) =>
+    (url: string, method: string) =>
       method === 'POST'
         ? { status: 201, body: { invite: { id: 'cinv_1', status: 'held' } } }
-        : { status: 200, body: { creators: [JO], nextCursor: null, total: 1 } };
-    wrap(<IndexedCreatorsSection />);
+        : url.includes('/indexed-creators')
+          ? external
+          : { status: 200, body: { creators: members } };
+  const externalPage = (creators: unknown[]) => ({ status: 200, body: { creators, nextCursor: null, total: creators.length } });
+
+  it('lists creators with the badge and invites with a real message', async () => {
+    respond = discover(externalPage([JO]));
+    wrap(<AdminNetworkCreators />);
     expect(await screen.findByText('Jo Rivera')).toBeTruthy();
-    expect(screen.getByText('External creator')).toBeTruthy();
-    expect(screen.getByText('1 external creator')).toBeTruthy();
-    expect(calls[0]!.url).toBe('/api/admin/network/indexed-creators?');
+    // The badge says what it means on hover.
+    expect(screen.getByText('External creator').getAttribute('title')).toMatch(/^Not on OpenPartner yet/);
+    expect(calls.some((c) => c.url === '/api/admin/network/indexed-creators?')).toBe(true);
 
     fireEvent.click(screen.getByRole('button', { name: 'Invite' }));
     const send = screen.getByText('Send invite') as HTMLButtonElement;
@@ -117,13 +125,14 @@ describe('external creators', () => {
   });
 
   it('says what the plan unlocks instead of an error on other plans', async () => {
-    respond = () => ({ status: 402, body: { error: 'plan_required', detail: 'Creators not on OpenPartner yet come with the Flex and Enterprise plans.' } });
-    wrap(<IndexedCreatorsSection />);
+    respond = discover({ status: 402, body: { error: 'plan_required', detail: 'Creators not on OpenPartner yet come with the Flex and Enterprise plans.' } }, [MEMBER]);
+    wrap(<AdminNetworkCreators />);
     expect(await screen.findByText('See external creators too')).toBeTruthy();
+    expect(screen.getByText('Member Mo')).toBeTruthy();
     expect(screen.getByText('See plans')).toBeTruthy();
   });
 
-  it('shows OpenPartner’s creators first and external ones after, under the same filters, and hides external ones for members-only filters', async () => {
+  it('shows OpenPartner’s creators first and external ones after, under the same filters, and leaves external ones out of members-only filters', async () => {
     respond = (url) =>
       url.includes('/indexed-creators')
         ? { status: 200, body: { creators: [JO], nextCursor: null, total: 1 } }
@@ -131,70 +140,157 @@ describe('external creators', () => {
     wrap(<AdminNetworkCreators />);
     expect(await screen.findByText('Member Mo')).toBeTruthy();
     expect(await screen.findByText('Jo Rivera')).toBeTruthy();
-    const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent);
-    expect(headings).toEqual(['On OpenPartner', 'External creators']);
-    // There are no tabs any more.
-    expect(screen.queryByText('Not on OpenPartner yet')).toBeNull();
+    // One list, no sections: OpenPartner's creators first, external ones
+    // after, told apart by the badge.
+    expect(screen.queryAllByRole('heading', { level: 2 })).toHaveLength(0);
+    const rows = screen.getAllByTestId('creator-row');
+    expect(rows.map((r) => r.textContent!.includes('External creator'))).toEqual([false, true]);
+    expect(rows[0]!.parentElement).toBe(rows[1]!.parentElement);
+    // No count line over the list.
+    expect(screen.queryByText(/on OpenPartner ·/)).toBeNull();
 
-    // A shared filter reaches both lists; sales is a topic only external creators have.
+    // The filters are one bar; each opens below its chip. A shared filter
+    // reaches both lists; sales is a topic only external creators have.
+    expect(screen.queryByRole('button', { name: 'sales' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /^Categories/ }));
     fireEvent.click(screen.getByRole('button', { name: 'sales' }));
     await waitFor(() => expect(calls.some((c) => c.url.includes('/indexed-creators?categories=sales'))).toBe(true));
+    // The chip says what's set.
+    expect(screen.getByRole('button', { name: /^Categories.*1/ })).toBeTruthy();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('button', { name: 'sales' })).toBeNull();
 
-    // Members-only data (revenue) leaves external creators out, with a word why.
-    fireEvent.change(screen.getByPlaceholderText('e.g. 500'), { target: { value: '500' } });
-    expect(await screen.findByText(/External creators have no sales, audience-location or verification data yet/)).toBeTruthy();
+    // Only creators who already take partnerships: external ones.
+    fireEvent.click(screen.getByRole('button', { name: 'Open to partnerships' }));
+    await waitFor(() => expect(calls.some((c) => c.url.includes('/indexed-creators?categories=sales&openToPartnerships=1'))).toBe(true));
+
+    // Followers is a range: a common one, or any two numbers. Both lists get it.
+    fireEvent.click(screen.getByRole('button', { name: /^Followers/ }));
+    fireEvent.click(screen.getByRole('button', { name: '1K–10K' }));
+    expect(screen.getByRole('button', { name: /^Followers.*1K–10K/ })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('At most'), { target: { value: '5000' } });
+    await waitFor(() => expect(calls.some((c) => c.url.includes('/discover/creators?') && c.url.includes('minFollowers=1000&maxFollowers=5000'))).toBe(true));
+    await waitFor(() => expect(calls.some((c) => c.url.includes('/indexed-creators?') && c.url.includes('minFollowers=1000&maxFollowers=5000'))).toBe(true));
+    expect(screen.getByRole('button', { name: /^Followers.*1K–5K/ })).toBeTruthy();
+
+    // There's no sales filter: the Network withholds those numbers.
+    expect(screen.queryByRole('button', { name: /^Sales/ })).toBeNull();
+
+    // Audience is countries by name, picked from a list. External creators
+    // have no audience data, so they're left out, without a word.
+    fireEvent.click(screen.getByRole('button', { name: /^Audience/ }));
+    fireEvent.change(screen.getByLabelText('Search countries'), { target: { value: 'united k' } });
+    expect(screen.queryByLabelText('France')).toBeNull();
+    fireEvent.click(screen.getByLabelText('United Kingdom'));
+    await waitFor(() => expect(calls.some((c) => c.url.includes('/discover/creators?') && c.url.includes('locations=GB'))).toBe(true));
+    expect(screen.getByRole('button', { name: /^Audience.*GB/ })).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText('Jo Rivera')).toBeNull());
+    expect(screen.queryByText(/hidden by these filters/)).toBeNull();
+
+    // Reset all clears the lot.
+    fireEvent.click(screen.getByRole('button', { name: 'Reset all' }));
+    expect(await screen.findByText('Jo Rivera')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Open to partnerships' }).getAttribute('aria-pressed')).toBe('false');
 
     // Only external creators.
-    fireEvent.click(screen.getByRole('button', { name: 'External creators' }));
+    fireEvent.change(screen.getByLabelText('Show'), { target: { value: 'external' } });
     expect(screen.queryByText('Member Mo')).toBeNull();
   });
 
-  it('puts every card’s buttons at its bottom, so they line up across a row', async () => {
+  it('shows each channel as its logo with followers, linking to the profile', async () => {
     respond = (url) =>
       url.includes('/indexed-creators')
-        ? { status: 200, body: { creators: [JO], nextCursor: null, total: 1 } }
+        ? { status: 200, body: { creators: [{ ...JO, platforms: [...JO.platforms, { ...JO.platforms[0], platform: 'youtube', profileUrl: 'https://www.youtube.com/@jo', followerCount: 4_500_000 }] }], nextCursor: null, total: 1 } }
         : { status: 200, body: { creators: [MEMBER] } };
     wrap(<AdminNetworkCreators />);
-    await screen.findByText('Member Mo');
-    await screen.findByText('Jo Rivera');
-    const rows = screen.getAllByTestId('card-actions');
-    expect(rows).toHaveLength(2);
-    for (const row of rows) {
-      // Pushed down by an auto top margin, inside a card laid out as a column.
-      const pushed = row.style.marginTop === 'auto' ? row : row.parentElement!;
-      expect(pushed.style.marginTop).toBe('auto');
-      expect(pushed.parentElement!.style.display).toBe('flex');
-      expect(pushed.parentElement!.style.flexDirection).toBe('column');
-      // Each action an equal share: a padding-free box the button fills,
-      // never a bare button, whose padding would widen its share.
-      const actions = [...row.children] as HTMLElement[];
-      expect(actions.length).toBeGreaterThan(1);
-      for (const a of actions) {
-        expect(a.tagName).not.toBe('BUTTON');
-        expect(a.style.flex).toBe(actions[0]!.style.flex);
-        expect((a.querySelector('button') as HTMLElement).style.width).toBe('100%');
+    const linkedin = await screen.findByRole('link', { name: 'LinkedIn, 12,000 followers' });
+    expect(linkedin.getAttribute('href')).toBe('https://www.linkedin.com/in/jorivera');
+    expect(linkedin.textContent).toBe('12K');
+    expect(linkedin.querySelector('img')!.getAttribute('src')).toBe('/linkedin-in-bug.png');
+    const youtube = screen.getByRole('link', { name: 'YouTube, 4,500,000 followers' });
+    expect(youtube.textContent).toBe('4.5M');
+    expect(youtube.querySelector('svg path')!.getAttribute('fill')).toBe('#FF0000');
+  });
+
+  it('on a wide screen, shows the creator picked beside the list, and keeps who in the URL', async () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query === '(min-width: 1200px)',
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+    respond = (url) => {
+      if (url.includes('/indexed-creators/ixc_jo')) {
+        return {
+          status: 200,
+          body: {
+            creator: {
+              ...JO,
+              platforms: [{ ...JO.platforms[0], avgComments: null, avgReposts: null, topPostUrls: [] }],
+              summary: 'Writes weekly about outbound sales for SDR teams.',
+              productsMentioned: [],
+              blocker: null,
+            },
+          },
+        };
       }
+      if (url.includes('/indexed-creators')) return { status: 200, body: { creators: [JO], nextCursor: null, total: 1 } };
+      if (url.includes('/creators/by-handle/mo')) {
+        return {
+          status: 200,
+          body: { ...MEMBER, bio: 'Writes about sales', portfolioLinks: [], bookingsOpen: false, packages: [] },
+        };
+      }
+      return { status: 200, body: { creators: [MEMBER] } };
+    };
+    function Where() {
+      return <div data-testid="where">{useLocation().search}</div>;
     }
+    wrap(
+      <>
+        <AdminNetworkCreators />
+        <Where />
+      </>,
+    );
+    await screen.findByText('Jo Rivera');
+    const panel = screen.getByRole('complementary', { name: 'Selected creator' });
+    expect(within(panel).getByText('Pick a creator')).toBeTruthy();
+    // The page stays put: the list and the creator each scroll on their own.
+    expect(screen.getByTestId('creator-list-scroll').style.overflowY).toBe('auto');
+    expect(panel.style.overflowY).toBe('auto');
+    expect(panel.parentElement!.style.height).toMatch(/^\d+px$/);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Jo Rivera' }));
+    expect(await within(panel).findByText('Writes weekly about outbound sales for SDR teams.')).toBeTruthy();
+    expect(within(panel).getByRole('link', { name: 'Open full page →' }).getAttribute('href')).toBe('/admin/network/indexed-creators/ixc_jo');
+    expect(screen.getByRole('button', { name: 'Jo Rivera' }).getAttribute('aria-current')).toBe('true');
+    expect(screen.getByTestId('where').textContent).toBe('?external=ixc_jo');
+    // The list stays.
+    expect(screen.getByText('Member Mo')).toBeTruthy();
+
+    // A click anywhere on a row picks it; its buttons keep their own job.
+    const memberRow = screen.getAllByTestId('creator-row')[0]!;
+    fireEvent.click(memberRow);
+    expect(await within(panel).findByText(/Not taking bookings right now/)).toBeTruthy();
+    // One surface: the profile's parts are sections of it, not cards.
+    expect(within(panel).getByRole('heading', { name: 'Member Mo' }).closest('section')).toBeTruthy();
+    expect(screen.getByTestId('where').textContent).toBe('?creator=mo');
+    fireEvent.click(within(memberRow).getByRole('button', { name: 'Book' }));
+    expect(screen.getByTestId('where').textContent).toBe('?creator=mo');
   });
 
   it('shows an invite already sent, and a creator who can’t be invited', async () => {
-    respond = () => ({
-      status: 200,
-      body: {
-        creators: [
-          { ...JO, id: 'a', name: 'Sent One', invitable: false, invite: { id: 'i', status: 'sent', createdAt: '2026-10-30T00:00:00Z' } },
-          { ...JO, id: 'b', name: 'Nope', invitable: false },
-        ],
-        nextCursor: null,
-        total: 2,
-      },
-    });
-    wrap(<IndexedCreatorsSection />);
+    respond = discover(
+      externalPage([
+        { ...JO, id: 'a', name: 'Sent One', invitable: false, invite: { id: 'i', status: 'sent', createdAt: '2026-10-30T00:00:00Z' } },
+        { ...JO, id: 'b', name: 'Nope', invitable: false },
+      ]),
+    );
+    wrap(<AdminNetworkCreators />);
     expect(await screen.findByText('Invited. We emailed them.')).toBeTruthy();
     expect(screen.getByText(/Can.t be invited yet/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Invite' })).toBeNull();
-    // Every card opens the creator's page.
-    expect(screen.getAllByText('View details')).toHaveLength(2);
+    // Off a wide screen, a creator's name opens their page.
     expect(screen.getByText('Nope').getAttribute('href')).toBe('/admin/network/indexed-creators/b');
   });
 
@@ -269,12 +365,13 @@ describe('external creators', () => {
         { kind: 'sponsored_posts', count: 1 },
       ],
     };
-    respond = () => ({ status: 200, body: { creators: [open, { ...JO, id: 'b', name: 'Quiet One' }], nextCursor: null, total: 2 } });
-    wrap(<IndexedCreatorsSection />);
+    respond = discover(externalPage([open, { ...JO, id: 'b', name: 'Quiet One' }]));
+    wrap(<AdminNetworkCreators />);
     expect(await screen.findByText('Sells sponsorships (3 past collaborations) · 1 sponsored post lately')).toBeTruthy();
-    expect(screen.getAllByText('Open to partnerships')).toHaveLength(1);
-    fireEvent.click(screen.getByLabelText('Only creators who already do brand partnerships'));
-    await waitFor(() => expect(calls[calls.length - 1]!.url).toBe('/api/admin/network/indexed-creators?openToPartnerships=1'));
+    // The badge on one row; the filter chip is the other.
+    expect(screen.getAllByText('Open to partnerships')).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: 'Open to partnerships' }));
+    await waitFor(() => expect(calls.some((c) => c.url === '/api/admin/network/indexed-creators?openToPartnerships=1')).toBe(true));
   });
 });
 
@@ -335,8 +432,11 @@ describe('ops console: creator index settings', () => {
       };
     };
     wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
-    expect(await screen.findByText('LinkedIn 41,000')).toBeTruthy();
-    expect(screen.getByText('YouTube 7,200')).toBeTruthy();
+    // Each channel's logo, named for screen readers, with its count.
+    expect(await screen.findByTitle('LinkedIn 41,000')).toBeTruthy();
+    expect(screen.getByTitle('YouTube 7,200').textContent).toBe('7,200');
+    expect(screen.getByRole('img', { name: 'YouTube' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'LinkedIn' }).getAttribute('href')).toBe('https://www.linkedin.com/in/jo');
     expect(screen.getByText('via creator-data lookup')).toBeTruthy();
     expect(screen.getByText('none yet · hidden from brands')).toBeTruthy();
     expect(screen.getByText('3 with an email · 13 without (hidden)')).toBeTruthy();

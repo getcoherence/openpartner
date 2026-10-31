@@ -2,27 +2,42 @@
  * Brand-side creator discovery directory.
  *
  * Brand admins call /admin/network/discover/creators (which proxies to
- * Network's /vendors/me/discover/creators) and browse a filtered grid
- * of creator cards. Each card links to the public creator profile so
- * the admin can read the full thing before deciding to invite. Unique
- * angle vs Modash/Aspire: we have actual conversion data per creator.
+ * Network's /vendors/me/discover/creators) and browse a filtered list of
+ * creators: each with their channels as platform logos and followers, and
+ * Invite and Book. The filters sit in one bar, each opening below its chip.
+ * On a wide screen the selected creator shows beside the list (kept in the
+ * URL: ?creator=, ?external=); otherwise a click opens their page.
  *
- * External creators (not on OpenPartner yet) follow under the same
- * filters, badged; members' sales, audience and verification filters
- * leave them out.
+ * External creators (not on OpenPartner yet) follow in the same list under
+ * the same filters, badged. They have no audience or verification data, so
+ * those filters leave them out.
+ *
+ * There's no sales filter or sort: the Network withholds creators' 90-day
+ * numbers, which sum every brand's results (creator-directory.ts).
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { Users } from 'lucide-react';
+import { ChevronDown, Users } from 'lucide-react';
 import { api, ApiError } from '../../api.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Textarea } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
-import { VerifiedBadge } from '../../lib/VerifiedBadge.js';
+import { countryOptions } from '../../lib/CountryField.js';
+import { ChannelCount, compactCount } from '../../lib/PlatformMark.js';
+import { useMediaQuery } from '../../lib/useMediaQuery.js';
 import { PLATFORMS as CREATOR_PLATFORMS } from '../../lib/NetworkProfileEditor.js';
-import { TenantLink } from '../../tenant-link.js';
 import { BookCreatorDialog } from './BookCreatorDialog.js';
-import { EXTERNAL_CATEGORIES, IndexedCreatorsSection, type ExternalFilters } from './NetworkIndexedCreators.js';
+import { CreatorList, CreatorRow, RowFigure } from './CreatorRow.js';
+import { NetworkCreatorStorefrontPanel } from './NetworkCreatorStorefront.js';
+import {
+  EXTERNAL_CATEGORIES,
+  ExternalRow,
+  IndexedCreatorPanel,
+  PlanUpsell,
+  useIndexedCreators,
+  type ExternalFilters,
+} from './NetworkIndexedCreators.js';
 
 interface PlatformRow {
   id: string;
@@ -66,25 +81,87 @@ const ALL_CATEGORIES = [...CATEGORIES, ...EXTERNAL_CATEGORIES.filter((c) => !CAT
 
 const PLATFORMS = CREATOR_PLATFORMS.map((p) => ({ value: p.kind, label: p.label }));
 
-type SortKey = 'revenue' | 'followers' | 'newest' | 'name';
+type SortKey = 'followers' | 'newest' | 'name';
+type ShowKey = 'all' | 'members' | 'external';
+
+/** Wide enough for the list and the selected creator side by side. */
+const SIDE_BY_SIDE = '(min-width: 1200px)';
+/** Page's padding under the content, so the columns end at the window's edge. */
+const PAGE_BOTTOM_PADDING = 32;
+/** On a very short window the page scrolls rather than squash the columns. */
+const MIN_SPLIT_HEIGHT = 360;
+
+type Count = number | '';
+
+/** Common follower ranges, [at least, at most]. */
+const FOLLOWER_RANGES: Array<[Count, Count]> = [
+  ['', 1_000],
+  [1_000, 10_000],
+  [10_000, 50_000],
+  [50_000, 100_000],
+  [100_000, 1_000_000],
+  [1_000_000, ''],
+];
+
+/** "1K–10K", "Up to 1K", "1M+". */
+function rangeLabel(min: Count, max: Count): string {
+  if (min === '' || min === 0) return max === '' ? 'Any' : `Up to ${compactCount(max)}`;
+  return max === '' ? `${compactCount(min)}+` : `${compactCount(min)}–${compactCount(max)}`;
+}
+
+/** The creator beside the list, kept in the URL: ?creator=<handle> for
+ *  OpenPartner's, ?external=<id> for an external one. */
+type Selected = { kind: 'member'; handle: string } | { kind: 'external'; id: string } | null;
 
 export function AdminNetworkCreators() {
+  const [params, setParams] = useSearchParams();
+  const sideBySide = useMediaQuery(SIDE_BY_SIDE);
   const [q, setQ] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
   const [categories, setCategories] = useState<string[]>([]);
   const [platforms, setPlatforms] = useState<string[]>([]);
   const [verifiedOnly, setVerifiedOnly] = useState(false);
-  const [locations, setLocations] = useState('');
-  const [minFollowers, setMinFollowers] = useState<number | ''>('');
-  const [minRevenue, setMinRevenue] = useState<number | ''>('');
-  const [sort, setSort] = useState<SortKey>('revenue');
+  /** Audience countries, ISO codes. */
+  const [locations, setLocations] = useState<string[]>([]);
+  const [minFollowers, setMinFollowers] = useState<Count>('');
+  const [maxFollowers, setMaxFollowers] = useState<Count>('');
+  const [openOnly, setOpenOnly] = useState(false);
+  const [sort, setSort] = useState<SortKey>('followers');
+
   // One list: OpenPartner's creators first, then external creators the
   // Network listed who haven't joined (NetworkIndexedCreators.tsx), under
   // the same filters. ?show=external (or the old ?tab=index) shows only those.
-  const [show, setShow] = useState<ShowKey>(() => {
-    const p = new URLSearchParams(window.location.search);
-    return p.get('show') === 'external' || p.get('tab') === 'index' ? 'external' : p.get('show') === 'members' ? 'members' : 'all';
-  });
+  const show: ShowKey =
+    params.get('show') === 'external' || params.get('tab') === 'index' ? 'external' : params.get('show') === 'members' ? 'members' : 'all';
+  const creatorParam = params.get('creator');
+  const externalParam = params.get('external');
+  const selected: Selected = creatorParam
+    ? { kind: 'member', handle: creatorParam }
+    : externalParam
+      ? { kind: 'external', id: externalParam }
+      : null;
+  const updateParams = (change: (p: URLSearchParams) => void) =>
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        change(next);
+        return next;
+      },
+      { replace: true },
+    );
+  const setShow = (value: ShowKey) =>
+    updateParams((p) => {
+      p.delete('tab');
+      if (value === 'all') p.delete('show');
+      else p.set('show', value);
+    });
+  const select = (s: Exclude<Selected, null>) =>
+    updateParams((p) => {
+      p.delete('creator');
+      p.delete('external');
+      if (s.kind === 'member') p.set('creator', s.handle);
+      else p.set('external', s.id);
+    });
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedQ(q.trim()), 250);
@@ -97,16 +174,13 @@ export function AdminNetworkCreators() {
     if (categories.length > 0) p.set('categories', categories.join(','));
     if (platforms.length > 0) p.set('platforms', platforms.join(','));
     if (verifiedOnly) p.set('verified', 'true');
-    const cleanLocations = locations
-      .split(',')
-      .map((s) => s.trim().toUpperCase())
-      .filter((s) => /^[A-Z]{2}$/.test(s));
-    if (cleanLocations.length > 0) p.set('locations', cleanLocations.join(','));
+    if (locations.length > 0) p.set('locations', locations.join(','));
     if (minFollowers !== '' && minFollowers > 0) p.set('minFollowers', String(minFollowers));
-    if (minRevenue !== '' && minRevenue > 0) p.set('minRevenue90d', String(minRevenue));
-    if (sort !== 'revenue') p.set('sort', sort);
+    if (maxFollowers !== '') p.set('maxFollowers', String(maxFollowers));
+    // The Network's own default is newest.
+    if (sort !== 'newest') p.set('sort', sort);
     return p.toString();
-  }, [debouncedQ, categories, platforms, verifiedOnly, locations, minFollowers, minRevenue, sort]);
+  }, [debouncedQ, categories, platforms, verifiedOnly, locations, minFollowers, maxFollowers, sort]);
 
   const list = useQuery({
     queryKey: ['admin-discover-creators', qs],
@@ -120,238 +194,424 @@ export function AdminNetworkCreators() {
 
   // External creators have no sales, audience or verification data, so
   // these filters leave them out.
-  const memberOnlyFilters = verifiedOnly || (minRevenue !== '' && minRevenue > 0) || locations.trim() !== '';
+  const memberOnlyFilters = verifiedOnly || locations.length > 0;
   const externalFilters = useMemo<ExternalFilters>(
     () => ({
       q: debouncedQ || undefined,
       categories,
       platforms,
       minFollowers: minFollowers === '' ? undefined : minFollowers,
+      maxFollowers: maxFollowers === '' ? undefined : maxFollowers,
+      openToPartnerships: openOnly,
       sort: sort === 'newest' ? 'newest' : 'reach',
     }),
-    [debouncedQ, categories, platforms, minFollowers, sort],
+    [debouncedQ, categories, platforms, minFollowers, maxFollowers, openOnly, sort],
+  );
+
+  const filtered =
+    q.trim() !== '' ||
+    categories.length > 0 ||
+    platforms.length > 0 ||
+    verifiedOnly ||
+    minFollowers !== '' ||
+    maxFollowers !== '' ||
+    locations.length > 0 ||
+    openOnly;
+  const resetAll = () => {
+    setQ('');
+    setCategories([]);
+    setPlatforms([]);
+    setVerifiedOnly(false);
+    setMinFollowers('');
+    setMaxFollowers('');
+    setLocations([]);
+    setOpenOnly(false);
+  };
+
+  // A newly picked creator starts at the top of the panel.
+  const panel = useRef<HTMLElement>(null);
+  const selectedKey = selected ? `${selected.kind}:${selected.kind === 'member' ? selected.handle : selected.id}` : '';
+  useEffect(() => {
+    if (panel.current) panel.current.scrollTop = 0;
+  }, [selectedKey]);
+
+  // Side by side, the page itself stays put: the title and filters stay in
+  // view, and the list and the creator fill the rest of the window, each
+  // scrolling on its own. Refitted when the window or the filter bar (which
+  // wraps) changes size.
+  const bar = useRef<HTMLDivElement>(null);
+  const split = useRef<HTMLDivElement>(null);
+  const [splitHeight, setSplitHeight] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    if (!sideBySide) return;
+    const fit = () => {
+      if (!split.current) return;
+      const top = split.current.getBoundingClientRect().top + window.scrollY;
+      setSplitHeight(Math.max(MIN_SPLIT_HEIGHT, Math.floor(window.innerHeight - top - PAGE_BOTTOM_PADDING)));
+    };
+    fit();
+    window.addEventListener('resize', fit);
+    const resized = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(fit);
+    if (bar.current) resized?.observe(bar.current);
+    return () => {
+      window.removeEventListener('resize', fit);
+      resized?.disconnect();
+    };
+  }, [sideBySide]);
+
+  const showMembers = show !== 'external';
+  // External creators have no sales, audience or verification data, so
+  // those filters leave them out.
+  const showExternal = show !== 'members' && !memberOnlyFilters;
+  const external = useIndexedCreators(externalFilters, showExternal);
+  const memberRows = showMembers ? rows : [];
+  const externalRows = showExternal ? external.rows : [];
+  const loading = (showMembers && list.isLoading) || external.isLoading;
+
+  // One list: OpenPartner's creators, then external ones, badged.
+  const listColumn = (
+    <div style={{ minWidth: 0 }}>
+      <ErrorBanner error={external.error} />
+      {loading ? (
+        <Card>Loading creators…</Card>
+      ) : memberRows.length === 0 && externalRows.length === 0 ? (
+        !external.planRequired && (
+          <EmptyState
+            title="No creators match those filters"
+            hint={qs ? 'Loosen the filters.' : undefined}
+            icon={<Users size={28} strokeWidth={1.25} />}
+          />
+        )
+      ) : (
+        <CreatorList>
+          {memberRows.map((r) => (
+            <MemberRow
+              key={r.id}
+              creator={r}
+              selected={sideBySide && selected?.kind === 'member' && selected.handle === r.handle}
+              onSelect={sideBySide ? () => select({ kind: 'member', handle: r.handle }) : undefined}
+            />
+          ))}
+          {externalRows.map((c) => (
+            <ExternalRow
+              key={c.id}
+              creator={c}
+              selected={sideBySide && selected?.kind === 'external' && selected.id === c.id}
+              onSelect={sideBySide ? () => select({ kind: 'external', id: c.id }) : undefined}
+            />
+          ))}
+        </CreatorList>
+      )}
+      {showExternal && external.hasMore && (
+        <div style={{ marginTop: 14, textAlign: 'center' }}>
+          <Button variant="secondary" onClick={external.loadMore} disabled={external.loadingMore}>
+            {external.loadingMore ? 'Loading…' : 'Show more'}
+          </Button>
+        </div>
+      )}
+      {showExternal && external.planRequired && (
+        <div style={{ marginTop: 14 }}>
+          <PlanUpsell />
+        </div>
+      )}
+    </div>
   );
 
   return (
-    <Page
-      title="Discover creators"
-      subtitle="Find creators who match your audience: those on OpenPartner first, then external creators we can invite for you. Filter by category, platform, audience size, and past performance."
-    >
-      <ShowFilter show={show} onChange={setShow} />
-      <ErrorBanner error={list.error} />
-      <Card>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14, marginBottom: 14 }}>
-          <div>
-            <Label>Search</Label>
-            <Input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Name, handle, bio…"
-            />
+    <Page title="Discover creators">
+      <div ref={bar} style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 18 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ flex: '1 1 260px', minWidth: 0 }}>
+            <Input value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search creators" placeholder="Search name, handle, bio…" />
           </div>
-          <div>
-            <Label>Sort</Label>
-            <Select value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
-              <option value="revenue">90-day revenue</option>
+          <Select aria-label="Show" value={show} onChange={(e) => setShow(e.target.value as ShowKey)} style={{ width: 'auto' }}>
+            <option value="all">Everyone</option>
+            <option value="members">On OpenPartner</option>
+            <option value="external">External creators</option>
+          </Select>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.textMuted }}>
+            Sort by
+            <Select value={sort} onChange={(e) => setSort(e.target.value as SortKey)} style={{ width: 'auto' }}>
               <option value="followers">Total followers</option>
               <option value="newest">Newest</option>
               <option value="name">Name (A-Z)</option>
             </Select>
-          </div>
-          <div>
-            <Label>Min total followers</Label>
-            <Input
-              type="number"
-              value={minFollowers}
-              onChange={(e) => setMinFollowers(e.target.value === '' ? '' : Number(e.target.value))}
-              placeholder="e.g. 10000"
-            />
-          </div>
-          <div>
-            <Label>Min 90-day revenue ($)</Label>
-            <Input
-              type="number"
-              value={minRevenue}
-              onChange={(e) => setMinRevenue(e.target.value === '' ? '' : Number(e.target.value))}
-              placeholder="e.g. 500"
-            />
-          </div>
-          <div style={{ gridColumn: '1 / -1' }}>
-            <Label>Audience locations (ISO codes, comma-separated)</Label>
-            <Input
-              value={locations}
-              onChange={(e) => setLocations(e.target.value)}
-              placeholder="US, CA, GB"
-              style={{ fontFamily: theme.fontMono }}
-            />
-          </div>
-        </div>
-        <div>
-          <Label>Categories (creator must have all selected)</Label>
-          <ChipMultiSelect
-            options={ALL_CATEGORIES}
-            selected={categories}
-            onChange={setCategories}
-          />
-        </div>
-        <div style={{ marginTop: 12 }}>
-          <Label>Platforms (creator must have at least one)</Label>
-          <ChipMultiSelect
-            options={PLATFORMS.map((p) => p.value)}
-            labels={PLATFORMS.reduce<Record<string, string>>((acc, p) => { acc[p.value] = p.label; return acc; }, {})}
-            selected={platforms}
-            onChange={setPlatforms}
-          />
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 10, fontSize: 13, color: theme.text, cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={verifiedOnly}
-              onChange={(e) => setVerifiedOnly(e.target.checked)}
-            />
-            Verified accounts only
-            <span style={{ color: theme.textMuted, fontSize: 12 }}>
-              {platforms.length > 0 ? '(verified on one of the selected platforms)' : '(creator proved they own the account)'}
-            </span>
           </label>
         </div>
-      </Card>
-
-      <div style={{ height: 18 }} />
-
-      {show !== 'external' && (
-        <section>
-          {show === 'all' && <SectionHeading>On OpenPartner</SectionHeading>}
-          {list.isLoading ? (
-            <Card>Loading creators…</Card>
-          ) : rows.length === 0 ? (
-            <EmptyState
-              title="No creators on OpenPartner match those filters"
-              hint={qs ? 'Loosen the filters, or check back as more creators join.' : 'No creators on the Network yet.'}
-              icon={<Users size={28} strokeWidth={1.25} />}
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          <FilterMenu label="Categories" count={categories.length || null}>
+            <ChipMultiSelect options={ALL_CATEGORIES} selected={categories} onChange={setCategories} />
+          </FilterMenu>
+          <FilterMenu label="Platforms" count={platforms.length + (verifiedOnly ? 1 : 0) || null}>
+            <ChipMultiSelect
+              options={PLATFORMS.map((p) => p.value)}
+              labels={PLATFORMS.reduce<Record<string, string>>((acc, p) => {
+                acc[p.value] = p.label;
+                return acc;
+              }, {})}
+              selected={platforms}
+              onChange={setPlatforms}
             />
-          ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 14 }}>
-              {rows.map((r) => <CreatorCard key={r.id} creator={r} />)}
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, fontSize: 13, color: theme.text, cursor: 'pointer' }}>
+              <input type="checkbox" checked={verifiedOnly} onChange={(e) => setVerifiedOnly(e.target.checked)} />
+              Verified accounts only
+            </label>
+          </FilterMenu>
+          <FilterMenu label="Followers" count={minFollowers === '' && maxFollowers === '' ? null : rangeLabel(minFollowers, maxFollowers)}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+              {FOLLOWER_RANGES.map(([min, max]) => {
+                const on = minFollowers === min && maxFollowers === max;
+                return (
+                  <ToggleChip
+                    key={rangeLabel(min, max)}
+                    on={on}
+                    onClick={() => {
+                      setMinFollowers(on ? '' : min);
+                      setMaxFollowers(on ? '' : max);
+                    }}
+                  >
+                    {rangeLabel(min, max)}
+                  </ToggleChip>
+                );
+              })}
             </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Input
+                type="number"
+                min={0}
+                aria-label="At least"
+                placeholder="Min"
+                value={minFollowers}
+                onChange={(e) => setMinFollowers(e.target.value === '' ? '' : Number(e.target.value))}
+              />
+              <span style={{ color: theme.textMuted }}>–</span>
+              <Input
+                type="number"
+                min={0}
+                aria-label="At most"
+                placeholder="Max"
+                value={maxFollowers}
+                onChange={(e) => setMaxFollowers(e.target.value === '' ? '' : Number(e.target.value))}
+              />
+            </div>
+          </FilterMenu>
+          <FilterMenu label="Audience" count={locations.length === 0 ? null : locations.length <= 2 ? locations.join(', ') : locations.length}>
+            <CountryMultiSelect selected={locations} onChange={setLocations} />
+          </FilterMenu>
+          <ToggleChip on={openOnly} onClick={() => setOpenOnly(!openOnly)} title="External creators who already take brand partnerships">
+            Open to partnerships
+          </ToggleChip>
+          {filtered && (
+            <button
+              type="button"
+              onClick={resetAll}
+              style={{ background: 'none', border: 'none', color: theme.accentText, fontSize: 13, cursor: 'pointer', padding: '6px 8px' }}
+            >
+              Reset all
+            </button>
           )}
-        </section>
-      )}
+        </div>
+      </div>
+      <ErrorBanner error={list.error} />
 
-      {show !== 'members' && (
-        <section style={{ marginTop: show === 'all' ? 32 : 0 }}>
-          {show === 'all' && <SectionHeading>External creators</SectionHeading>}
-          {memberOnlyFilters ? (
-            <p style={{ fontSize: 13, color: theme.textMuted, margin: 0, lineHeight: 1.5 }}>
-              External creators have no sales, audience-location or verification data yet, so they&rsquo;re hidden while those
-              filters are on.
-            </p>
-          ) : (
-            <IndexedCreatorsSection filters={externalFilters} />
-          )}
-        </section>
+      {sideBySide ? (
+        <div
+          ref={split}
+          style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 5fr) minmax(0, 6fr)', gap: 20, height: splitHeight ?? undefined }}
+        >
+          <div
+            data-testid="creator-list-scroll"
+            className="op-scroll-hover"
+            style={{ minWidth: 0, overflowY: 'auto', overscrollBehavior: 'contain', paddingRight: 6 }}
+          >
+            {listColumn}
+          </div>
+          <aside
+            ref={panel}
+            className="op-scroll-hover"
+            aria-label="Selected creator"
+            style={{
+              overflowY: 'auto',
+              overscrollBehavior: 'contain',
+              minWidth: 0,
+              // One surface of its own, set apart from the list.
+              background: theme.surface,
+              border: `1px solid ${theme.border}`,
+              borderRadius: 12,
+              boxShadow: '0 1px 2px rgba(0, 0, 0, 0.06), 0 12px 32px rgba(0, 0, 0, 0.08)',
+            }}
+          >
+            {selected?.kind === 'member' ? (
+              <NetworkCreatorStorefrontPanel key={selected.handle} handle={selected.handle} />
+            ) : selected?.kind === 'external' ? (
+              <IndexedCreatorPanel key={selected.id} id={selected.id} />
+            ) : (
+              <div style={{ padding: '64px 24px', textAlign: 'center' }}>
+                <Users size={28} strokeWidth={1.25} style={{ color: theme.textDim }} />
+                <div style={{ fontSize: 15, fontWeight: 500, marginTop: 12 }}>Pick a creator</div>
+              </div>
+            )}
+          </aside>
+        </div>
+      ) : (
+        listColumn
       )}
     </Page>
   );
 }
 
-type ShowKey = 'all' | 'members' | 'external';
+const chipStyle = (on: boolean): React.CSSProperties => ({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
+  padding: '6px 12px',
+  borderRadius: 999,
+  border: `1px solid ${on ? theme.accent : theme.border}`,
+  background: on ? alpha(theme.accent, 0.12) : theme.surface,
+  color: on ? theme.text : theme.textMuted,
+  fontSize: 13,
+  fontWeight: on ? 500 : 400,
+  cursor: 'pointer',
+  whiteSpace: 'nowrap',
+});
 
-function SectionHeading({ children }: { children: React.ReactNode }) {
-  return <h2 style={{ fontSize: 15, fontWeight: 600, margin: '0 0 12px' }}>{children}</h2>;
+/** Countries by name, searchable, the picked ones first. */
+function CountryMultiSelect({ selected, onChange }: { selected: string[]; onChange: (codes: string[]) => void }) {
+  const options = useMemo(() => countryOptions(), []);
+  const [search, setSearch] = useState('');
+  const needle = search.trim().toLowerCase();
+  const matches = options.filter((o) => !needle || o.name.toLowerCase().includes(needle) || o.code.toLowerCase() === needle);
+  const ordered = [...matches.filter((o) => selected.includes(o.code)), ...matches.filter((o) => !selected.includes(o.code))];
+  const toggle = (code: string) => onChange(selected.includes(code) ? selected.filter((c) => c !== code) : [...selected, code]);
+  return (
+    <>
+      <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search countries" aria-label="Search countries" />
+      <div
+        role="group"
+        aria-label="Audience countries"
+        className="op-scroll-hover"
+        style={{ maxHeight: 240, overflowY: 'auto', marginTop: 8, display: 'flex', flexDirection: 'column' }}
+      >
+        {ordered.map((o) => (
+          <label key={o.code} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 2px', fontSize: 13, color: theme.text, cursor: 'pointer' }}>
+            <input type="checkbox" checked={selected.includes(o.code)} onChange={() => toggle(o.code)} />
+            {o.name}
+          </label>
+        ))}
+        {ordered.length === 0 && <div style={{ fontSize: 13, color: theme.textMuted, padding: '5px 2px' }}>No country matches.</div>}
+      </div>
+    </>
+  );
 }
 
-/** Everyone, only OpenPartner's creators, or only external creators. */
-function ShowFilter({ show, onChange }: { show: ShowKey; onChange: (s: ShowKey) => void }) {
-  const item = (value: ShowKey, label: string) => (
-    <button
-      type="button"
-      onClick={() => onChange(value)}
-      aria-pressed={show === value}
-      style={{
-        padding: '6px 14px',
-        borderRadius: 999,
-        border: `1px solid ${show === value ? theme.accent : theme.borderSubtle}`,
-        background: show === value ? alpha(theme.accent, 0.12) : 'transparent',
-        color: show === value ? theme.text : theme.textMuted,
-        fontWeight: show === value ? 600 : 400,
-        fontSize: 13,
-        cursor: 'pointer',
-      }}
-    >
-      {label}
+function ToggleChip({ on, onClick, title, children }: { on: boolean; onClick: () => void; title?: string; children: React.ReactNode }) {
+  return (
+    <button type="button" aria-pressed={on} onClick={onClick} title={title} style={chipStyle(on)}>
+      {children}
     </button>
   );
+}
+
+/** One filter in the bar: a chip that opens its controls below it, saying
+ *  what's set (`count`) while it's closed. */
+function FilterMenu({ label, count, children }: { label: string; count: string | number | null; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  // Pulled left when it would run off the right of the screen.
+  const [shift, setShift] = useState(0);
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const outside = (e: MouseEvent) => {
+      if (!box.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const escape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', outside);
+    document.addEventListener('keydown', escape);
+    return () => {
+      document.removeEventListener('mousedown', outside);
+      document.removeEventListener('keydown', escape);
+    };
+  }, [open]);
+  const toggle = () => {
+    if (!open && box.current) {
+      const width = Math.min(MENU_WIDTH, window.innerWidth - 32);
+      setShift(Math.min(0, window.innerWidth - 16 - box.current.getBoundingClientRect().left - width));
+    }
+    setOpen(!open);
+  };
+  const on = count != null;
   return (
-    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
-      {item('all', 'Everyone')}
-      {item('members', 'On OpenPartner')}
-      {item('external', 'External creators')}
+    <div ref={box} style={{ position: 'relative' }}>
+      <button type="button" aria-expanded={open} onClick={toggle} style={chipStyle(on)}>
+        {label}
+        {on && <span style={{ color: theme.accentText }}>· {count}</span>}
+        <ChevronDown size={14} aria-hidden="true" />
+      </button>
+      {open && (
+        <div
+          role="group"
+          aria-label={label}
+          style={{
+            position: 'absolute',
+            top: 'calc(100% + 6px)',
+            left: shift,
+            zIndex: 30,
+            width: MENU_WIDTH,
+            maxWidth: 'calc(100vw - 32px)',
+            padding: 14,
+            background: theme.surface,
+            border: `1px solid ${theme.border}`,
+            borderRadius: theme.radiusSm,
+            boxShadow: theme.shadowPopover,
+          }}
+        >
+          {children}
+        </div>
+      )}
     </div>
   );
 }
 
-function CreatorCard({ creator }: { creator: DirectoryRow }) {
-  const revenue = Number(creator.revenue90d);
+const MENU_WIDTH = 340;
+
+function MemberRow({ creator, selected, onSelect }: { creator: DirectoryRow; selected: boolean; onSelect?: () => void }) {
   return (
-    // A column, so the buttons sit at the bottom and line up across a row.
-    <Card style={{ display: 'flex', flexDirection: 'column' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
-        {creator.avatarUrl ? (
-          <img src={creator.avatarUrl} alt={creator.name} style={{ width: 44, height: 44, borderRadius: '50%', objectFit: 'cover', background: theme.surface2 }} />
+    <CreatorRow
+      name={creator.name}
+      to={`/admin/network/creators/${encodeURIComponent(creator.handle)}`}
+      selected={selected}
+      onSelect={onSelect}
+      avatar={
+        creator.avatarUrl ? (
+          <img src={creator.avatarUrl} alt="" style={{ width: 44, height: 44, borderRadius: '50%', objectFit: 'cover', background: theme.surface2, flexShrink: 0 }} />
         ) : (
-          <div style={{ width: 44, height: 44, borderRadius: '50%', background: theme.accent, color: theme.accentInk, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, fontWeight: 600 }}>
+          <div style={{ width: 44, height: 44, borderRadius: '50%', background: theme.accent, color: theme.accentInk, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, fontWeight: 600, flexShrink: 0 }}>
             {creator.name.charAt(0).toUpperCase()}
           </div>
-        )}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{creator.name}</div>
-          <div style={{ color: theme.textMuted, fontSize: 12, fontFamily: theme.fontMono }}>@{creator.handle}</div>
-        </div>
-      </div>
-      {creator.categories.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
-          {creator.categories.slice(0, 4).map((c) => (
-            <span key={c} style={{ background: theme.surface2, color: theme.textMuted, fontSize: 10, padding: '2px 7px', borderRadius: 10 }}>{c}</span>
-          ))}
-          {creator.categories.length > 4 && (
-            <span style={{ color: theme.textDim, fontSize: 10, padding: '2px 4px' }}>+{creator.categories.length - 4}</span>
-          )}
-        </div>
-      )}
-      {creator.platforms.length > 0 && (
-        <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 10 }}>
-          {creator.platforms.map((p, i) => (
-            <span key={p.id}>
-              {i > 0 && ' · '}
-              {p.platform}
-              {p.verified && <> <VerifiedBadge compact /></>}
-            </span>
-          ))}
-          {creator.totalReach > 0 && (
-            <> · <strong style={{ color: theme.text }}>{creator.totalReach.toLocaleString()}</strong> reach</>
-          )}
-        </div>
-      )}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
-        <Stat label="90d revenue" value={revenue > 0 ? `$${revenue.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—'} accent={revenue > 0} />
-        <Stat label="90d clicks" value={creator.clicks90d > 0 ? creator.clicks90d.toLocaleString() : '—'} />
-      </div>
-      {creator.bio && (
-        <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 12px', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-          {creator.bio}
-        </p>
-      )}
-      {/* Each action is a padding-free flex: 1 box with the button filling
-          it, so they share the row evenly (a bare button's padding would
-          add to its share). */}
-      <div data-testid="card-actions" style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 'auto' }}>
-        <TenantLink to={`/admin/network/creators/${encodeURIComponent(creator.handle)}`} style={{ textDecoration: 'none', flex: 1 }}>
-          <Button variant="secondary" style={{ width: '100%' }}>Storefront</Button>
-        </TenantLink>
-        <InviteButton creator={creator} />
-        <BookButton creator={creator} />
-      </div>
-    </Card>
+        )
+      }
+      meta={<span style={{ color: theme.textMuted, fontSize: 12, fontFamily: theme.fontMono }}>@{creator.handle}</span>}
+      line={creator.bio}
+      channels={
+        creator.platforms.length > 0
+          ? creator.platforms.map((p) => (
+              <ChannelCount key={p.id} platform={p.platform} followers={p.followerCount} href={p.profileUrl} verified={p.verified} />
+            ))
+          : undefined
+      }
+      side={
+        <RowFigure value={creator.totalReach > 0 ? compactCount(creator.totalReach) : '—'} caption="followers" />
+      }
+      tags={creator.categories}
+      actions={
+        <>
+          <InviteButton creator={creator} />
+          <BookButton creator={creator} />
+        </>
+      }
+    />
   );
 }
 
@@ -366,9 +626,9 @@ function BookButton({ creator }: { creator: DirectoryRow }) {
   const [open, setOpen] = useState(false);
   return (
     <>
-      <div style={{ flex: 1 }}>
-        <Button variant="secondary" onClick={() => setOpen(true)} style={{ width: '100%' }}>Book</Button>
-      </div>
+      <Button size="sm" variant="secondary" onClick={() => setOpen(true)}>
+        Book
+      </Button>
       {open && <BookCreatorDialog creator={creator} onClose={() => setOpen(false)} />}
     </>
   );
@@ -378,9 +638,9 @@ function InviteButton({ creator }: { creator: DirectoryRow }) {
   const [open, setOpen] = useState(false);
   return (
     <>
-      <div style={{ flex: 1 }}>
-        <Button onClick={() => setOpen(true)} style={{ width: '100%' }}>Invite</Button>
-      </div>
+      <Button size="sm" onClick={() => setOpen(true)}>
+        Invite
+      </Button>
       {open && <InviteDialog creator={creator} onClose={() => setOpen(false)} />}
     </>
   );
@@ -542,15 +802,6 @@ function InviteDialog({ creator, onClose }: { creator: DirectoryRow; onClose: ()
           </>
         )}
       </div>
-    </div>
-  );
-}
-
-function Stat({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
-  return (
-    <div style={{ background: theme.surface2, border: `1px solid ${theme.borderSubtle}`, borderRadius: theme.radiusSm, padding: '8px 10px' }}>
-      <div style={{ fontSize: 10, color: theme.textDim, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
-      <div style={{ fontSize: 14, fontWeight: 500, color: accent ? theme.success : theme.text, marginTop: 2 }}>{value}</div>
     </div>
   );
 }

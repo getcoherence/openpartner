@@ -12,7 +12,7 @@
  * on the public site (lib/public-site.ts).
  */
 import { ExternalLink, RefreshCw } from 'lucide-react';
-import { Button, Card } from '../../ui.js';
+import { Button } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { VerifiedBadge } from '../../lib/VerifiedBadge.js';
 import {
@@ -24,6 +24,8 @@ import {
   type StorefrontChannel,
   type StorefrontPackage,
 } from './storefront-shared.js';
+import { PlatformMark } from '../../lib/PlatformMark.js';
+import { SectionCard, SectionGap } from '../../lib/Surface.js';
 
 export function StorefrontSection({
   creatorName,
@@ -48,8 +50,8 @@ export function StorefrontSection({
 
   return (
     <>
-      {!preview && <div style={{ height: 14 }} />}
-      <Card>
+      {!preview && <SectionGap />}
+      <SectionCard>
         <h3 style={{ marginTop: 0, marginBottom: 4, fontSize: 15, fontWeight: 500 }}>Work with {firstName}</h3>
         <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 14 }}>
           {preview
@@ -63,7 +65,8 @@ export function StorefrontSection({
                 <ChannelHeader channel={g.channel} />
               ) : (
                 (groups.length > 1 || g.platform) && (
-                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+                    {g.platform && <PlatformMark platform={g.platform} size={14} />}
                     {g.platform ? (PLATFORM_LABELS[g.platform] ?? g.platform) : 'Across channels'}
                   </div>
                 )
@@ -94,7 +97,7 @@ export function StorefrontSection({
             {preview ? 'Get in touch' : 'Book a custom deal'}
           </Button>
         </div>
-      </Card>
+      </SectionCard>
     </>
   );
 }
@@ -137,6 +140,7 @@ export function ChannelHeader({ channel }: { channel: StorefrontChannel }) {
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <PlatformMark platform={channel.platform} size={16} />
         <span style={{ fontSize: 14, fontWeight: 600 }}>{label}</span>
         {channel.profileUrl ? (
           <a
