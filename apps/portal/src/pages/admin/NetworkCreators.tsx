@@ -14,6 +14,11 @@
  *
  * There's no sales filter or sort: the Network withholds creators' 90-day
  * numbers, which sum every brand's results (creator-directory.ts).
+ *
+ * Engagement rates come from public numbers instead: external creators'
+ * sampled posts, and members' verified YouTube. The filter and sort use a
+ * creator's best channel (openpartner-network docs/creator-index.md §3.8),
+ * so a creator without a rate drops out of the filter and sorts last.
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -46,6 +51,9 @@ interface PlatformRow {
   profileUrl: string | null;
   followerCount: number | null;
   verified: boolean;
+  /** Verified YouTube's, synced (percent). */
+  engagementRate?: number | null;
+  engagementPosts?: number | null;
 }
 
 interface DirectoryRow {
@@ -81,7 +89,7 @@ const ALL_CATEGORIES = [...CATEGORIES, ...EXTERNAL_CATEGORIES.filter((c) => !CAT
 
 const PLATFORMS = CREATOR_PLATFORMS.map((p) => ({ value: p.kind, label: p.label }));
 
-type SortKey = 'followers' | 'newest' | 'name';
+type SortKey = 'followers' | 'engagement' | 'newest' | 'name';
 type ShowKey = 'all' | 'members' | 'external';
 
 /** Wide enough for the list and the selected creator side by side. */
@@ -102,6 +110,9 @@ const FOLLOWER_RANGES: Array<[Count, Count]> = [
   [100_000, 1_000_000],
   [1_000_000, ''],
 ];
+
+/** Common engagement floors, percent. */
+const ENGAGEMENT_FLOORS = [1, 2, 3, 5, 10];
 
 /** "1K–10K", "Up to 1K", "1M+". */
 function rangeLabel(min: Count, max: Count): string {
@@ -125,6 +136,8 @@ export function AdminNetworkCreators() {
   const [locations, setLocations] = useState<string[]>([]);
   const [minFollowers, setMinFollowers] = useState<Count>('');
   const [maxFollowers, setMaxFollowers] = useState<Count>('');
+  /** Percent. */
+  const [minEngagement, setMinEngagement] = useState<Count>('');
   const [openOnly, setOpenOnly] = useState(false);
   const [sort, setSort] = useState<SortKey>('followers');
 
@@ -177,10 +190,11 @@ export function AdminNetworkCreators() {
     if (locations.length > 0) p.set('locations', locations.join(','));
     if (minFollowers !== '' && minFollowers > 0) p.set('minFollowers', String(minFollowers));
     if (maxFollowers !== '') p.set('maxFollowers', String(maxFollowers));
+    if (minEngagement !== '' && minEngagement > 0) p.set('minEngagement', String(minEngagement));
     // The Network's own default is newest.
     if (sort !== 'newest') p.set('sort', sort);
     return p.toString();
-  }, [debouncedQ, categories, platforms, verifiedOnly, locations, minFollowers, maxFollowers, sort]);
+  }, [debouncedQ, categories, platforms, verifiedOnly, locations, minFollowers, maxFollowers, minEngagement, sort]);
 
   const list = useQuery({
     queryKey: ['admin-discover-creators', qs],
@@ -203,9 +217,10 @@ export function AdminNetworkCreators() {
       minFollowers: minFollowers === '' ? undefined : minFollowers,
       maxFollowers: maxFollowers === '' ? undefined : maxFollowers,
       openToPartnerships: openOnly,
-      sort: sort === 'newest' ? 'newest' : 'reach',
+      minEngagement: minEngagement === '' ? undefined : minEngagement,
+      sort: sort === 'newest' || sort === 'engagement' ? sort : 'reach',
     }),
-    [debouncedQ, categories, platforms, minFollowers, maxFollowers, openOnly, sort],
+    [debouncedQ, categories, platforms, minFollowers, maxFollowers, openOnly, minEngagement, sort],
   );
 
   const filtered =
@@ -215,6 +230,7 @@ export function AdminNetworkCreators() {
     verifiedOnly ||
     minFollowers !== '' ||
     maxFollowers !== '' ||
+    minEngagement !== '' ||
     locations.length > 0 ||
     openOnly;
   const resetAll = () => {
@@ -224,6 +240,7 @@ export function AdminNetworkCreators() {
     setVerifiedOnly(false);
     setMinFollowers('');
     setMaxFollowers('');
+    setMinEngagement('');
     setLocations([]);
     setOpenOnly(false);
   };
@@ -333,6 +350,7 @@ export function AdminNetworkCreators() {
             Sort by
             <Select value={sort} onChange={(e) => setSort(e.target.value as SortKey)} style={{ width: 'auto' }}>
               <option value="followers">Total followers</option>
+              <option value="engagement">Engagement</option>
               <option value="newest">Newest</option>
               <option value="name">Name (A-Z)</option>
             </Select>
@@ -394,6 +412,27 @@ export function AdminNetworkCreators() {
                 onChange={(e) => setMaxFollowers(e.target.value === '' ? '' : Number(e.target.value))}
               />
             </div>
+          </FilterMenu>
+          <FilterMenu label="Engagement" count={minEngagement === '' ? null : `${minEngagement}%+`}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+              {ENGAGEMENT_FLOORS.map((floor) => {
+                const on = minEngagement === floor;
+                return (
+                  <ToggleChip key={floor} on={on} onClick={() => setMinEngagement(on ? '' : floor)}>
+                    {floor}%+
+                  </ToggleChip>
+                );
+              })}
+            </div>
+            <Input
+              type="number"
+              min={0}
+              step={0.1}
+              aria-label="Minimum engagement %"
+              placeholder="Min %"
+              value={minEngagement}
+              onChange={(e) => setMinEngagement(e.target.value === '' ? '' : Math.max(0, Number(e.target.value)))}
+            />
           </FilterMenu>
           <FilterMenu label="Audience" count={locations.length === 0 ? null : locations.length <= 2 ? locations.join(', ') : locations.length}>
             <CountryMultiSelect selected={locations} onChange={setLocations} />
@@ -597,7 +636,15 @@ function MemberRow({ creator, selected, onSelect }: { creator: DirectoryRow; sel
       channels={
         creator.platforms.length > 0
           ? creator.platforms.map((p) => (
-              <ChannelCount key={p.id} platform={p.platform} followers={p.followerCount} href={p.profileUrl} verified={p.verified} />
+              <ChannelCount
+                key={p.id}
+                platform={p.platform}
+                followers={p.followerCount}
+                href={p.profileUrl}
+                verified={p.verified}
+                engagementRate={p.engagementRate}
+                engagementPosts={p.engagementPosts}
+              />
             ))
           : undefined
       }

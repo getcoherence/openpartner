@@ -24,7 +24,7 @@ import {
   type StorefrontChannel,
   type StorefrontPackage,
 } from './storefront-shared.js';
-import { PlatformMark } from '../../lib/PlatformMark.js';
+import { formatRate, PlatformMark, rateInFull } from '../../lib/PlatformMark.js';
 import { SectionCard, SectionGap } from '../../lib/Surface.js';
 
 export function StorefrontSection({
@@ -131,6 +131,20 @@ export function ChannelHeader({ channel }: { channel: StorefrontChannel }) {
     facts.push(
       <span key="views" title="Median views of the latest 10 uploads">
         {strong(channel.viewsPerVideo)} views per video
+      </span>,
+    );
+  }
+  if (channel.engagementRate != null) {
+    const perVideo = [
+      ...(channel.likesPerVideo != null ? [`${channel.likesPerVideo.toLocaleString()} likes`] : []),
+      ...(channel.commentsPerVideo != null ? [`${channel.commentsPerVideo.toLocaleString()} comments`] : []),
+    ];
+    facts.push(
+      <span
+        key="engagement"
+        title={`${rateInFull(channel.engagementRate, channel.engagementPosts, channel.platform)}${perVideo.length ? `: ${perVideo.join(' and ')} per video` : ''}`}
+      >
+        <strong style={{ color: theme.text, fontWeight: 600 }}>{formatRate(channel.engagementRate)}</strong> engagement
       </span>,
     );
   }

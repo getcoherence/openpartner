@@ -212,6 +212,46 @@ describe('external creators', () => {
     expect(youtube.querySelector('svg path')!.getAttribute('fill')).toBe('#FF0000');
   });
 
+  it('shows each channel’s engagement rate beside its followers, the full figures on hover, and filters and sorts on it', async () => {
+    const rated = { ...JO, engagementRate: 2.41, platforms: [{ ...JO.platforms[0], engagementRate: 2.41, engagementPosts: 10 }] };
+    const member = {
+      ...MEMBER,
+      platforms: [
+        { id: 'cpf_1', platform: 'youtube', handle: 'mo', profileUrl: 'https://www.youtube.com/@mo', followerCount: 48_200, verified: true, engagementRate: 1.8667, engagementPosts: 6 },
+        { id: 'cpf_2', platform: 'tiktok', handle: 'mo', profileUrl: null, followerCount: 900, verified: false, engagementRate: null, engagementPosts: null },
+      ],
+      totalReach: 49_100,
+    };
+    respond = (url) =>
+      url.includes('/indexed-creators')
+        ? { status: 200, body: { creators: [rated], nextCursor: null, total: 1 } }
+        : { status: 200, body: { creators: [member] } };
+    wrap(<AdminNetworkCreators />);
+    const linkedin = await screen.findByRole('link', { name: 'LinkedIn, 12,000 followers, 2.41% engagement over 10 posts' });
+    expect(linkedin.textContent).toBe('12K· 2.4%');
+    const youtube = screen.getByRole('link', { name: 'YouTube, 48,200 followers, 1.87% engagement over 6 videos, verified' });
+    expect(youtube.textContent).toContain('48.2K· 1.9%');
+    // No rate, nothing beside the count.
+    expect(screen.getByTitle('TikTok, 900 followers').textContent).toBe('900');
+
+    // The best channel's rate, for both lists.
+    fireEvent.click(screen.getByRole('button', { name: /^Engagement/ }));
+    fireEvent.click(screen.getByRole('button', { name: '2%+' }));
+    expect(screen.getByRole('button', { name: /^Engagement.*2%\+/ })).toBeTruthy();
+    await waitFor(() => expect(calls.some((c) => c.url.includes('/discover/creators?') && c.url.includes('minEngagement=2'))).toBe(true));
+    await waitFor(() => expect(calls.some((c) => c.url === '/api/admin/network/indexed-creators?minEngagement=2')).toBe(true));
+    fireEvent.change(screen.getByLabelText('Minimum engagement %'), { target: { value: '3.5' } });
+    await waitFor(() => expect(calls.some((c) => c.url === '/api/admin/network/indexed-creators?minEngagement=3.5')).toBe(true));
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    fireEvent.change(screen.getByDisplayValue('Total followers'), { target: { value: 'engagement' } });
+    await waitFor(() => expect(calls.some((c) => c.url.includes('/discover/creators?') && c.url.includes('sort=engagement'))).toBe(true));
+    await waitFor(() => expect(calls.some((c) => c.url === '/api/admin/network/indexed-creators?minEngagement=3.5&sort=engagement')).toBe(true));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset all' }));
+    expect(screen.getByRole('button', { name: /^Engagement$/ })).toBeTruthy();
+  });
+
   it('on a wide screen, shows the creator picked beside the list, and keeps who in the URL', async () => {
     vi.stubGlobal('matchMedia', (query: string) => ({
       matches: query === '(min-width: 1200px)',
@@ -336,6 +376,17 @@ describe('external creators', () => {
       fireEvent.change(screen.getByPlaceholderText(/Who you are/), { target: { value: 'Hi Jo, we would love to sponsor a post on outbound.' } });
       fireEvent.click(screen.getByText('Send invite'));
       await waitFor(() => expect(calls.find((c) => c.method === 'POST')!.body).toMatchObject({ indexedCreatorId: 'ixc_jo' }));
+    });
+
+    it('shows each channel’s engagement rate with its numbers', async () => {
+      respond = () => ({
+        status: 200,
+        body: { creator: { ...PROFILE, platforms: [{ ...PROFILE.platforms[0], engagementRate: 0.9625, engagementPosts: 8 }] } },
+      });
+      profilePage();
+      const numbers = await screen.findByText(/12,000 followers · 1% engagement · 8 posts in the last 30 days/);
+      expect(numbers.getAttribute('title')).toBe('0.96% engagement over 8 posts');
+      expect(screen.getByRole('link', { name: 'LinkedIn, 12,000 followers, 0.96% engagement over 8 posts' }).textContent).toBe('12K· 1%');
     });
 
     it('says why a creator can’t be invited', async () => {

@@ -42,6 +42,12 @@ export interface StorefrontChannel {
   followerCountSynced?: boolean;
   /** Median views of the latest uploads (YouTube). */
   viewsPerVideo?: number | null;
+  /** Mean likes and comments of the same uploads, and the engagement rate
+   *  they make against the synced count, in percent (verified YouTube). */
+  likesPerVideo?: number | null;
+  commentsPerVideo?: number | null;
+  engagementRate?: number | null;
+  engagementPosts?: number | null;
   statsSyncedAt?: string | null;
 }
 
