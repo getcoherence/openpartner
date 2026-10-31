@@ -2291,8 +2291,7 @@ platformAdminRouter.post(
   },
 );
 
-/** A shared mailbox the connected user sends as (creators@), or null for
- *  their own. */
+/** A shared mailbox the connected user sends as, or null for their own. */
 platformAdminRouter.put(
   '/platform-admin/creator-index/mailboxes/:kind/send-as',
   requirePlatformAdmin,
