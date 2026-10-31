@@ -9,9 +9,9 @@
  * URL: ?creator=, ?external=); otherwise a click opens their page. Unique
  * angle vs Modash/Aspire: we have actual conversion data per creator.
  *
- * External creators (not on OpenPartner yet) follow under the same
- * filters, badged; members' sales, audience and verification filters
- * leave them out.
+ * External creators (not on OpenPartner yet) follow in the same list under
+ * the same filters, badged; members' sales, audience and verification
+ * filters leave them out.
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -27,7 +27,14 @@ import { PLATFORMS as CREATOR_PLATFORMS } from '../../lib/NetworkProfileEditor.j
 import { BookCreatorDialog } from './BookCreatorDialog.js';
 import { CreatorList, CreatorRow, RowFigure } from './CreatorRow.js';
 import { NetworkCreatorStorefrontPanel } from './NetworkCreatorStorefront.js';
-import { EXTERNAL_CATEGORIES, IndexedCreatorPanel, IndexedCreatorsSection, type ExternalFilters } from './NetworkIndexedCreators.js';
+import {
+  EXTERNAL_CATEGORIES,
+  ExternalRow,
+  IndexedCreatorPanel,
+  PlanUpsell,
+  useIndexedCreators,
+  type ExternalFilters,
+} from './NetworkIndexedCreators.js';
 
 interface PlatformRow {
   id: string;
@@ -239,50 +246,76 @@ export function AdminNetworkCreators() {
     };
   }, [sideBySide]);
 
+  const showMembers = show !== 'external';
+  // External creators have no sales, audience or verification data, so
+  // those filters leave them out.
+  const showExternal = show !== 'members' && !memberOnlyFilters;
+  const external = useIndexedCreators(externalFilters, showExternal);
+  const memberRows = showMembers ? rows : [];
+  const externalRows = showExternal ? external.rows : [];
+  const loading = (showMembers && list.isLoading) || external.isLoading;
+
+  // One list: OpenPartner's creators, then external ones, badged.
   const listColumn = (
     <div style={{ minWidth: 0 }}>
-      {show !== 'external' && (
-        <section>
-          {show === 'all' && <SectionHeading>On OpenPartner</SectionHeading>}
-          {list.isLoading ? (
-            <Card>Loading creators…</Card>
-          ) : rows.length === 0 ? (
-            <EmptyState
-              title="No creators on OpenPartner match those filters"
-              hint={qs ? 'Loosen the filters, or check back as more creators join.' : 'No creators on the Network yet.'}
-              icon={<Users size={28} strokeWidth={1.25} />}
-            />
-          ) : (
-            <CreatorList>
-              {rows.map((r) => (
-                <MemberRow
-                  key={r.id}
-                  creator={r}
-                  selected={sideBySide && selected?.kind === 'member' && selected.handle === r.handle}
-                  onSelect={sideBySide ? () => select({ kind: 'member', handle: r.handle }) : undefined}
-                />
-              ))}
-            </CreatorList>
-          )}
-        </section>
+      {!loading && (memberRows.length > 0 || externalRows.length > 0) && (
+        <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 8 }}>
+          {[
+            showMembers ? `${memberRows.length.toLocaleString()} on OpenPartner` : null,
+            showExternal && !external.planRequired ? `${external.total.toLocaleString()} external` : null,
+          ]
+            .filter(Boolean)
+            .join(' · ')}
+        </div>
       )}
-
-      {show !== 'members' && (
-        <section style={{ marginTop: show === 'all' ? 28 : 0 }}>
-          {show === 'all' && <SectionHeading>External creators</SectionHeading>}
-          {memberOnlyFilters ? (
-            <p style={{ fontSize: 13, color: theme.textMuted, margin: 0, lineHeight: 1.5 }}>
-              External creators have no sales, audience-location or verification data yet, so they&rsquo;re hidden while those
-              filters are on.
-            </p>
-          ) : (
-            <IndexedCreatorsSection
-              filters={externalFilters}
-              selectedId={sideBySide && selected?.kind === 'external' ? selected.id : null}
-              onSelect={sideBySide ? (id) => select({ kind: 'external', id }) : undefined}
+      {show !== 'members' && memberOnlyFilters && (
+        <p style={{ fontSize: 12, color: theme.textMuted, margin: '0 0 8px', lineHeight: 1.5 }}>
+          External creators have no sales, audience-location or verification data yet, so they&rsquo;re hidden while those filters
+          are on.
+        </p>
+      )}
+      <ErrorBanner error={external.error} />
+      {loading ? (
+        <Card>Loading creators…</Card>
+      ) : memberRows.length === 0 && externalRows.length === 0 ? (
+        !external.planRequired && (
+          <EmptyState
+            title="No creators match those filters"
+            hint={qs ? 'Loosen the filters. New creators are added every day.' : 'No creators yet.'}
+            icon={<Users size={28} strokeWidth={1.25} />}
+          />
+        )
+      ) : (
+        <CreatorList>
+          {memberRows.map((r) => (
+            <MemberRow
+              key={r.id}
+              creator={r}
+              selected={sideBySide && selected?.kind === 'member' && selected.handle === r.handle}
+              onSelect={sideBySide ? () => select({ kind: 'member', handle: r.handle }) : undefined}
             />
-          )}
-        </section>
+          ))}
+          {externalRows.map((c) => (
+            <ExternalRow
+              key={c.id}
+              creator={c}
+              selected={sideBySide && selected?.kind === 'external' && selected.id === c.id}
+              onSelect={sideBySide ? () => select({ kind: 'external', id: c.id }) : undefined}
+            />
+          ))}
+        </CreatorList>
+      )}
+      {showExternal && external.hasMore && (
+        <div style={{ marginTop: 14, textAlign: 'center' }}>
+          <Button variant="secondary" onClick={external.loadMore} disabled={external.loadingMore}>
+            {external.loadingMore ? 'Loading…' : 'Show more'}
+          </Button>
+        </div>
+      )}
+      {showExternal && external.planRequired && (
+        <div style={{ marginTop: 14 }}>
+          <PlanUpsell />
+        </div>
       )}
     </div>
   );
@@ -426,10 +459,6 @@ export function AdminNetworkCreators() {
       )}
     </Page>
   );
-}
-
-function SectionHeading({ children }: { children: React.ReactNode }) {
-  return <h2 style={{ fontSize: 15, fontWeight: 600, margin: '0 0 12px' }}>{children}</h2>;
 }
 
 function MenuHint({ children }: { children: React.ReactNode }) {

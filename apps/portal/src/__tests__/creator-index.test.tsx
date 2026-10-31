@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { IndexedCreatorPage, IndexedCreatorsSection } from '../pages/admin/NetworkIndexedCreators.js';
+import { IndexedCreatorPage } from '../pages/admin/NetworkIndexedCreators.js';
 import { AdminNetworkCreators } from '../pages/admin/NetworkCreators.js';
 import { CreatorIndexClaimPage } from '../pages/creator/CreatorIndexClaim.js';
 import { CreatorIndexPage } from '../pages/platform/CreatorIndex.js';
@@ -93,16 +93,25 @@ const MEMBER = {
 };
 
 describe('external creators', () => {
-  it('lists creators with the badge and invites with a real message', async () => {
-    respond = (url, method) =>
+  /** Discover creators' answers: external creators, and OpenPartner's own. */
+  const discover =
+    (external: { status: number; body: unknown }, members: unknown[] = []) =>
+    (url: string, method: string) =>
       method === 'POST'
         ? { status: 201, body: { invite: { id: 'cinv_1', status: 'held' } } }
-        : { status: 200, body: { creators: [JO], nextCursor: null, total: 1 } };
-    wrap(<IndexedCreatorsSection />);
+        : url.includes('/indexed-creators')
+          ? external
+          : { status: 200, body: { creators: members } };
+  const externalPage = (creators: unknown[]) => ({ status: 200, body: { creators, nextCursor: null, total: creators.length } });
+
+  it('lists creators with the badge and invites with a real message', async () => {
+    respond = discover(externalPage([JO]));
+    wrap(<AdminNetworkCreators />);
     expect(await screen.findByText('Jo Rivera')).toBeTruthy();
-    expect(screen.getByText('External creator')).toBeTruthy();
-    expect(screen.getByText('1 external creator')).toBeTruthy();
-    expect(calls[0]!.url).toBe('/api/admin/network/indexed-creators?');
+    // The badge says what it means on hover.
+    expect(screen.getByText('External creator').getAttribute('title')).toMatch(/^Not on OpenPartner yet/);
+    expect(screen.getByText('0 on OpenPartner · 1 external')).toBeTruthy();
+    expect(calls.some((c) => c.url === '/api/admin/network/indexed-creators?')).toBe(true);
 
     fireEvent.click(screen.getByRole('button', { name: 'Invite' }));
     const send = screen.getByText('Send invite') as HTMLButtonElement;
@@ -117,9 +126,10 @@ describe('external creators', () => {
   });
 
   it('says what the plan unlocks instead of an error on other plans', async () => {
-    respond = () => ({ status: 402, body: { error: 'plan_required', detail: 'Creators not on OpenPartner yet come with the Flex and Enterprise plans.' } });
-    wrap(<IndexedCreatorsSection />);
+    respond = discover({ status: 402, body: { error: 'plan_required', detail: 'Creators not on OpenPartner yet come with the Flex and Enterprise plans.' } }, [MEMBER]);
+    wrap(<AdminNetworkCreators />);
     expect(await screen.findByText('See external creators too')).toBeTruthy();
+    expect(screen.getByText('Member Mo')).toBeTruthy();
     expect(screen.getByText('See plans')).toBeTruthy();
   });
 
@@ -131,10 +141,13 @@ describe('external creators', () => {
     wrap(<AdminNetworkCreators />);
     expect(await screen.findByText('Member Mo')).toBeTruthy();
     expect(await screen.findByText('Jo Rivera')).toBeTruthy();
-    const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent);
-    expect(headings).toEqual(['On OpenPartner', 'External creators']);
-    // There are no tabs any more.
-    expect(screen.queryByText('Not on OpenPartner yet')).toBeNull();
+    // One list, no sections: OpenPartner's creators first, external ones
+    // after, told apart by the badge.
+    expect(screen.queryAllByRole('heading', { level: 2 })).toHaveLength(0);
+    const rows = screen.getAllByTestId('creator-row');
+    expect(rows.map((r) => r.textContent!.includes('External creator'))).toEqual([false, true]);
+    expect(rows[0]!.parentElement).toBe(rows[1]!.parentElement);
+    expect(screen.getByText('1 on OpenPartner · 1 external')).toBeTruthy();
 
     // The filters are one bar; each opens below its chip. A shared filter
     // reaches both lists; sales is a topic only external creators have.
@@ -249,18 +262,13 @@ describe('external creators', () => {
   });
 
   it('shows an invite already sent, and a creator who can’t be invited', async () => {
-    respond = () => ({
-      status: 200,
-      body: {
-        creators: [
-          { ...JO, id: 'a', name: 'Sent One', invitable: false, invite: { id: 'i', status: 'sent', createdAt: '2026-10-30T00:00:00Z' } },
-          { ...JO, id: 'b', name: 'Nope', invitable: false },
-        ],
-        nextCursor: null,
-        total: 2,
-      },
-    });
-    wrap(<IndexedCreatorsSection />);
+    respond = discover(
+      externalPage([
+        { ...JO, id: 'a', name: 'Sent One', invitable: false, invite: { id: 'i', status: 'sent', createdAt: '2026-10-30T00:00:00Z' } },
+        { ...JO, id: 'b', name: 'Nope', invitable: false },
+      ]),
+    );
+    wrap(<AdminNetworkCreators />);
     expect(await screen.findByText('Invited. We emailed them.')).toBeTruthy();
     expect(screen.getByText(/Can.t be invited yet/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Invite' })).toBeNull();
@@ -339,13 +347,13 @@ describe('external creators', () => {
         { kind: 'sponsored_posts', count: 1 },
       ],
     };
-    respond = () => ({ status: 200, body: { creators: [open, { ...JO, id: 'b', name: 'Quiet One' }], nextCursor: null, total: 2 } });
-    wrap(<IndexedCreatorsSection />);
+    respond = discover(externalPage([open, { ...JO, id: 'b', name: 'Quiet One' }]));
+    wrap(<AdminNetworkCreators />);
     expect(await screen.findByText('Sells sponsorships (3 past collaborations) · 1 sponsored post lately')).toBeTruthy();
-    expect(screen.getAllByText('Open to partnerships')).toHaveLength(1);
-    cleanup();
-    wrap(<IndexedCreatorsSection filters={{ openToPartnerships: true }} />);
-    await waitFor(() => expect(calls[calls.length - 1]!.url).toBe('/api/admin/network/indexed-creators?openToPartnerships=1'));
+    // The badge on one row; the filter chip is the other.
+    expect(screen.getAllByText('Open to partnerships')).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: 'Open to partnerships' }));
+    await waitFor(() => expect(calls.some((c) => c.url === '/api/admin/network/indexed-creators?openToPartnerships=1')).toBe(true));
   });
 });
 

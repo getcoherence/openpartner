@@ -1,8 +1,8 @@
 /**
  * Discover creators → external creators (openpartner-network
  * docs/creator-index.md §4, §5): creators the Network listed from their
- * public profiles who haven't joined, shown after OpenPartner's own
- * creators (NetworkCreators.tsx) under the same filters, each badged
+ * public profiles who haven't joined, in the same list after OpenPartner's
+ * own creators (NetworkCreators.tsx), under the same filters, each badged
  * "External creator". Only creators we can email are listed. A brand on
  * Flex or Enterprise can invite them to collaborate: the Network emails the
  * creator on the brand's behalf, and the message opens as a conversation
@@ -90,9 +90,15 @@ export const EXTERNAL_CATEGORIES = [
 /** What brands see on a creator who hasn't joined (Keith, Oct 31). */
 export const EXTERNAL_BADGE = 'External creator';
 
+/** What the badge means, on hover. */
+const EXTERNAL_MEANS = 'Not on OpenPartner yet. We list them from their public profiles; an invite emails them for you, and they reply once they claim their free profile. Prices appear when they set them.';
+
 function ExternalBadge({ size = 10 }: { size?: number }) {
   return (
-    <span style={{ display: 'inline-block', background: theme.surface2, color: theme.textMuted, fontSize: size, padding: '2px 8px', borderRadius: 10 }}>
+    <span
+      title={EXTERNAL_MEANS}
+      style={{ display: 'inline-block', background: theme.surface2, color: theme.textMuted, fontSize: size, padding: '2px 8px', borderRadius: 10, cursor: 'help' }}
+    >
       {EXTERNAL_BADGE}
     </span>
   );
@@ -112,18 +118,10 @@ export interface ExternalFilters {
   sort?: 'reach' | 'newest';
 }
 
-/** The external creators under the page's filters, as rows. On a wide
- *  screen a click selects one for the side panel (`onSelect`); otherwise
- *  it opens their page. */
-export function IndexedCreatorsSection({
-  filters = {},
-  selectedId,
-  onSelect,
-}: {
-  filters?: ExternalFilters;
-  selectedId?: string | null;
-  onSelect?: (id: string) => void;
-}) {
+/** The external creators under the page's filters, a page at a time. Their
+ *  rows go in Discover creators' one list after OpenPartner's own;
+ *  `planRequired` when the brand's plan doesn't include them. */
+export function useIndexedCreators(filters: ExternalFilters, enabled = true) {
   const qs = useMemo(() => {
     const p = new URLSearchParams();
     if (filters.q) p.set('q', filters.q);
@@ -146,53 +144,23 @@ export function IndexedCreatorsSection({
     getNextPageParam: (last) => last.nextCursor ?? undefined,
     retry: false,
     staleTime: 60_000,
+    enabled,
   });
 
-  if (search.error instanceof ApiError && search.error.status === 402) return <PlanUpsell />;
-
-  const rows = search.data?.pages.flatMap((p) => p.creators ?? []) ?? [];
-  const total = search.data?.pages[0]?.total ?? 0;
-
-  return (
-    <>
-      <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 10px', lineHeight: 1.5 }}>
-        External creators haven&rsquo;t joined OpenPartner yet. We list them from their public profiles; an invite emails them for
-        you, and they reply once they claim their free profile. Prices appear when they set them.
-      </p>
-      <ErrorBanner error={search.error} />
-
-      {search.isLoading ? (
-        <Card>Loading creators…</Card>
-      ) : rows.length === 0 ? (
-        <EmptyState
-          title="No external creators match those filters"
-          hint="Loosen the filters. New creators are added every day."
-          icon={<Users size={28} strokeWidth={1.25} />}
-        />
-      ) : (
-        <>
-          <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 10 }}>
-            {total.toLocaleString()} external creator{total === 1 ? '' : 's'}
-          </div>
-          <CreatorList>
-            {rows.map((c) => (
-              <ExternalRow key={c.id} creator={c} selected={selectedId === c.id} onSelect={onSelect && (() => onSelect(c.id))} />
-            ))}
-          </CreatorList>
-          {search.hasNextPage && (
-            <div style={{ marginTop: 16, textAlign: 'center' }}>
-              <Button variant="secondary" onClick={() => search.fetchNextPage()} disabled={search.isFetchingNextPage}>
-                {search.isFetchingNextPage ? 'Loading…' : 'Show more'}
-              </Button>
-            </div>
-          )}
-        </>
-      )}
-    </>
-  );
+  const planRequired = search.error instanceof ApiError && search.error.status === 402;
+  return {
+    rows: search.data?.pages.flatMap((p) => p.creators ?? []) ?? [],
+    total: search.data?.pages[0]?.total ?? 0,
+    isLoading: enabled && search.isLoading,
+    planRequired,
+    error: planRequired ? null : search.error,
+    hasMore: search.hasNextPage,
+    loadingMore: search.isFetchingNextPage,
+    loadMore: () => search.fetchNextPage(),
+  };
 }
 
-function PlanUpsell() {
+export function PlanUpsell() {
   return (
     <Card>
       <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
@@ -251,7 +219,7 @@ function OpenBadge() {
   );
 }
 
-function ExternalRow({ creator, selected, onSelect }: { creator: IndexedCreator; selected: boolean; onSelect?: () => void }) {
+export function ExternalRow({ creator, selected, onSelect }: { creator: IndexedCreator; selected: boolean; onSelect?: () => void }) {
   const [open, setOpen] = useState(false);
   const signals = creator.partnershipSignals ?? [];
   return (
