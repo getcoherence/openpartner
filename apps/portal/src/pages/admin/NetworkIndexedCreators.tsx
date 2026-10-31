@@ -303,12 +303,15 @@ function IndexedCreatorCard({ creator }: { creator: IndexedCreator }) {
         ) : !creator.invitable ? (
           <div style={{ fontSize: 13, color: theme.textDim, marginBottom: 8 }}>Can&rsquo;t be invited yet</div>
         ) : null}
+        {/* Padding-free flex: 1 boxes, so both buttons get half the row. */}
         <div data-testid="card-actions" style={{ display: 'flex', gap: 6 }}>
           <TenantLink to={profilePath(creator.id)} style={{ textDecoration: 'none', flex: 1 }}>
             <Button variant="secondary" style={{ width: '100%' }}>View details</Button>
           </TenantLink>
           {!creator.invite && creator.invitable && (
-            <Button onClick={() => setOpen(true)} style={{ flex: 1 }}>Invite</Button>
+            <div style={{ flex: 1 }}>
+              <Button onClick={() => setOpen(true)} style={{ width: '100%' }}>Invite</Button>
+            </div>
           )}
         </div>
       </div>
