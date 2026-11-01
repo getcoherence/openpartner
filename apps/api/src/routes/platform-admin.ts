@@ -1982,8 +1982,9 @@ platformAdminRouter.get('/platform-admin/creator-index/creators', requirePlatfor
   const networkUrl = networkOr503(res);
   if (!networkUrl) return;
   const qs = new URLSearchParams();
-  // `missing`: address, state, or both, for who ops can still fill in.
-  for (const key of ['q', 'status', 'limit', 'missing']) {
+  // `missing`: address, state, or both, for who ops can still fill in;
+  // `sort`, a reach range, and `after` (the next page's cursor).
+  for (const key of ['q', 'status', 'limit', 'missing', 'sort', 'minFollowers', 'maxFollowers', 'after']) {
     const v = req.query[key];
     if (typeof v === 'string' && v) qs.set(key, v);
   }

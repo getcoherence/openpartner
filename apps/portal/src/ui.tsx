@@ -122,6 +122,7 @@ export function Table({
   rows,
   empty = 'No rows yet.',
   maxHeight,
+  footer,
 }: {
   columns: (string | { label: string; align?: 'left' | 'right' })[];
   rows: ReactNode[][];
@@ -129,6 +130,8 @@ export function Table({
   /** Scrolls the rows within this height, both ways, with the header kept
    *  in view: the sideways scrollbar then never sits below the page fold. */
   maxHeight?: number;
+  /** Under the rows, inside the scroll: a "load more", say. */
+  footer?: ReactNode;
 }) {
   const cols = columns.map((c) => (typeof c === 'string' ? { label: c, align: 'left' as const } : c));
   const isMobile = useIsMobile();
@@ -199,6 +202,7 @@ export function Table({
             })}
           </div>
         ))}
+        {footer}
       </Card>
     );
   }
@@ -259,6 +263,7 @@ export function Table({
           )}
         </tbody>
       </table>
+      {footer}
       </div>
     </Card>
   );
