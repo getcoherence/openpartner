@@ -1480,6 +1480,9 @@ export interface CreatorIndexSettings {
   /** Too big to need OpenPartner: not listed or emailed. Null: no cap.
    *  Optional: an older Network doesn't send it. */
   maxFollowers?: number | null;
+  /** Kept in the index but hidden over it: not shown to brands or emailed.
+   *  Null: none. Optional: an older Network doesn't send it. */
+  hideOverFollowers?: number | null;
   minPostsPer30d: number;
   refreshDays: number;
   excludedCountries: string[];
@@ -1607,6 +1610,14 @@ export async function adminGetIndexedCreator(networkUrl: string, id: string): Pr
 
 export async function adminRemoveIndexedCreator(networkUrl: string, id: string): Promise<void> {
   return callNetworkAdmin<void>(networkUrl, 'DELETE', `/admin/creator-index/creators/${encodeURIComponent(id)}`);
+}
+
+/** Hide or unhide the creators ticked, or everyone the list's filters match. */
+export async function adminHideIndexedCreators(
+  networkUrl: string,
+  body: { hidden: boolean; ids?: string[]; match?: Record<string, unknown> },
+): Promise<{ changed: number }> {
+  return callNetworkAdmin(networkUrl, 'POST', '/admin/creator-index/creators/hidden', body);
 }
 
 export interface IndexedCreatorContact {

@@ -10,7 +10,8 @@
  *     to search them, whether to keep only creators who take partnerships,
  *     model.
  *   - Seed URLs, runs, and search with removal, or only who has no address
- *     or no state yet, to fill in by hand.
+ *     or no state yet, to fill in by hand. Creators ticked, or all a search
+ *     matches, can be hidden: kept, but not shown to brands or emailed.
  *   - The outreach email: "claim your profile", once, to creators no brand
  *     has written to, previewed and sent in small batches.
  *   - Mailboxes: the outreach email's and brands' invites', each connected
@@ -59,6 +60,10 @@ interface IndexSettings {
   /** Null: no cap. Absent from a Network that predates it, and then not
    *  offered (nor sent). */
   maxFollowers?: number | null;
+  /** Kept in the index but hidden over it: not shown to brands or emailed.
+   *  Null: none. Absent from a Network that predates it, and then not
+   *  offered (nor sent). */
+  hideOverFollowers?: number | null;
   minPostsPer30d: number;
   refreshDays: number;
   excludedCountries: string[];
@@ -171,6 +176,7 @@ const OUTREACH_EXCLUDED: Record<string, string> = {
   country_not_cleared: 'country not cleared for it',
   published_address_only: 'Canada, Australia or New Zealand, with an email we looked up rather than one they published',
   over_max_followers: 'over max. followers',
+  hidden: 'hidden',
 };
 
 /** Why a creator in the batch would be skipped when it's sent. */
@@ -302,6 +308,8 @@ interface OpsCreator {
   /** What the country was read from: the location as the channel gives it. */
   location?: { text: string; from: string | null } | null;
   brandVisible: boolean;
+  /** When ops hid them. Absent from a Network that predates it. */
+  hiddenAt?: string | null;
   totalReach: number;
   contact: { masked: string; foundOn: string | null; verified: boolean } | null;
   emailsSent: number;
@@ -327,7 +335,7 @@ function TagsCell({ topics, onPick }: { topics: string[]; onPick: (topic: string
   if (!topics.length) return <span style={{ color: theme.textMuted }}>—</span>;
   const rest = topics.slice(TAGS_SHOWN);
   return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, width: 150 }}>
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, width: 140 }}>
       {topics.slice(0, TAGS_SHOWN).map((t) => (
         <button
           key={t}
@@ -407,7 +415,7 @@ function AddressCell({ creator, canWrite, onSaved }: { creator: OpsCreator; canW
   const c = creator.contact;
   const error = save.error ?? show.error;
   return (
-    <div style={{ width: 200, overflowWrap: 'anywhere' }}>
+    <div style={{ width: 188, overflowWrap: 'anywhere' }}>
       {c ? (
         <>
             <div style={{ wordBreak: 'break-all' }}>{`${shown ?? c.masked}${c.verified ? '' : ' (unverified)'}`}</div>
@@ -886,13 +894,15 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
   const [reachAt, setReachAt] = useState(0);
   const [minReach, maxReach] = REACH_RANGES[reachAt]!;
   const [sort, setSort] = useState<ListSort>('newest');
+  const [hiddenOnly, setHiddenOnly] = useState(false);
   const listQuery = new URLSearchParams();
   if (searchFor) listQuery.set('q', searchFor);
   if (missing.length) listQuery.set('missing', missing.join(','));
   if (sort !== 'newest') listQuery.set('sort', sort);
   if (minReach !== '') listQuery.set('minFollowers', String(minReach));
   if (maxReach !== '') listQuery.set('maxFollowers', String(maxReach));
-  const filtered = !!searchFor || missing.length > 0 || reachAt > 0;
+  if (hiddenOnly) listQuery.set('hidden', 'yes');
+  const filtered = !!searchFor || missing.length > 0 || reachAt > 0 || hiddenOnly;
   const creators = useInfiniteQuery({
     queryKey: ['platform-creator-index-creators', listQuery.toString()],
     queryFn: ({ pageParam }) => {
@@ -921,6 +931,39 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
     },
   });
 
+  // Ticked for hiding or showing in bulk; with none ticked, Hide and Unhide
+  // take everyone the filters match. A change of filters clears the ticks,
+  // so none out of sight count.
+  const [ticked, setTicked] = useState<Set<string>>(new Set());
+  const [bulkNote, setBulkNote] = useState<string | null>(null);
+  const listKey = listQuery.toString();
+  useEffect(() => {
+    setTicked(new Set());
+    setBulkNote(null);
+  }, [listKey]);
+  const bulk = useMutation({
+    mutationFn: (v: { hidden: boolean; ids: string[] | null }) =>
+      papi<{ changed: number }>('/platform-admin/creator-index/creators/hidden', {
+        method: 'POST',
+        body: v.ids ? { hidden: v.hidden, ids: v.ids } : { hidden: v.hidden, match: Object.fromEntries([...listQuery].filter(([k]) => k !== 'sort')) },
+      }),
+    onSuccess: (r, v) => {
+      setTicked(new Set());
+      setBulkNote(`${r.changed.toLocaleString()} ${v.hidden ? 'hidden' : 'shown'}`);
+      qc.invalidateQueries({ queryKey: ['platform-creator-index-creators'] });
+      refresh();
+    },
+  });
+  const hideOrShow = (hidden: boolean) => {
+    const ids = ticked.size > 0 ? [...ticked] : null;
+    const who = ids ? `${ids.length.toLocaleString()} ticked` : `all ${(total ?? 0).toLocaleString()}${filtered ? ' matching' : ''}`;
+    const ask = hidden ? `Hide ${who}? They stay in the index, but brands won't see them and they won't be emailed.` : `Unhide ${who}?`;
+    if (window.confirm(ask)) bulk.mutate({ hidden, ids });
+  };
+  const hideOver = state.data?.settings.hideOverFollowers ?? null;
+  // Hidden by the setting, without being marked.
+  const overHide = (c: OpsCreator) => c.status !== 'claimed' && hideOver !== null && c.totalReach > hideOver;
+
   const s = stats.data;
   const configured = state.data?.configured;
   const error = save.error ?? seeds.error ?? run.error ?? invites.error ?? outreachPreview.error ?? outreachSend.error ?? remove.error;
@@ -932,6 +975,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
   const running = (Object.entries(s?.runs ?? {}) as Array<[RunKind, IndexRun | undefined]>).filter(([, r]) => r && !r.finishedAt).map(([job]) => JOB_LABEL[job]);
   const unsaved = !!draft && !!state.data && settingsKey(draft) !== settingsKey(state.data.settings);
   const capTooLow = draft?.maxFollowers != null && draft.maxFollowers <= draft.minFollowers;
+  const hideTooLow = draft?.hideOverFollowers != null && draft.hideOverFollowers <= draft.minFollowers;
   const [params, setParams] = useSearchParams();
   const tab: Tab = TABS.find((t) => t.key === params.get('tab'))?.key ?? 'creators';
   // Down to the page's bottom padding.
@@ -1084,6 +1128,25 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                   {capTooLow && <div style={{ fontSize: 12, color: theme.danger, marginTop: 4 }}>Must be over min. followers</div>}
                 </div>
               )}
+              {draft.hideOverFollowers !== undefined && (
+                <div>
+                  <Label>Hide over (reach)</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    aria-label="Hide over (reach)"
+                    placeholder="None"
+                    title="Kept in the index, but not shown to brands or emailed"
+                    value={draft.hideOverFollowers ?? ''}
+                    disabled={!canWrite}
+                    onChange={(e) => {
+                      const n = Math.round(Number(e.target.value));
+                      setDraft({ ...draft, hideOverFollowers: n >= 1 ? Math.min(n, MAX_FOLLOWERS_CAP) : null });
+                    }}
+                  />
+                  {hideTooLow && <div style={{ fontSize: 12, color: theme.danger, marginTop: 4 }}>Must be over min. followers</div>}
+                </div>
+              )}
               <div>
                 <Label>Min. posts in 30 days</Label>
                 <Input type="number" min={0} value={draft.minPostsPer30d} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, minPostsPer30d: Math.max(0, Math.round(Number(e.target.value) || 0)) })} />
@@ -1227,7 +1290,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
             </div>
             {canWrite && (
               <div style={{ display: 'flex', gap: 8, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>
-                <Button onClick={() => save.mutate(draft)} disabled={save.isPending || capTooLow}>{save.isPending ? 'Saving…' : 'Save settings'}</Button>
+                <Button onClick={() => save.mutate(draft)} disabled={save.isPending || capTooLow || hideTooLow}>{save.isPending ? 'Saving…' : 'Save settings'}</Button>
                 <Button variant="secondary" onClick={() => replaceDraft(state.data!.settings)}>Discard changes</Button>
                 {save.data && <span style={{ fontSize: 12, color: theme.textMuted }}>Saved. {save.data.visibilityChanged} listings changed visibility.</span>}
               </div>
@@ -1415,6 +1478,9 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
               <MissingToggle on={missing.includes('state')} onClick={() => toggleMissing('state')}>
                 No state
               </MissingToggle>
+              <MissingToggle on={hiddenOnly} onClick={() => setHiddenOnly((h) => !h)}>
+                Hidden
+              </MissingToggle>
               <div style={{ width: 130 }}>
                 <Select aria-label="Reach" value={String(reachAt)} onChange={(e) => setReachAt(Number(e.target.value))}>
                   {REACH_RANGES.map((r, i) => (
@@ -1447,6 +1513,26 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                 Claimed profiles are left out.
               </div>
             )}
+            {canWrite && (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8, fontSize: 13 }}>
+                <span style={{ color: theme.textMuted }}>
+                  {ticked.size > 0 ? `${ticked.size.toLocaleString()} ticked` : `All ${(total ?? 0).toLocaleString()}${filtered ? ' matching' : ''}`}
+                </span>
+                <Button size="sm" variant="secondary" disabled={bulk.isPending || (ticked.size === 0 && !total)} onClick={() => hideOrShow(true)}>
+                  Hide accounts
+                </Button>
+                <Button size="sm" variant="ghost" disabled={bulk.isPending || (ticked.size === 0 && !total)} onClick={() => hideOrShow(false)}>
+                  Unhide accounts
+                </Button>
+                {ticked.size > 0 && (
+                  <Button size="sm" variant="ghost" onClick={() => setTicked(new Set())}>
+                    Clear
+                  </Button>
+                )}
+                {bulkNote && <span style={{ color: theme.textMuted }}>{bulkNote}</span>}
+                {bulk.error && <span style={{ color: theme.danger }}>{friendlyPlatformError(bulk.error)}</span>}
+              </div>
+            )}
             <div ref={listRef}>
               <Table
                 columns={['Creator', 'Tags', 'Where', 'Reach', 'Address', 'Status']}
@@ -1454,37 +1540,57 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                 dense
                 footer={creators.hasNextPage ? <LoadMore loading={creators.isFetchingNextPage} onMore={() => !creators.isFetchingNextPage && creators.fetchNextPage()} /> : null}
                 rows={listed.map((c) => [
-                  // Widths capped so the columns wrap to fit a laptop screen.
-                  <div key="n" style={{ maxWidth: 190, overflowWrap: 'anywhere' }}>
-                    <div style={{ fontWeight: 500 }}>{c.name ?? '—'}</div>
-                    <div style={{ fontSize: 12, color: theme.textMuted }}>
-                      {c.platforms.map((p) => (
-                        <a
-                          key={p.profileUrl}
-                          href={p.profileUrl}
-                          target="_blank"
-                          rel="noreferrer noopener"
-                          aria-label={platformName(p.platform)}
-                          title={platformName(p.platform)}
-                          style={{ display: 'inline-flex', color: theme.textMuted, marginRight: 8, marginTop: 4 }}
-                        >
-                          <PlatformMark platform={p.platform} size={14} />
-                        </a>
+                  // Widths capped so the columns wrap to fit a laptop screen. The tick
+                  // sits in this cell, not a column of its own, for the same reason.
+                  <div key="n" style={{ display: 'flex', gap: 8, alignItems: 'flex-start', maxWidth: 190 }}>
+                    {canWrite && (
+                      <input
+                        type="checkbox"
+                        aria-label={`Tick ${c.name ?? 'creator'}`}
+                        checked={ticked.has(c.id)}
+                        disabled={c.status === 'claimed'}
+                        style={{ marginTop: 3, flexShrink: 0 }}
+                        onChange={() =>
+                          setTicked((t) => {
+                            const next = new Set(t);
+                            if (next.has(c.id)) next.delete(c.id);
+                            else next.add(c.id);
+                            return next;
+                          })
+                        }
+                      />
+                    )}
+                    <div style={{ minWidth: 0, overflowWrap: 'anywhere' }}>
+                      <div style={{ fontWeight: 500 }}>{c.name ?? '—'}</div>
+                      <div style={{ fontSize: 12, color: theme.textMuted }}>
+                        {c.platforms.map((p) => (
+                          <a
+                            key={p.profileUrl}
+                            href={p.profileUrl}
+                            target="_blank"
+                            rel="noreferrer noopener"
+                            aria-label={platformName(p.platform)}
+                            title={platformName(p.platform)}
+                            style={{ display: 'inline-flex', color: theme.textMuted, marginRight: 8, marginTop: 4 }}
+                          >
+                            <PlatformMark platform={p.platform} size={14} />
+                          </a>
+                        ))}
+                      </div>
+                      {(c.partnershipSignals ?? []).map((sig) => (
+                        <div key={sig.kind} style={{ fontSize: 12, color: theme.success }}>
+                          {brandSignalLabel(sig)}
+                          {sig.evidence && (
+                            <>
+                              {' · '}
+                              <a href={sig.evidence} target="_blank" rel="noreferrer noopener" style={{ color: theme.textMuted }}>
+                                {shortUrl(sig.evidence)}
+                              </a>
+                            </>
+                          )}
+                        </div>
                       ))}
                     </div>
-                    {(c.partnershipSignals ?? []).map((sig) => (
-                      <div key={sig.kind} style={{ fontSize: 12, color: theme.success }}>
-                        {brandSignalLabel(sig)}
-                        {sig.evidence && (
-                          <>
-                            {' · '}
-                            <a href={sig.evidence} target="_blank" rel="noreferrer noopener" style={{ color: theme.textMuted }}>
-                              {shortUrl(sig.evidence)}
-                            </a>
-                          </>
-                        )}
-                      </div>
-                    ))}
                   </div>,
                   <TagsCell
                     key={`t-${c.id}`}
@@ -1529,7 +1635,9 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                     }}
                   />,
                   <div key="s">
-                    <div>{`${c.status}${c.emailsSent ? ` · ${c.emailsSent} sent` : ''}`}</div>
+                    <div title={c.hiddenAt ? `Hidden ${formatDate(c.hiddenAt)}` : overHide(c) ? 'Over Hide over (reach)' : undefined}>
+                      {`${c.status}${c.hiddenAt || overHide(c) ? ' · hidden' : ''}${c.emailsSent ? ` · ${c.emailsSent} sent` : ''}`}
+                    </div>
                     {c.listedAt && (
                       <div style={{ fontSize: 12, color: isNew(c.listedAt) ? theme.success : theme.textMuted, whiteSpace: 'nowrap' }}>
                         {isNew(c.listedAt) ? 'new · ' : ''}listed {formatDate(c.listedAt, { relative: true })}
