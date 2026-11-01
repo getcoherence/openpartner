@@ -121,10 +121,14 @@ export function Table({
   columns,
   rows,
   empty = 'No rows yet.',
+  maxHeight,
 }: {
   columns: (string | { label: string; align?: 'left' | 'right' })[];
   rows: ReactNode[][];
   empty?: string;
+  /** Scrolls the rows within this height, both ways, with the header kept
+   *  in view: the sideways scrollbar then never sits below the page fold. */
+  maxHeight?: number;
 }) {
   const cols = columns.map((c) => (typeof c === 'string' ? { label: c, align: 'left' as const } : c));
   const isMobile = useIsMobile();
@@ -203,7 +207,7 @@ export function Table({
     <Card padded={false} style={{ overflow: 'hidden' }}>
       {/* Horizontal scroll as a fallback for very wide content on tablet/
           desktop widths; phones use the stacked card layout above. */}
-      <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+      <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch', ...(maxHeight !== undefined && { maxHeight, overflowY: 'auto' }) }}>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14, minWidth: 'max-content' }}>
         <thead>
           <tr>
@@ -220,6 +224,7 @@ export function Table({
                   letterSpacing: '0.05em',
                   borderBottom: `1px solid ${theme.border}`,
                   background: theme.surface2,
+                  ...(maxHeight !== undefined && { position: 'sticky', top: 0, zIndex: 1 }),
                 }}
               >
                 {c.label}
