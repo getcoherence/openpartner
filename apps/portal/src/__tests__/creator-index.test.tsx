@@ -146,6 +146,8 @@ describe('external creators', () => {
     const rows = screen.getAllByTestId('creator-row');
     expect(rows.map((r) => r.textContent!.includes('External creator'))).toEqual([false, true]);
     expect(rows[0]!.parentElement).toBe(rows[1]!.parentElement);
+    // Rows never grow wider than the list (a long headline cut off their right-hand side).
+    expect(rows[0]!.parentElement!.style.gridTemplateColumns).toBe('minmax(0, 1fr)');
     // No count line over the list.
     expect(screen.queryByText(/on OpenPartner ·/)).toBeNull();
 
@@ -252,6 +254,49 @@ describe('external creators', () => {
     expect(screen.getByRole('button', { name: /^Engagement$/ })).toBeTruthy();
   });
 
+  it('off a wide screen, opens the creator picked over the list, and closes back to it', async () => {
+    respond = (url) => {
+      if (url.includes('/indexed-creators/ixc_jo')) {
+        return {
+          status: 200,
+          body: {
+            creator: {
+              ...JO,
+              platforms: [{ ...JO.platforms[0], avgComments: null, avgReposts: null, topPostUrls: [] }],
+              summary: 'Writes weekly about outbound sales for SDR teams.',
+              productsMentioned: [],
+              blocker: null,
+            },
+          },
+        };
+      }
+      if (url.includes('/indexed-creators')) return externalPage([JO]);
+      return { status: 200, body: { creators: [] } };
+    };
+    function Where() {
+      return <div data-testid="where">{useLocation().search}</div>;
+    }
+    wrap(
+      <>
+        <AdminNetworkCreators />
+        <Where />
+      </>,
+    );
+    expect(screen.queryByRole('complementary', { name: 'Selected creator' })).toBeNull();
+    fireEvent.click(await screen.findByRole('button', { name: 'Jo Rivera' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Selected creator' });
+    expect(await within(sheet).findByText('Writes weekly about outbound sales for SDR teams.')).toBeTruthy();
+    expect(screen.getByTestId('where').textContent).toBe('?external=ixc_jo');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Selected creator' })).toBeNull();
+    expect(screen.getByTestId('where').textContent).toBe('');
+    // The list is where it was.
+    fireEvent.click(screen.getByRole('button', { name: 'Jo Rivera' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog', { name: 'Selected creator' })).toBeNull();
+    expect(screen.getByText('Jo Rivera')).toBeTruthy();
+  });
+
   it('on a wide screen, shows the creator picked beside the list, and keeps who in the URL', async () => {
     vi.stubGlobal('matchMedia', (query: string) => ({
       matches: query === '(min-width: 1200px)',
@@ -330,8 +375,7 @@ describe('external creators', () => {
     expect(await screen.findByText('Invited. We emailed them.')).toBeTruthy();
     expect(screen.getByText(/Can.t be invited yet/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Invite' })).toBeNull();
-    // Off a wide screen, a creator's name opens their page.
-    expect(screen.getByText('Nope').getAttribute('href')).toBe('/admin/network/indexed-creators/b');
+
   });
 
   describe('a creator’s page', () => {

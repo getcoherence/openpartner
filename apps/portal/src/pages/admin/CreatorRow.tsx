@@ -125,6 +125,10 @@ export function CreatorList({ children }: { children: ReactNode }) {
     <div
       style={{
         display: 'grid',
+        // As wide as the list, never wider: an auto column grows to a row's
+        // widest unbreakable line (the one-line headline), and the rows'
+        // right-hand sides were cut off.
+        gridTemplateColumns: 'minmax(0, 1fr)',
         gap: 1,
         background: theme.borderSubtle,
         border: `1px solid ${theme.borderSubtle}`,
