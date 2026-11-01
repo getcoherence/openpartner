@@ -637,6 +637,9 @@ function MissingToggle({ on, onClick, children }: { on: boolean; onClick: () => 
   );
 }
 
+/** The highest follower cap the API takes. */
+const MAX_FOLLOWERS_CAP = 1_000_000_000;
+
 /** Settings compared whatever order their keys come in. */
 const settingsKey = (s: IndexSettings) =>
   JSON.stringify(s, (_k, v: unknown) =>
@@ -894,7 +897,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                     disabled={!canWrite}
                     onChange={(e) => {
                       const n = Math.round(Number(e.target.value));
-                      setDraft({ ...draft, maxFollowers: n >= 1 ? n : null });
+                      setDraft({ ...draft, maxFollowers: n >= 1 ? Math.min(n, MAX_FOLLOWERS_CAP) : null });
                     }}
                   />
                   {capTooLow && <div style={{ fontSize: 12, color: theme.danger, marginTop: 4 }}>Must be over min. followers</div>}

@@ -597,6 +597,9 @@ describe('ops console: creator index settings', () => {
     fireEvent.change(cap, { target: { value: '3000' } });
     expect(screen.getByText('Must be over min. followers')).toBeTruthy();
     expect(save().disabled).toBe(true);
+    // Never over what the API takes.
+    fireEvent.change(cap, { target: { value: '5000000000' } });
+    expect(cap.value).toBe('1000000000');
     fireEvent.change(cap, { target: { value: '500000' } });
     expect(save().disabled).toBe(false);
     fireEvent.click(save());
