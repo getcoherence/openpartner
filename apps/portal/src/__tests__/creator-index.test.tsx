@@ -617,6 +617,34 @@ describe('ops console: creator index settings', () => {
     await waitFor(() => expect(calls.filter((c) => c.method === 'PUT').at(-1)?.body).toMatchObject({ maxFollowers: null }));
   });
 
+  it('switches the outreach email’s style, only where the Network has the styles', async () => {
+    const stats = { creators: { byStatus: {}, listed: 0, shownToBrands: 0, hiddenFromBrands: 0 }, byCountry: [], candidates: {}, rejections: {}, invites: {}, emailsSent30d: 0, suppressions: {}, spend: { thisMonthUsd: 0, budgetUsd: 10 } };
+    const respondFor = (settings: Record<string, unknown>) => {
+      respond = (url, method) => {
+        if (url.endsWith('/creator-index/settings') && method === 'PUT') return { status: 200, body: { settings: calls[calls.length - 1]!.body, visibilityChanged: 0 } };
+        if (url.endsWith('/creator-index/settings')) return { status: 200, body: { settings, defaults: settings, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {} } };
+        if (url.endsWith('/creator-index/stats')) return { status: 200, body: stats };
+        return { status: 200, body: { creators: [] } };
+      };
+    };
+    respondFor(SETTINGS);
+    const older = wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />, '/?tab=settings');
+    await screen.findByText('Save settings');
+    expect(screen.queryByLabelText('Outreach style')).toBeNull();
+    fireEvent.click(screen.getByText('Save settings'));
+    await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).not.toHaveProperty('outreachStyle'));
+    older.unmount();
+    calls.length = 0;
+
+    respondFor({ ...SETTINGS, outreachStyle: 'designed' });
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />, '/?tab=settings');
+    const style = (await screen.findByLabelText('Outreach style')) as HTMLSelectElement;
+    expect(style.value).toBe('designed');
+    fireEvent.change(style, { target: { value: 'plain' } });
+    fireEvent.click(screen.getByText('Save settings'));
+    await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({ outreachStyle: 'plain' }));
+  });
+
   it('shows an address in full on request, and adds one ops found published, saying why one was refused', async () => {
     let refuse = true;
     respond = (url, method) => {
@@ -1234,12 +1262,13 @@ describe('ops console: creator index settings', () => {
       mailer: { configured: boolean; from: string | null };
       inviteMailer?: { configured: boolean; from: string | null };
       preview?: Record<string, unknown>;
+      outreachStyle?: 'designed' | 'plain';
     }) {
       respond = (url, method) => {
         if (url.endsWith('/creator-index/settings')) {
           return {
             status: 200,
-            body: { settings: { ...SETTINGS, outreachEnabled: opts.outreachEnabled }, defaults: SETTINGS, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {}, outreachMailer: opts.mailer, inviteMailer: opts.inviteMailer },
+            body: { settings: { ...SETTINGS, outreachEnabled: opts.outreachEnabled, ...(opts.outreachStyle ? { outreachStyle: opts.outreachStyle } : {}) }, defaults: SETTINGS, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {}, outreachMailer: opts.mailer, inviteMailer: opts.inviteMailer },
           };
         }
         if (url.endsWith('/creator-index/stats')) return { status: 200, body: STATS };
@@ -1248,8 +1277,9 @@ describe('ops console: creator index settings', () => {
           return body.dryRun ? { status: 200, body: { ...PREVIEW, enabled: opts.outreachEnabled, ...opts.preview } } : { status: 202, body: { started: true } };
         }
         if (url.endsWith('/creator-index/outreach/sample') && method === 'POST') {
-          const { to } = calls[calls.length - 1]!.body as { to: string[] };
+          const { to, style } = calls[calls.length - 1]!.body as { to: string[]; style?: string };
           if (to.includes('busy@example.com')) return { status: 429, body: { error: 'rate_limited' } };
+          if (style) return { status: 200, body: { style, sent: to, failed: [] } };
           return { status: 200, body: { sent: to.slice(1), failed: [{ to: to[0], error: 'graph 400: refused', maybeSent: false }] } };
         }
         return { status: 200, body: { creators: [] } };
@@ -1337,6 +1367,34 @@ describe('ops console: creator index settings', () => {
       fireEvent.change(box, { target: { value: 'busy@example.com' } });
       fireEvent.click(screen.getByText('Send sample'));
       expect(await screen.findByText('Three samples an hour. Try again later.')).toBeTruthy();
+      // A Network that predates the styles: none offered.
+      expect(screen.queryByLabelText('Sample style')).toBeNull();
+    });
+
+    it('sends a sample in the style picked, which starts as the batches’ one, and names the style a batch sends', async () => {
+      respondWith({ outreachEnabled: true, mailer: { configured: true, from: 'keith@openpartner.test' }, outreachStyle: 'plain' });
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+      wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />, '/?tab=runs');
+      const picker = (await screen.findByLabelText('Sample style')) as HTMLSelectElement;
+      expect(picker.value).toBe('plain');
+      const box = screen.getByText('Seed test addresses').parentElement!.querySelector('textarea')!;
+      fireEvent.change(box, { target: { value: 'seed@example.com' } });
+      fireEvent.click(screen.getByText('Send sample'));
+      expect(await screen.findByText('Sent to 1 of 1 · Plain')).toBeTruthy();
+      fireEvent.change(picker, { target: { value: 'designed' } });
+      fireEvent.click(screen.getByText('Send sample'));
+      expect(await screen.findByText('Sent to 1 of 1 · Designed')).toBeTruthy();
+      expect(calls.filter((c) => c.url.endsWith('/outreach/sample')).map((c) => c.body)).toEqual([
+        { to: ['seed@example.com'], style: 'plain' },
+        { to: ['seed@example.com'], style: 'designed' },
+      ]);
+
+      // A batch sends the saved style, and the confirm says which.
+      fireEvent.click(screen.getByText('Preview batch'));
+      await screen.findByText('Jo Rivera');
+      fireEvent.click(screen.getByText('Send this batch'));
+      expect(confirm).toHaveBeenCalledWith('Send the plain outreach email to 2 creators? Each gets it only once.');
+      confirm.mockRestore();
     });
   });
 });

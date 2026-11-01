@@ -146,7 +146,7 @@ beforeAll(async () => {
           if (path === '/admin/creator-index/outreach/sample') {
             const to = (body?.to ?? []) as string[];
             if (to.includes('busy@example.com')) return json(429, { error: 'rate_limited', retryAfterSec: 1200 });
-            return json(200, { sender: 'ops@openpartner.test', senderName: 'Ops', subject: 'Your creator profile on OpenPartner', sent: to, failed: [] });
+            return json(200, { sender: 'ops@openpartner.test', senderName: 'Ops', style: body?.style ?? 'designed', subject: 'Claim your creator profile on OpenPartner', sent: to, failed: [] });
           }
           if (path === '/admin/creator-index/invites/run') {
             return json(200, { ran: true, dryRun: body?.dryRun, candidates: 1, sent: body?.dryRun ? 0 : 1, skipped: 0, failed: 0, expired: 0, unreachable: 0 });
@@ -549,9 +549,16 @@ describe.skipIf(skipIntegration)('creator index: the outreach email', () => {
     const sent = await request(app).post('/platform-admin/creator-index/outreach/sample').set('Cookie', admin).send({ to: [' Seed-1@Example.com', 'seed-2@example.com'] });
     expect(sent.status).toBe(200);
     expect(sent.body).toMatchObject({ sent: ['seed-1@example.com', 'seed-2@example.com'], failed: [] });
-    expect(last('/admin/creator-index/outreach/sample')).toMatchObject({ auth: `Bearer ${NETWORK_ADMIN}`, body: { to: ['seed-1@example.com', 'seed-2@example.com'], publicUrl: networkUrl } });
+    // No style asked for: none sent, and the Network uses the batches' one.
+    expect(last('/admin/creator-index/outreach/sample')).toMatchObject({ auth: `Bearer ${NETWORK_ADMIN}` });
+    expect(last('/admin/creator-index/outreach/sample')!.body).toEqual({ to: ['seed-1@example.com', 'seed-2@example.com'], publicUrl: networkUrl });
     const audit = await db(TABLES.PlatformAuditLog).where({ action: 'creator_index.outreach_sample', platformAdminEmail: OPS_EMAIL }).orderBy('createdAt', 'desc').first();
-    expect(audit?.detail).toEqual({ to: ['seed-1@example.com', 'seed-2@example.com'], sent: 2, failed: 0 });
+    expect(audit?.detail).toEqual({ to: ['seed-1@example.com', 'seed-2@example.com'], style: 'designed', sent: 2, failed: 0 });
+
+    const plain = await request(app).post('/platform-admin/creator-index/outreach/sample').set('Cookie', admin).send({ to: ['seed@example.com'], style: 'plain' });
+    expect(plain.body).toMatchObject({ style: 'plain' });
+    expect(last('/admin/creator-index/outreach/sample')!.body).toEqual({ to: ['seed@example.com'], style: 'plain', publicUrl: networkUrl });
+    expect((await request(app).post('/platform-admin/creator-index/outreach/sample').set('Cookie', admin).send({ to: ['seed@example.com'], style: 'fancy' })).status).toBe(400);
 
     const limited = await request(app).post('/platform-admin/creator-index/outreach/sample').set('Cookie', admin).send({ to: ['busy@example.com'] });
     expect(limited.status).toBe(429);
@@ -563,6 +570,15 @@ describe.skipIf(skipIntegration)('creator index: the outreach email', () => {
     const put = await request(app).put('/platform-admin/creator-index/settings').set('Cookie', cookie).send({ ...SETTINGS, outreachEnabled: true });
     expect(put.status).toBe(200);
     expect(last('/admin/creator-index/settings')!.body).toMatchObject({ outreachEnabled: true });
+  });
+
+  it('passes the outreach style through with the settings, and leaves it out when the console does', async () => {
+    const cookie = await operator();
+    expect((await request(app).put('/platform-admin/creator-index/settings').set('Cookie', cookie).send({ ...SETTINGS, outreachStyle: 'plain' })).status).toBe(200);
+    expect(last('/admin/creator-index/settings')!.body).toMatchObject({ outreachStyle: 'plain' });
+    expect((await request(app).put('/platform-admin/creator-index/settings').set('Cookie', cookie).send(SETTINGS)).status).toBe(200);
+    expect(last('/admin/creator-index/settings')!.body).not.toHaveProperty('outreachStyle');
+    expect((await request(app).put('/platform-admin/creator-index/settings').set('Cookie', cookie).send({ ...SETTINGS, outreachStyle: 'fancy' })).status).toBe(400);
   });
 });
 

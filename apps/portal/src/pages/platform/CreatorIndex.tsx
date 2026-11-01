@@ -53,6 +53,9 @@ interface IndexSettings {
   invitesEnabled: boolean;
   /** Absent from a Network that predates the outreach email. */
   outreachEnabled?: boolean;
+  /** How batches send it. Absent from a Network that predates the styles,
+   *  and then not offered (nor sent). */
+  outreachStyle?: OutreachStyle;
   monthlyBudgetUsd: number;
   /** Members' Instagram and TikTok reads, a budget of their own. Absent
    *  from a Network that predates them. */
@@ -166,7 +169,15 @@ interface OutreachPreview {
   targets: OutreachTarget[];
 }
 
+type OutreachStyle = 'designed' | 'plain';
+
+/** The outreach email's styles (openpartner-network docs/creator-index.md
+ *  §5.5): the shared layout with a button and a screenshot, or a person's
+ *  plain mail. */
+const OUTREACH_STYLES: Record<OutreachStyle, string> = { designed: 'Designed', plain: 'Plain' };
+
 interface OutreachSampleResult {
+  style?: OutreachStyle;
   sent: string[];
   /** maybeSent: the mailbox may have taken it, so it may still arrive. */
   failed: Array<{ to: string; error: string; maybeSent: boolean }>;
@@ -562,12 +573,16 @@ const SAMPLE_ERRORS: Record<string, string> = {
 
 /** The outreach email to a seed test's inboxes (openpartner-network
  *  docs/creator-index.md §5.5): one message each, as a creator gets it,
- *  about a made-up creator, counted nowhere. */
-function OutreachSample({ disabled }: { disabled: boolean }) {
+ *  about a made-up creator, counted nowhere. In the style picked, which
+ *  starts as the one batches send, so both can be compared without
+ *  switching what creators get. */
+function OutreachSample({ disabled, batchStyle }: { disabled: boolean; batchStyle: OutreachStyle | undefined }) {
   const [text, setText] = useState('');
+  const [picked, setPicked] = useState<OutreachStyle | null>(null);
+  const style = picked ?? batchStyle;
   const to = [...new Set(text.split(/[\s,;]+/).map((a) => a.toLowerCase()).filter(Boolean))];
   const send = useMutation({
-    mutationFn: () => papi<OutreachSampleResult>('/platform-admin/creator-index/outreach/sample', { method: 'POST', body: { to } }),
+    mutationFn: () => papi<OutreachSampleResult>('/platform-admin/creator-index/outreach/sample', { method: 'POST', body: { to, ...(style ? { style } : {}) } }),
   });
   const r = send.data;
   const code = send.error instanceof Error ? send.error.message : '';
@@ -584,12 +599,31 @@ function OutreachSample({ disabled }: { disabled: boolean }) {
         }}
       />
       <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        {style && (
+          <div style={{ width: 130 }}>
+            <Select
+              aria-label="Sample style"
+              value={style}
+              onChange={(e) => {
+                setPicked(e.target.value as OutreachStyle);
+                send.reset();
+              }}
+            >
+              {Object.entries(OUTREACH_STYLES).map(([k, label]) => (
+                <option key={k} value={k}>
+                  {label}
+                </option>
+              ))}
+            </Select>
+          </div>
+        )}
         <Button size="sm" variant="secondary" onClick={() => send.mutate()} disabled={disabled || to.length === 0 || to.length > 20 || send.isPending}>
           {send.isPending ? 'Sending…' : to.length > 1 ? `Send sample to ${to.length}` : 'Send sample'}
         </Button>
         {r && (
           <span style={{ fontSize: 13, color: theme.textMuted }}>
             Sent to {r.sent.length} of {r.sent.length + r.failed.length}
+            {r.style ? ` · ${OUTREACH_STYLES[r.style]}` : ''}
           </span>
         )}
       </div>
@@ -1102,6 +1136,8 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
   const inviteMailbox = state.data?.inviteMailer;
   const mailboxLost = mailbox?.connection?.status === 'lost' || inviteMailbox?.connection?.status === 'lost';
   const outreachOn = state.data?.settings.outreachEnabled ?? false;
+  // The saved style, which batches send (not an unsaved change to it).
+  const outreachStyle = state.data?.settings.outreachStyle;
   const preview = outreachPreview.data;
   const running = (Object.entries(s?.runs ?? {}) as Array<[RunKind, IndexRun | undefined]>).filter(([, r]) => r && !r.finishedAt).map(([job]) => JOB_LABEL[job]);
   const unsaved = !!draft && !!state.data && settingsKey(draft) !== settingsKey(state.data.settings);
@@ -1218,6 +1254,24 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                 <input type="checkbox" checked={draft.outreachEnabled ?? false} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, outreachEnabled: e.target.checked })} />
                 Outreach email on
               </label>
+              {draft.outreachStyle !== undefined && (
+                <div>
+                  <Label>Outreach style</Label>
+                  <Select
+                    aria-label="Outreach style"
+                    title="Designed: the logo, a button and a screenshot. Plain: reads like a personal email."
+                    value={draft.outreachStyle}
+                    disabled={!canWrite}
+                    onChange={(e) => setDraft({ ...draft, outreachStyle: e.target.value as OutreachStyle })}
+                  >
+                    {Object.entries(OUTREACH_STYLES).map(([k, label]) => (
+                      <option key={k} value={k}>
+                        {label}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              )}
               <div>
                 <Label>Monthly budget (USD)</Label>
                 <Input type="number" min={0} value={draft.monthlyBudgetUsd} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, monthlyBudgetUsd: Math.max(0, Math.round(Number(e.target.value) || 0)) })} />
@@ -1530,7 +1584,8 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                 {canWrite && (
                   <Button
                     onClick={() => {
-                      if (window.confirm(`Send the outreach email to ${preview?.candidates ?? batchSize} creators? Each gets it only once.`)) outreachSend.mutate();
+                      const styled = outreachStyle ? `${OUTREACH_STYLES[outreachStyle].toLowerCase()} ` : '';
+                      if (window.confirm(`Send the ${styled}outreach email to ${preview?.candidates ?? batchSize} creators? Each gets it only once.`)) outreachSend.mutate();
                     }}
                     disabled={!preview || preview.candidates === 0 || !outreachOn || !mailbox?.configured || outreachSend.isPending}
                   >
@@ -1544,7 +1599,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                   Started. The Network sends it a few seconds apart; the run shows above when it&rsquo;s done.
                 </div>
               )}
-              {canWrite && <OutreachSample disabled={!mailbox?.configured} />}
+              {canWrite && <OutreachSample disabled={!mailbox?.configured} batchStyle={outreachStyle} />}
               {preview && (
                 <div style={{ marginTop: 12 }}>
                   <div style={{ fontSize: 13 }}>
