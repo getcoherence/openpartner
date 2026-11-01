@@ -11,6 +11,7 @@
  *   POST   /network/me/platforms/:platform/verify       → same path on the Network
  *   POST   /network/me/uploads/avatar       → POST   /creators/me/uploads/avatar (raw image)
  *   POST   /network/me/uploads/cover        → POST   /creators/me/uploads/cover (raw image)
+ *   POST   /network/me/cover/youtube        → POST   /creators/me/cover/youtube
  *
  * Each acts as the signed-in partner (vendor bearer + x-act-as-vendor-partner),
  * exactly like the existing /network/me/profile GET. A local HTTP server
@@ -289,6 +290,24 @@ describe.skipIf(skipIntegration)('POST /network/me/uploads/cover', () => {
   });
 });
 
+describe.skipIf(skipIntegration)('POST /network/me/cover/youtube', () => {
+  it("uses the partner's YouTube banner as the cover, as the partner", async () => {
+    const coverSource = { platform: 'youtube', url: 'https://www.youtube.com/channel/UC_pat' };
+    nextResponse = { status: 200, body: { coverImageUrl: 'https://cdn.example/creators/crt_1/youtube/b.jpg', coverSource } };
+    const res = await request(app).post('/network/me/cover/youtube').set('Cookie', cookie).send({});
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ coverImageUrl: 'https://cdn.example/creators/crt_1/youtube/b.jpg', coverSource });
+    expectActingCall(calls[0], 'POST', '/creators/me/cover/youtube');
+  });
+
+  it('passes a refusal through with the Network’s reason', async () => {
+    nextResponse = { status: 409, body: { error: 'no_youtube_banner', detail: 'Your YouTube channel has no banner.' } };
+    const res = await request(app).post('/network/me/cover/youtube').set('Cookie', cookie).send({});
+    expect(res.status).toBe(409);
+    expect(JSON.parse(res.body.detail)).toMatchObject({ error: 'no_youtube_banner' });
+  });
+});
+
 describe.skipIf(skipIntegration)('POST /network/me/uploads/avatar', () => {
   it('forwards the image bytes and type as the partner', async () => {
     nextResponse = { status: 200, body: { avatarUrl: 'https://cdn.example/creators/crt_1/avatars/a.png' } };
@@ -326,6 +345,7 @@ describe.skipIf(skipIntegration)('auth', () => {
       () => request(app).post('/network/me/platforms/youtube/verify').send({}),
       () => request(app).post('/network/me/uploads/avatar').set('content-type', 'image/png').send(Buffer.from([1])),
       () => request(app).post('/network/me/uploads/cover').set('content-type', 'image/png').send(Buffer.from([1])),
+      () => request(app).post('/network/me/cover/youtube').send({}),
     ];
     for (const route of routes) {
       expect((await route()).status).toBe(401);

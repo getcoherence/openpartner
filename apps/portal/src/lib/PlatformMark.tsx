@@ -174,3 +174,47 @@ export function ChannelCount({
 export function ChannelCounts({ children, style }: { children: React.ReactNode; style?: CSSProperties }) {
   return <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px 12px', ...style }}>{children}</div>;
 }
+
+/** Where a creator's cover came from: a copy of their YouTube banner, which
+ *  the Network keeps in step with YouTube. Null for an upload. */
+export interface CoverSource {
+  platform: 'youtube';
+  /** Their channel. */
+  url: string;
+}
+
+/**
+ * YouTube's icon on a cover copied from the creator's YouTube banner,
+ * linking to their channel: YouTube's API policies have pages showing its
+ * content say so with its icon, unaltered, on a solid background, linking
+ * back to YouTube.
+ */
+export function CoverSourceLink({ source }: { source: CoverSource }) {
+  // The Network builds a channel URL; anything else gets no link.
+  if (source.platform !== 'youtube' || !source.url.startsWith('https://www.youtube.com/')) return null;
+  return (
+    <a
+      href={source.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label="YouTube"
+      title="From YouTube"
+      style={{
+        position: 'absolute',
+        top: 8,
+        right: 8,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: 40,
+        height: 30,
+        borderRadius: 6,
+        // The icon's own white ground, in both themes, lifted off a light banner.
+        background: '#fff',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+      }}
+    >
+      <PlatformMark platform="youtube" size={28} />
+    </a>
+  );
+}

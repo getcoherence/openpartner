@@ -108,7 +108,12 @@ export function StorefrontPreview({
         )}
         <div style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: theme.radiusMd, overflow: 'hidden' }}>
           {/* The public page's banner: the cover, else a wash of the photo. */}
-          <ListingBanner coverUrl={profile?.coverImageUrl} logoUrl={profile?.avatarUrl} style={{ aspectRatio: '4 / 1' }} />
+          <ListingBanner
+            coverUrl={profile?.coverImageUrl}
+            logoUrl={profile?.avatarUrl}
+            coverSource={profile?.coverSource}
+            style={{ aspectRatio: '4 / 1' }}
+          />
           <div style={{ padding: 14, display: 'flex', alignItems: 'center', gap: 12 }}>
             {profile?.avatarUrl ? (
               <img src={profile.avatarUrl} alt="" style={{ width: 44, height: 44, borderRadius: '50%', objectFit: 'cover', background: theme.surface2 }} />

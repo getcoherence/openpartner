@@ -8,6 +8,7 @@ import {
   type PlatformRow,
   type VerificationStart,
 } from '../../lib/NetworkProfileEditor.js';
+import type { CoverSource } from '../../lib/PlatformMark.js';
 import { NetworkMembershipCard, useNetworkConsent } from './NetworkConsent.js';
 
 interface ProfileResponse extends Partial<NetworkProfile> {
@@ -31,6 +32,8 @@ const partnerProfileAdapter: NetworkProfileAdapter = {
   updateProfile: (body) => api('/network/me/profile', { method: 'PATCH', body }),
   uploadAvatar: (file) => api<{ avatarUrl: string }>('/network/me/uploads/avatar', { method: 'POST', body: file }),
   uploadCover: (file) => api<{ coverImageUrl: string }>('/network/me/uploads/cover', { method: 'POST', body: file }),
+  copyYouTubeBanner: () =>
+    api<{ coverImageUrl: string; coverSource: CoverSource | null }>('/network/me/cover/youtube', { method: 'POST', body: {} }),
   listPlatforms: () => api<{ platforms: PlatformRow[] }>('/network/me/platforms'),
   putPlatform: (platform, body) => api(`/network/me/platforms/${platform}`, { method: 'PUT', body }),
   deletePlatform: (platform) => api(`/network/me/platforms/${platform}`, { method: 'DELETE' }),

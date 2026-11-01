@@ -32,6 +32,19 @@ describe('ListingBanner', () => {
     expect(container.querySelector('img')).toBeNull();
     expect(container.firstElementChild).not.toBeNull();
   });
+
+  it("puts YouTube's icon, linking to the channel, on a cover copied from YouTube", () => {
+    const source = { platform: 'youtube' as const, url: 'https://www.youtube.com/channel/UC_ada' };
+    const page = render(<ListingBanner coverUrl="https://cdn.example.test/creators/c/youtube/b.jpg" logoUrl={null} coverSource={source} />);
+    const link = page.getByRole('link', { name: 'YouTube' });
+    expect(link.getAttribute('href')).toBe(source.url);
+    expect(link.getAttribute('target')).toBe('_blank');
+    cleanup();
+    // No cover shown (the wash), or an uploaded one: no icon.
+    expect(render(<ListingBanner coverUrl={null} logoUrl="https://cdn.example.test/logo.png" coverSource={source} />).queryByRole('link')).toBeNull();
+    cleanup();
+    expect(render(<ListingBanner coverUrl="https://cdn.example.test/cover.png" logoUrl={null} />).queryByRole('link')).toBeNull();
+  });
 });
 
 describe('ListingVideo', () => {
