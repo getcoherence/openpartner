@@ -183,6 +183,10 @@ describe.skipIf(skipIntegration)('creator index mailboxes: connecting', () => {
     const [audit] = await audits('creator_index.mailbox_connect_start');
     expect(audit).toMatchObject({ targetType: 'network_mailbox', targetId: 'invite', detail: { sendAs: 'OpenPartner <creators@openpartner.test>' } });
 
+    // The outreach mailbox may be a shared one too.
+    expect((await request(app).post('/platform-admin/creator-index/mailboxes/outreach/connect').set('Cookie', admin).send({ sendAs: 'Jo <jo@openpartner.test>' })).status).toBe(200);
+    expect(last('/admin/mailboxes/outreach/connect')!.body).toMatchObject({ sendAs: 'Jo <jo@openpartner.test>' });
+
     const same = await request(app).post('/platform-admin/creator-index/mailboxes/invite/connect').set('Cookie', admin).send({ sendAs: 'keith@openpartner.test' });
     expect(same.status).toBe(409);
     expect(same.body).toEqual({ error: 'same_mailbox' });

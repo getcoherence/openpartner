@@ -4,8 +4,8 @@
  * Each connects by Microsoft sign-in: "Connect Microsoft account" sends the
  * admin to Microsoft, which returns them to /platform/mailboxes/callback
  * (MailboxCallbackPage), and that hands the code to the Network through the
- * API. The invite mailbox also names the shared mailbox it sends as
- * (creators@), through the connected user's Send As right.
+ * API. Either may name a shared mailbox it sends as, through the connected
+ * user's Send As right.
  *
  * Without a connection a mailbox sends as the Network's env sets up, if at
  * all. A lost connection (Microsoft refused it) sends nothing until it's
@@ -43,6 +43,7 @@ export interface MailboxState {
 }
 
 const LABEL: Record<MailboxKind, string> = { outreach: 'Outreach email', invite: 'Brands’ invites' };
+const SEND_AS_PLACEHOLDER: Record<MailboxKind, string> = { outreach: 'Jo Smith <jo@example.com>', invite: 'OpenPartner <invites@example.com>' };
 
 /** The connect flow's error codes, in a sentence. */
 export function mailboxErrorText(code: string, detail?: string | null): string {
@@ -62,7 +63,7 @@ export function mailboxErrorText(code: string, detail?: string | null): string {
     case 'not_connected':
       return 'Connect the mailbox first.';
     case 'invalid_body':
-      return 'Send as takes an email address, like OpenPartner <creators@openpartner.dev>.';
+      return 'Send as takes an email address, like OpenPartner <invites@example.com>.';
     case 'microsoft_unreachable':
     case 'network_call_failed':
       return 'Couldn’t reach Microsoft or the Network. Try again.';
@@ -84,7 +85,7 @@ function MailboxRow({ kind, mailbox, oauth, canWrite, onChange }: { kind: Mailbo
     mutationFn: () =>
       papi<{ authorizeUrl: string }>(`/platform-admin/creator-index/mailboxes/${kind}/connect`, {
         method: 'POST',
-        body: kind === 'invite' ? { sendAs: sendAs.trim() || null } : {},
+        body: { sendAs: sendAs.trim() || null },
       }),
     onSuccess: (r) => window.location.assign(r.authorizeUrl),
   });
@@ -151,11 +152,11 @@ function MailboxRow({ kind, mailbox, oauth, canWrite, onChange }: { kind: Mailbo
           </div>
         )}
       </div>
-      {kind === 'invite' && canWrite && oauth && (
+      {canWrite && oauth && (
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <span style={{ fontSize: 13, color: theme.textMuted, minWidth: 130 }}>Send as</span>
           <div style={{ flex: 1, minWidth: 220, maxWidth: 380 }}>
-            <Input aria-label="Send as" placeholder="OpenPartner <creators@openpartner.dev>" value={sendAs} onChange={(e) => setSendAs(e.target.value)} />
+            <Input aria-label="Send as" placeholder={SEND_AS_PLACEHOLDER[kind]} value={sendAs} onChange={(e) => setSendAs(e.target.value)} />
           </div>
           {sendAsChanged && (
             <Button size="sm" variant="secondary" onClick={() => saveSendAs.mutate()} disabled={saveSendAs.isPending}>
