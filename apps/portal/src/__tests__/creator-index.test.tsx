@@ -55,6 +55,11 @@ function wrap(ui: React.ReactNode, path = '/') {
   );
 }
 
+/** The creator index opens on its list; Runs and Settings are a tab away. */
+async function openTab(name: 'Creators' | 'Runs' | 'Settings') {
+  fireEvent.click(await screen.findByRole('tab', { name: new RegExp(`^${name}`) }));
+}
+
 const JO = {
   kind: 'indexed',
   id: 'ixc_jo',
@@ -534,7 +539,9 @@ describe('ops console: creator index settings', () => {
     expect(screen.getByRole('link', { name: 'LinkedIn' }).getAttribute('href')).toBe('https://www.linkedin.com/in/jo');
     expect(screen.getByText('via creator-data lookup')).toBeTruthy();
     expect(screen.getByText('none yet · hidden from brands')).toBeTruthy();
-    expect(screen.getByText('3 with an email · 13 without (hidden)')).toBeTruthy();
+    await openTab('Runs');
+    expect(await screen.findByText('3 with an email · 13 without (hidden)')).toBeTruthy();
+    await openTab('Settings');
     fireEvent.click(screen.getByLabelText(/Creator contact-data lookup/));
     fireEvent.click(screen.getByText('Save settings'));
     await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({ contactEnrichment: { creatorData: false, ownDomain: true } }));
@@ -565,8 +572,9 @@ describe('ops console: creator index settings', () => {
       }
       return { status: 200, body: { creators: [] } };
     };
-    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />, '/?tab=runs');
     expect(await screen.findByText('Members: $1.25 of $10')).toBeTruthy();
+    await openTab('Settings');
     fireEvent.change(screen.getByLabelText("Members' budget (USD)"), { target: { value: '25' } });
     fireEvent.click(screen.getByText('Save settings'));
     await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({ monthlyBudgetUsd: 10, memberStatsBudgetUsd: 25 }));
@@ -584,13 +592,13 @@ describe('ops console: creator index settings', () => {
     };
     // A Network that predates it isn't offered it.
     respondFor(SETTINGS);
-    const older = wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    const older = wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />, '/?tab=settings');
     await screen.findByText('Save settings');
     expect(screen.queryByLabelText('Max. followers')).toBeNull();
     older.unmount();
 
     respondFor({ ...SETTINGS, maxFollowers: null });
-    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />, '/?tab=settings');
     const cap = (await screen.findByLabelText('Max. followers')) as HTMLInputElement;
     expect(cap.value).toBe('');
     const save = () => screen.getByText('Save settings').closest('button') as HTMLButtonElement;
@@ -785,8 +793,9 @@ describe('ops console: creator index settings', () => {
         },
       };
     };
-    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />, '/?tab=runs');
     expect(await screen.findByText('3 open to partnerships')).toBeTruthy();
+    await openTab('Settings');
     expect((screen.getByLabelText('Sponsorship storefronts') as HTMLInputElement).checked).toBe(true);
     expect((screen.getByLabelText('Anyone who posts about the topic') as HTMLInputElement).checked).toBe(false);
     // This Network predates the creator database: it isn't offered.
@@ -800,6 +809,7 @@ describe('ops console: creator index settings', () => {
       requirePartnershipSignal: false,
     });
     // Ops see where a signal was read; brands never do.
+    await openTab('Creators');
     expect(await screen.findByText('example-storefront.test/jo')).toBeTruthy();
   });
 
@@ -813,7 +823,7 @@ describe('ops console: creator index settings', () => {
       if (url.endsWith('/creator-index/stats')) return { status: 404, body: { error: 'not_found' } };
       return { status: 200, body: { creators: [] } };
     };
-    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />, '/?tab=settings');
     const database = (await screen.findByLabelText(/^Creator database/)) as HTMLInputElement;
     expect(database.checked).toBe(false);
     expect(screen.queryByLabelText('Creator database: creators per run')).toBeNull();
@@ -859,7 +869,7 @@ describe('ops console: creator index settings', () => {
       }
       return { status: 200, body: { creators: [] } };
     };
-    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />, '/?tab=runs');
     expect(await screen.findByText(/2 searches · 43 found · 41 new/)).toBeTruthy();
     expect(screen.getByText(/running since/)).toBeTruthy();
     expect(screen.getByText(/YouTube set aside: the YouTube API quota is used up/)).toBeTruthy();
@@ -869,12 +879,13 @@ describe('ops console: creator index settings', () => {
     fireEvent.click(screen.getByText('Read queue now'));
     expect(await screen.findByText(/That job is already running/)).toBeTruthy();
 
+    await openTab('Settings');
     fireEvent.change(screen.getByDisplayValue('8'), { target: { value: '12' } });
     fireEvent.click(screen.getByText('Save settings'));
     await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({ readConcurrency: 12 }));
   });
 
-  it('folds Settings and Runs away, remembers it, and lists only who has no address or no state', async () => {
+  it('opens on the list, marks a run going and unsaved changes on their tabs, and lists only who has no address or no state', async () => {
     respond = (url) => {
       if (url.endsWith('/creator-index/settings')) {
         return { status: 200, body: { settings: SETTINGS, defaults: SETTINGS, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {} } };
@@ -898,25 +909,21 @@ describe('ops console: creator index settings', () => {
       return { status: 200, body: { creators: [], total: 0 } };
     };
     wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
-    const settings = await screen.findByRole('button', { name: 'Settings' });
-    expect(settings.getAttribute('aria-expanded')).toBe('true');
-    fireEvent.click(screen.getByLabelText('Indexing on'));
-    fireEvent.click(settings);
-    expect(settings.getAttribute('aria-expanded')).toBe('false');
+    // The list first; runs and settings are a tab away.
+    expect((await screen.findByRole('tab', { name: 'Creators' })).getAttribute('aria-selected')).toBe('true');
     expect(screen.queryByLabelText('Indexing on')).toBeNull();
-    // What they'd miss while it's folded.
-    expect(screen.getByText('Unsaved changes')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Runs' }));
     expect(screen.queryByRole('button', { name: 'Discover now' })).toBeNull();
-    expect(screen.getByText('Discover running…')).toBeTruthy();
-
-    // Still folded next time.
-    cleanup();
-    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
-    expect((await screen.findByRole('button', { name: 'Settings' })).getAttribute('aria-expanded')).toBe('false');
-    expect(screen.getByRole('button', { name: 'Runs' }).getAttribute('aria-expanded')).toBe('false');
-    fireEvent.click(screen.getByRole('button', { name: 'Runs' }));
+    // What's worth seeing from another tab.
+    expect(await screen.findByRole('tab', { name: 'Runs running' })).toBeTruthy();
+    await openTab('Settings');
+    fireEvent.click(screen.getByLabelText('Indexing on'));
+    expect(screen.getByRole('tab', { name: 'Settings unsaved' })).toBeTruthy();
+    await openTab('Runs');
     expect(screen.getByRole('button', { name: 'Discover now' })).toBeTruthy();
+    // The draft is kept from tab to tab.
+    await openTab('Settings');
+    expect((screen.getByLabelText('Indexing on') as HTMLInputElement).checked).toBe(false);
+    await openTab('Creators');
 
     const listed = () => calls.filter((c) => c.url.startsWith('/api/platform-admin/creator-index/creators')).map((c) => c.url);
     fireEvent.click(screen.getByRole('button', { name: 'No state' }));
@@ -978,7 +985,6 @@ describe('ops console: creator index settings', () => {
       };
     };
     const { unmount } = wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
-    expect(await screen.findByText('+37 in the last 24 hours · +40 this week')).toBeTruthy();
     expect(await screen.findByText('52 in all, newest 2 shown')).toBeTruthy();
     expect(screen.getByText('37 new in the last 24 hours')).toBeTruthy();
     expect(screen.getAllByText(/^new · listed/)).toHaveLength(1);
@@ -986,6 +992,8 @@ describe('ops console: creator index settings', () => {
     expect(screen.getAllByText(/^outreach sent/).map((e) => e.textContent)).toEqual(['outreach sent 5h ago']);
     // Where each country was read from.
     expect(screen.getByText('LinkedIn: “Seoul, South Korea”')).toBeTruthy();
+    await openTab('Runs');
+    expect(screen.getByText('+37 in the last 24 hours · +40 this week')).toBeTruthy();
     expect(screen.getByText(/6 searches · 1 of them deeper · 2 of them creator-database pages · 120 found · 37 new · 80 already known · 3 unusable · 2 seed searches made this month/)).toBeTruthy();
     expect(screen.getByText('Creator database stopped early: treg 402.')).toBeTruthy();
     expect(screen.getByText('Related queries searched: RevOps newsletters · cold email outreach')).toBeTruthy();
@@ -993,7 +1001,7 @@ describe('ops console: creator index settings', () => {
 
     // A Discover with nothing left to search says so.
     run = discover({ ran: true, searches: 0, deeper: 0, related: [], found: 0, queued: 0, recent: 2 });
-    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />, '/?tab=runs');
     expect(await screen.findByText(/Nothing left to search on these topics this month/)).toBeTruthy();
   });
 
@@ -1006,7 +1014,7 @@ describe('ops console: creator index settings', () => {
       if (url.endsWith('/creator-index/stats')) return { status: 404, body: { error: 'not_found' } };
       return { status: 200, body: { creators: [] } };
     };
-    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />, '/?tab=settings');
     const seeds = (await screen.findByDisplayValue('B2B sales newsletters')) as HTMLTextAreaElement;
     // Each keystroke, as the browser sends it.
     for (const v of ['B2B sales newsletters\n', 'B2B sales newsletters\nRevOps ', 'B2B sales newsletters\nRevOps creators']) {
@@ -1031,6 +1039,35 @@ describe('ops console: creator index settings', () => {
     fireEvent.change(screen.getByDisplayValue('DE, FR'), { target: { value: 'DE, FR, IT' } });
     fireEvent.click(screen.getByText('Discard changes'));
     expect(screen.getByDisplayValue('DE')).toBeTruthy();
+  });
+
+  it('removes a creator after a confirm, and reads the list again', async () => {
+    let listed = [{ id: 'a', status: 'active', name: 'Jo Rivera', headline: null, country: 'US', region: 'US-TX', brandVisible: true, emailsSent: 0, totalReach: 5_000, contact: null, platforms: [] }];
+    respond = (url, method) => {
+      if (url.endsWith('/creator-index/settings')) {
+        return { status: 200, body: { settings: SETTINGS, defaults: SETTINGS, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {} } };
+      }
+      if (url.endsWith('/creator-index/stats')) {
+        return {
+          status: 200,
+          body: { creators: { byStatus: {}, listed: 1, shownToBrands: 1, hiddenFromBrands: 0 }, byCountry: [], candidates: {}, rejections: {}, invites: {}, emailsSent30d: 0, suppressions: {}, spend: { thisMonthUsd: 0, budgetUsd: 10 } },
+        };
+      }
+      // No Content, as the API answers a removal.
+      if (url.endsWith('/creator-index/creators/a') && method === 'DELETE') {
+        listed = [];
+        return { status: 204, body: null };
+      }
+      return { status: 200, body: { creators: listed, total: listed.length } };
+    };
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove' }));
+    expect(confirm).toHaveBeenCalledWith('Remove Jo Rivera and never list them again?');
+    expect(await screen.findByText('0 in all')).toBeTruthy();
+    expect(screen.queryByText('Jo Rivera')).toBeNull();
+    expect(screen.queryByText(/JSON/)).toBeNull();
+    confirm.mockRestore();
   });
 
   describe('the outreach email', () => {
@@ -1095,7 +1132,7 @@ describe('ops console: creator index settings', () => {
 
     it('previews a batch: who, how it opens, who’s skipped and why the rest are left out', async () => {
       respondWith({ outreachEnabled: false, mailer: { configured: true, from: 'keith@openpartner.test' }, inviteMailer: { configured: true, from: 'creators@openpartner.test' } });
-      wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+      wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />, '/?tab=runs');
       expect(await screen.findByText(/Sends from keith@openpartner\.test/)).toBeTruthy();
       // Brands' invites go from a mailbox of their own.
       expect(screen.getByText('Brands’ invites send from creators@openpartner.test.')).toBeTruthy();
@@ -1121,14 +1158,14 @@ describe('ops console: creator index settings', () => {
     it('names the sender, or says the email will say “we” without a name, and counts who the follower cap leaves out', async () => {
       const mailer = { configured: true, from: 'keith@openpartner.test' };
       respondWith({ outreachEnabled: true, mailer, preview: { senderName: null, excluded: { over_max_followers: 12 } } });
-      const { unmount } = wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+      const { unmount } = wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />, '/?tab=runs');
       fireEvent.click(await screen.findByText('Preview batch'));
       expect(await screen.findByText('No sender name, so the email says “we”. Add yours to Send as under Mailboxes.')).toBeTruthy();
       expect(screen.getByText(/over max\. followers 12/)).toBeTruthy();
       unmount();
 
       respondWith({ outreachEnabled: true, mailer, preview: { senderName: 'Jo Smith' } });
-      wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+      wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />, '/?tab=runs');
       fireEvent.click(await screen.findByText('Preview batch'));
       expect(await screen.findByText(/Sends from Jo Smith <keith@openpartner\.test>/)).toBeTruthy();
       expect(screen.queryByText(/No sender name/)).toBeNull();
@@ -1137,7 +1174,7 @@ describe('ops console: creator index settings', () => {
     it('sends a previewed batch after a confirm, and says so', async () => {
       respondWith({ outreachEnabled: true, mailer: { configured: true, from: 'keith@openpartner.test' } });
       const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
-      wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+      wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />, '/?tab=runs');
       fireEvent.click(await screen.findByText('Preview batch'));
       await screen.findByText('Jo Rivera');
       fireEvent.click(screen.getByText('Send this batch'));
@@ -1152,7 +1189,7 @@ describe('ops console: creator index settings', () => {
 
     it('says when there’s no mailbox to send from, and support can preview but not send', async () => {
       respondWith({ outreachEnabled: true, mailer: { configured: false, from: null } });
-      wrap(<CreatorIndexPage operator={{ id: 'pa_2', email: 'support@test', role: 'support' } as never} />);
+      wrap(<CreatorIndexPage operator={{ id: 'pa_2', email: 'support@test', role: 'support' } as never} />, '/?tab=runs');
       expect(await screen.findByText(/The Network has no outreach mailbox set up, so nothing can be sent/)).toBeTruthy();
       expect(screen.getByText(/no invite mailbox set up, so brands’ invites aren’t emailed\. They never go from the outreach mailbox/)).toBeTruthy();
       expect(screen.getByText('Preview batch')).toBeTruthy();

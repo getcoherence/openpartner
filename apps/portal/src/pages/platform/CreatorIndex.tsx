@@ -22,9 +22,11 @@
  * changes, runs and sends need an admin.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useState } from 'react';
+import { useSearchParams } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { theme } from '../../theme.js';
+import { useIsMobile } from '../../lib/useMediaQuery.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select, Table, Textarea, formatDate } from '../../ui.js';
 import { friendlyPlatformError, papi, PlatformApiError, type PlatformOperator } from './lib.js';
 import { brandSignalLabel, shortUrl, type PartnershipSignal } from '../../lib/partnership-signals.js';
@@ -360,11 +362,11 @@ function AddressCell({ creator, canWrite, onSaved }: { creator: OpsCreator; canW
   const c = creator.contact;
   const error = save.error ?? show.error;
   return (
-    <div style={{ minWidth: 220 }}>
+    <div style={{ width: 220, overflowWrap: 'anywhere' }}>
       {c ? (
         <>
-          <div style={{ wordBreak: 'break-all' }}>{`${shown ?? c.masked}${c.verified ? '' : ' (unverified)'}`}</div>
-          {c.foundOn && <div style={{ fontSize: 12, color: theme.textMuted }}>{contactFrom(c.foundOn)}</div>}
+            <div style={{ wordBreak: 'break-all' }}>{`${shown ?? c.masked}${c.verified ? '' : ' (unverified)'}`}</div>
+            {c.foundOn && <div style={{ fontSize: 12, color: theme.textMuted }}>{contactFrom(c.foundOn)}</div>}
         </>
       ) : (
         <span style={{ color: theme.textMuted }}>none yet · hidden from brands</span>
@@ -461,7 +463,7 @@ function LocationCell({
   const c = creator;
   const byOps = c.location?.from === 'ops';
   return (
-    <div style={{ minWidth: 180 }}>
+    <div style={{ width: 180, overflowWrap: 'anywhere' }}>
       <div>{`${c.country ?? '—'}${c.region ? ` (${c.region})` : ''}${c.brandVisible ? '' : ' · hidden'}`}</div>
       {c.location &&
         (byOps ? (
@@ -572,44 +574,88 @@ function ListTextarea({
   );
 }
 
-/** A card ops can fold to its title, remembered in this browser. `folded`
- *  is what they'd miss while it's folded: a run going, unsaved changes. */
-function FoldingCard({ id, title, folded, children }: { id: string; title: string; folded?: React.ReactNode; children: React.ReactNode }) {
-  const key = `op-creator-index-${id}-open`;
-  const [open, setOpen] = useState(() => {
-    try {
-      return window.localStorage.getItem(key) !== '0';
-    } catch {
-      return true;
-    }
-  });
-  const toggle = () => {
-    try {
-      window.localStorage.setItem(key, open ? '0' : '1');
-    } catch {
-      // Not remembered, then.
-    }
-    setOpen(!open);
-  };
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <Card>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: open ? 12 : 0 }}>
-        <button
-          type="button"
-          onClick={toggle}
-          aria-expanded={open}
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', padding: 0, color: theme.text, fontSize: 15, fontWeight: 600, cursor: 'pointer' }}
-        >
-          <span aria-hidden="true" style={{ fontSize: 11, color: theme.textMuted, width: 10 }}>
-            {open ? '▼' : '▶'}
-          </span>
-          {title}
-        </button>
-        {!open && folded && <span style={{ fontSize: 12, color: theme.textMuted }}>{folded}</span>}
-      </div>
-      {open && children}
+      <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>{title}</div>
+      {children}
     </Card>
   );
+}
+
+/** The page's tabs, kept in the address (?tab=) so a reload stays put. */
+type Tab = 'creators' | 'runs' | 'settings';
+const TABS: Array<{ key: Tab; label: string }> = [
+  { key: 'creators', label: 'Creators' },
+  { key: 'runs', label: 'Runs' },
+  { key: 'settings', label: 'Settings' },
+];
+
+/** `notes` is what's worth seeing from another tab: a run going, unsaved
+ *  changes, a lost mailbox. */
+function Tabs({ tab, onTab, notes }: { tab: Tab; onTab: (t: Tab) => void; notes: Partial<Record<Tab, React.ReactNode>> }) {
+  return (
+    <div role="tablist" aria-label="Creator index" style={{ display: 'flex', gap: 4, borderBottom: `1px solid ${theme.border}`, marginBottom: 16 }}>
+      {TABS.map((t) => (
+        <button
+          key={t.key}
+          type="button"
+          role="tab"
+          aria-selected={tab === t.key}
+          onClick={() => onTab(t.key)}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 8,
+            background: 'none',
+            border: 'none',
+            borderBottom: `2px solid ${tab === t.key ? theme.accent : 'transparent'}`,
+            marginBottom: -1,
+            padding: '8px 12px',
+            color: tab === t.key ? theme.text : theme.textMuted,
+            fontSize: 14,
+            fontWeight: 600,
+            whiteSpace: 'nowrap',
+            cursor: 'pointer',
+          }}
+        >
+          {t.label}
+          {/* Spaced for screen readers ("Runs running"); flex drops it from the layout. */}
+          {notes[t.key] ? ' ' : null}
+          {notes[t.key]}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Shortest the list gets, however little of the window is left for it. */
+const MIN_LIST_HEIGHT = 320;
+
+/** From the element's top down to the bottom of the window, less `gap`: the
+ *  list scrolls within it, so its scrollbars stay in view. None on phones,
+ *  where the list is cards in the page's own scroll. */
+function useRestOfWindow(gap: number): [(el: HTMLDivElement | null) => void, number | undefined] {
+  const isMobile = useIsMobile();
+  const [el, setEl] = useState<HTMLDivElement | null>(null);
+  const [height, setHeight] = useState<number>();
+  useLayoutEffect(() => {
+    if (!el || isMobile) {
+      setHeight(undefined);
+      return;
+    }
+    const measure = () => setHeight(Math.max(MIN_LIST_HEIGHT, Math.floor(window.innerHeight - (el.getBoundingClientRect().top + window.scrollY) - gap)));
+    measure();
+    window.addEventListener('resize', measure);
+    // Whatever moves the list down (an error, a filter's note) resizes the page.
+    const resized = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    resized?.observe(document.body);
+    return () => {
+      window.removeEventListener('resize', measure);
+      resized?.disconnect();
+    };
+  }, [el, isMobile, gap]);
+  return [setEl, height];
 }
 
 /** Narrows the list to who ops can still fill in. */
@@ -767,6 +813,10 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
   const running = (Object.entries(s?.runs ?? {}) as Array<[RunKind, IndexRun | undefined]>).filter(([, r]) => r && !r.finishedAt).map(([job]) => JOB_LABEL[job]);
   const unsaved = !!draft && !!state.data && settingsKey(draft) !== settingsKey(state.data.settings);
   const capTooLow = draft?.maxFollowers != null && draft.maxFollowers <= draft.minFollowers;
+  const [params, setParams] = useSearchParams();
+  const tab: Tab = TABS.find((t) => t.key === params.get('tab'))?.key ?? 'creators';
+  // Down to the page's bottom padding.
+  const [listRef, listHeight] = useRestOfWindow(34);
 
   return (
     <Page
@@ -777,7 +827,17 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
       {!state.data || !draft ? (
         <Card>Loading…</Card>
       ) : (
+        <>
+        <Tabs
+          tab={tab}
+          onTab={(t) => setParams(t === 'creators' ? {} : { tab: t }, { replace: true })}
+          notes={{
+            runs: running.length > 0 && <Pill on>running</Pill>,
+            settings: mailboxLost ? <span style={{ fontSize: 12, color: theme.danger }}>connection lost</span> : unsaved && <Pill on={false}>unsaved</Pill>,
+          }}
+        />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {tab === 'runs' && (
           <Card>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
               <span style={{ fontSize: 15, fontWeight: 600, marginRight: 4 }}>Status</span>
@@ -847,8 +907,10 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
               </div>
             )}
           </Card>
+          )}
 
-          <FoldingCard id="settings" title="Settings" folded={unsaved ? 'Unsaved changes' : null}>
+          {tab === 'settings' && (
+          <Section title="Settings">
             <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
               <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
                 <input type="checkbox" checked={draft.enabled} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })} />
@@ -1057,13 +1119,17 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                 {state.data.updatedAt ? ` on ${new Date(state.data.updatedAt).toLocaleString()}` : ''}
               </div>
             )}
-          </FoldingCard>
+          </Section>
+          )}
 
-          <FoldingCard id="mailboxes" title="Mailboxes" folded={mailboxLost ? <span style={{ color: theme.danger }}>Connection lost</span> : null}>
+          {tab === 'settings' && (
+          <Section title="Mailboxes">
             <MailboxesSection outreach={mailbox} invite={inviteMailbox} oauth={!!state.data.mailboxOAuth} canWrite={canWrite} onChange={refresh} />
-          </FoldingCard>
+          </Section>
+          )}
 
-          <FoldingCard id="runs" title="Runs" folded={running.length ? `${running.join(', ')} running…` : null}>
+          {tab === 'runs' && (
+          <Section title="Runs">
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {canWrite && (
                 <>
@@ -1207,148 +1273,156 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                 </div>
               </div>
             )}
-          </FoldingCard>
+          </Section>
+          )}
 
-          <Card>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
-              <div style={{ fontSize: 15, fontWeight: 600 }}>Listed creators</div>
-              {creators.data?.total != null && (
-                <span style={{ fontSize: 13, color: theme.textMuted }}>
-                  {filtered ? `${creators.data.total.toLocaleString()} match` : `${creators.data.total.toLocaleString()} in all`}
-                  {creators.data.total > creators.data.creators.length ? `, newest ${creators.data.creators.length} shown` : ''}
-                </span>
-              )}
-              {!filtered && (s?.creators.listedLast24h ?? 0) > 0 && (
-                <span style={{ fontSize: 13, color: theme.success }}>{s!.creators.listedLast24h!.toLocaleString()} new in the last 24 hours</span>
-              )}
-            </div>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                setSearchFor(q.trim());
-              }}
-              style={{ display: 'flex', gap: 8, marginBottom: 12 }}
-            >
-              <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name, headline, handle or profile URL" />
-              <Button type="submit" variant="secondary">Search</Button>
-            </form>
+          {tab === 'creators' && (
+          <div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
-              <span style={{ fontSize: 13, color: theme.textMuted }}>Only:</span>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  setSearchFor(q.trim());
+                }}
+                style={{ display: 'flex', gap: 8, flex: '1 1 320px', maxWidth: 480 }}
+              >
+                <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name, headline, handle or profile URL" />
+                <Button type="submit" variant="secondary">Search</Button>
+              </form>
+              <span style={{ fontSize: 13, color: theme.textMuted, marginLeft: 8 }}>Only:</span>
               <MissingToggle on={missing.includes('address')} onClick={() => toggleMissing('address')}>
                 No address
               </MissingToggle>
               <MissingToggle on={missing.includes('state')} onClick={() => toggleMissing('state')}>
                 No state
               </MissingToggle>
-              {missing.length > 0 && (
-                <span style={{ fontSize: 12, color: theme.textMuted }}>
-                  {missing.length === 2
-                    ? 'US creators with neither an address nor a state.'
-                    : missing[0] === 'address'
-                      ? 'Creators with no address: hidden from brands until they have one.'
-                      : 'US creators with no state: hidden from brands until one is set.'}{' '}
-                  Claimed profiles are left out.
-                </span>
-              )}
+              <span style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginLeft: 'auto', fontSize: 13 }}>
+                {creators.data?.total != null && (
+                  <span style={{ color: theme.textMuted }}>
+                    {filtered ? `${creators.data.total.toLocaleString()} match` : `${creators.data.total.toLocaleString()} in all`}
+                    {creators.data.total > creators.data.creators.length ? `, newest ${creators.data.creators.length} shown` : ''}
+                  </span>
+                )}
+                {!filtered && (s?.creators.listedLast24h ?? 0) > 0 && (
+                  <span style={{ color: theme.success }}>{s!.creators.listedLast24h!.toLocaleString()} new in the last 24 hours</span>
+                )}
+              </span>
             </div>
-            <Table
-              columns={['Creator', 'Where', 'Reach', 'Address', 'Status', '']}
-              rows={(creators.data?.creators ?? []).map((c) => [
-                <div key="n">
-                  <div style={{ fontWeight: 500 }}>{c.name ?? '—'}</div>
-                  <div style={{ fontSize: 12, color: theme.textMuted }}>
-                    {c.platforms.map((p) => (
-                      <a
-                        key={p.profileUrl}
-                        href={p.profileUrl}
-                        target="_blank"
-                        rel="noreferrer noopener"
-                        aria-label={platformName(p.platform)}
-                        title={platformName(p.platform)}
-                        style={{ display: 'inline-flex', color: theme.textMuted, marginRight: 8, marginTop: 4 }}
-                      >
-                        <PlatformMark platform={p.platform} size={14} />
-                      </a>
-                    ))}
-                  </div>
-                  {(c.partnershipSignals ?? []).map((sig) => (
-                    <div key={sig.kind} style={{ fontSize: 12, color: theme.success }}>
-                      {brandSignalLabel(sig)}
-                      {sig.evidence && (
-                        <>
-                          {' · '}
-                          <a href={sig.evidence} target="_blank" rel="noreferrer noopener" style={{ color: theme.textMuted }}>
-                            {shortUrl(sig.evidence)}
-                          </a>
-                        </>
-                      )}
+            {missing.length > 0 && (
+              <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 12 }}>
+                {missing.length === 2
+                  ? 'US creators with neither an address nor a state.'
+                  : missing[0] === 'address'
+                    ? 'Creators with no address: hidden from brands until they have one.'
+                    : 'US creators with no state: hidden from brands until one is set.'}{' '}
+                Claimed profiles are left out.
+              </div>
+            )}
+            <div ref={listRef}>
+              <Table
+                columns={['Creator', 'Where', 'Reach', 'Address', 'Status']}
+                maxHeight={listHeight}
+                rows={(creators.data?.creators ?? []).map((c) => [
+                  // Widths capped so the columns wrap to fit a laptop screen.
+                  <div key="n" style={{ maxWidth: 220, overflowWrap: 'anywhere' }}>
+                    <div style={{ fontWeight: 500 }}>{c.name ?? '—'}</div>
+                    <div style={{ fontSize: 12, color: theme.textMuted }}>
+                      {c.platforms.map((p) => (
+                        <a
+                          key={p.profileUrl}
+                          href={p.profileUrl}
+                          target="_blank"
+                          rel="noreferrer noopener"
+                          aria-label={platformName(p.platform)}
+                          title={platformName(p.platform)}
+                          style={{ display: 'inline-flex', color: theme.textMuted, marginRight: 8, marginTop: 4 }}
+                        >
+                          <PlatformMark platform={p.platform} size={14} />
+                        </a>
+                      ))}
                     </div>
-                  ))}
-                </div>,
-                <LocationCell
-                  key={`w-${c.id}`}
-                  creator={c}
-                  canWrite={canWrite && c.status !== 'claimed'}
-                  hiddenRegions={state.data?.settings.hiddenRegions ?? []}
-                  onSaved={() => {
-                    qc.invalidateQueries({ queryKey: ['platform-creator-index-creators'] });
-                    refresh();
-                  }}
-                />,
-                <div key="r">
-                  <div style={{ fontWeight: 500 }}>{c.totalReach.toLocaleString()}</div>
-                  {c.platforms
-                    .filter((p) => p.followerCount != null)
-                    .map((p) => (
-                      <div
-                        key={p.profileUrl}
-                        title={`${platformName(p.platform)} ${p.followerCount!.toLocaleString()}`}
-                        style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: theme.textMuted, whiteSpace: 'nowrap', marginTop: 2 }}
-                      >
-                        <PlatformMark platform={p.platform} size={12} label={platformName(p.platform)} />
-                        {p.followerCount!.toLocaleString()}
+                    {(c.partnershipSignals ?? []).map((sig) => (
+                      <div key={sig.kind} style={{ fontSize: 12, color: theme.success }}>
+                        {brandSignalLabel(sig)}
+                        {sig.evidence && (
+                          <>
+                            {' · '}
+                            <a href={sig.evidence} target="_blank" rel="noreferrer noopener" style={{ color: theme.textMuted }}>
+                              {shortUrl(sig.evidence)}
+                            </a>
+                          </>
+                        )}
                       </div>
                     ))}
-                </div>,
-                <AddressCell
-                  key={`a-${c.id}`}
-                  creator={c}
-                  canWrite={canWrite && c.status !== 'claimed'}
-                  onSaved={() => {
-                    qc.invalidateQueries({ queryKey: ['platform-creator-index-creators'] });
-                    refresh();
-                  }}
-                />,
-                <div key="s">
-                  <div>{`${c.status}${c.emailsSent ? ` · ${c.emailsSent} sent` : ''}`}</div>
-                  {c.listedAt && (
-                    <div style={{ fontSize: 12, color: isNew(c.listedAt) ? theme.success : theme.textMuted, whiteSpace: 'nowrap' }}>
-                      {isNew(c.listedAt) ? 'new · ' : ''}listed {formatDate(c.listedAt, { relative: true })}
-                    </div>
-                  )}
-                  {c.outreachSentAt && (
-                    <div title={formatDate(c.outreachSentAt)} style={{ fontSize: 12, color: theme.textMuted, whiteSpace: 'nowrap' }}>
-                      outreach sent {formatDate(c.outreachSentAt, { relative: true })}
-                    </div>
-                  )}
-                </div>,
-                canWrite && c.status !== 'claimed' ? (
-                  <Button
-                    key="r"
-                    variant="secondary"
-                    onClick={() => {
-                      if (window.confirm(`Remove ${c.name ?? 'this creator'} and never list them again?`)) remove.mutate(c.id);
+                  </div>,
+                  <LocationCell
+                    key={`w-${c.id}`}
+                    creator={c}
+                    canWrite={canWrite && c.status !== 'claimed'}
+                    hiddenRegions={state.data?.settings.hiddenRegions ?? []}
+                    onSaved={() => {
+                      qc.invalidateQueries({ queryKey: ['platform-creator-index-creators'] });
+                      refresh();
                     }}
-                  >
-                    Remove
-                  </Button>
-                ) : (
-                  ''
-                ),
-              ])}
-            />
-          </Card>
+                  />,
+                  <div key="r">
+                    <div style={{ fontWeight: 500 }}>{c.totalReach.toLocaleString()}</div>
+                    {c.platforms
+                      .filter((p) => p.followerCount != null)
+                      .map((p) => (
+                        <div
+                          key={p.profileUrl}
+                          title={`${platformName(p.platform)} ${p.followerCount!.toLocaleString()}`}
+                          style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: theme.textMuted, whiteSpace: 'nowrap', marginTop: 2 }}
+                        >
+                          <PlatformMark platform={p.platform} size={12} label={platformName(p.platform)} />
+                          {p.followerCount!.toLocaleString()}
+                        </div>
+                      ))}
+                  </div>,
+                  <AddressCell
+                    key={`a-${c.id}`}
+                    creator={c}
+                    canWrite={canWrite && c.status !== 'claimed'}
+                    onSaved={() => {
+                      qc.invalidateQueries({ queryKey: ['platform-creator-index-creators'] });
+                      refresh();
+                    }}
+                  />,
+                  <div key="s">
+                    <div>{`${c.status}${c.emailsSent ? ` · ${c.emailsSent} sent` : ''}`}</div>
+                    {c.listedAt && (
+                      <div style={{ fontSize: 12, color: isNew(c.listedAt) ? theme.success : theme.textMuted, whiteSpace: 'nowrap' }}>
+                        {isNew(c.listedAt) ? 'new · ' : ''}listed {formatDate(c.listedAt, { relative: true })}
+                      </div>
+                    )}
+                    {c.outreachSentAt && (
+                      <div title={formatDate(c.outreachSentAt)} style={{ fontSize: 12, color: theme.textMuted, whiteSpace: 'nowrap' }}>
+                        outreach sent {formatDate(c.outreachSentAt, { relative: true })}
+                      </div>
+                    )}
+                    {canWrite && c.status !== 'claimed' && (
+                      <div style={{ marginTop: 4 }}>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={remove.isPending && remove.variables === c.id}
+                          onClick={() => {
+                            if (window.confirm(`Remove ${c.name ?? 'this creator'} and never list them again?`)) remove.mutate(c.id);
+                          }}
+                        >
+                          Remove
+                        </Button>
+                      </div>
+                    )}
+                  </div>,
+                ])}
+              />
+            </div>
+          </div>
+          )}
         </div>
+        </>
       )}
     </Page>
   );
