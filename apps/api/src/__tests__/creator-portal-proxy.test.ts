@@ -290,6 +290,17 @@ describe('creator-api proxy: image uploads', () => {
   });
 });
 
+describe('creator-api proxy: cover from YouTube', () => {
+  it('forwards the YouTube banner request', async () => {
+    const res = await request(app)
+      .post('/creator-api/creators/me/cover/youtube')
+      .set('Cookie', 'op_network_creator_session=abc')
+      .send({});
+    expect(res.status).toBe(200);
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['POST /creators/me/cover/youtube']);
+  });
+});
+
 describe('creator-api proxy: storefront', () => {
   it('forwards the creator storefront, package and bookings calls', async () => {
     const cookie = 'op_network_creator_session=abc';

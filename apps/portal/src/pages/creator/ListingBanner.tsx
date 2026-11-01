@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react';
 import { isTrustedEmbedUrl } from '@openpartner/db';
 import { theme } from '../../theme.js';
+import { CoverSourceLink, type CoverSource } from '../../lib/PlatformMark.js';
 
 /** What the Network sends for an offering's video (built from the parsed
  *  YouTube / Vimeo / Loom link — see packages/db/src/program-video.ts). */
@@ -16,19 +17,21 @@ export interface OfferingVideo {
  * image when it set one; otherwise a wash made from its own logo — blurred
  * and scaled into a colour field — so every card gets a banner in the
  * brand's colours without a gap in the grid. No logo → the tinted base.
+ * A creator's cover copied from YouTube carries YouTube's icon.
  */
 export function ListingBanner({
   coverUrl,
   logoUrl,
+  coverSource,
   style,
 }: {
   coverUrl: string | null | undefined;
   logoUrl: string | null | undefined;
+  coverSource?: CoverSource | null;
   style?: CSSProperties;
 }) {
   return (
     <div
-      aria-hidden
       style={{
         position: 'relative',
         aspectRatio: '3 / 1',
@@ -55,6 +58,7 @@ export function ListingBanner({
           }}
         />
       ) : null}
+      {coverUrl && coverSource && <CoverSourceLink source={coverSource} />}
     </div>
   );
 }

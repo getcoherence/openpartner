@@ -110,6 +110,9 @@ const ALLOWED_EXACT = new Set([
   '/creators/me/uploads/avatar',
   // The banner on the public profile and the marketplace storefront card.
   '/creators/me/uploads/cover',
+  // Use the verified YouTube channel's banner as the cover, kept in step
+  // with YouTube by the Network (its youtube-cover.ts).
+  '/creators/me/cover/youtube',
   // Where the creator is based: the one-time prompt (GET + PUT).
   '/creators/me/location',
   // Storefront (the Network's docs/creator-storefront.md): the bookings

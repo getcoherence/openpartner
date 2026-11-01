@@ -5,7 +5,8 @@
  * as the creator portal (checklist, categories, audience incl. size,
  * platforms, portfolio), wired to the brand's /network/me… proxies. The
  * creator page keeps using /api/creator-api. Both edit the cover image (the
- * storefront card's banner), once the Network reports the field.
+ * storefront card's banner), once the Network reports the field, and offer
+ * the verified YouTube channel's banner as the cover.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
@@ -50,6 +51,21 @@ interface Call {
   body: unknown;
 }
 let calls: Call[] = [];
+/** What GET …/platforms answers. */
+let platforms: unknown[] = [];
+/** What POST …/cover/youtube answers. */
+let youtubeAnswer: { status: number; body: unknown } = { status: 200, body: {} };
+
+const COPY_URL = 'https://cdn.example.com/creators/crt_1/youtube/banner.jpg';
+const CHANNEL_SOURCE = { platform: 'youtube', url: 'https://www.youtube.com/channel/UC_pat' };
+const VERIFIED_YOUTUBE = {
+  id: 'cpf_1',
+  platform: 'youtube',
+  handle: 'pat',
+  profileUrl: 'https://www.youtube.com/@pat',
+  followerCount: 1200,
+  verified: true,
+};
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -57,11 +73,14 @@ function json(status: number, body: unknown): Response {
 
 beforeEach(() => {
   calls = [];
+  platforms = [];
+  youtubeAnswer = { status: 200, body: { coverImageUrl: COPY_URL, coverSource: CHANNEL_SOURCE } };
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = init?.method ?? 'GET';
     calls.push({ method, url, body: typeof init?.body === 'string' ? JSON.parse(init.body) : null });
-    if (url.endsWith('/platforms') && method === 'GET') return json(200, { platforms: [] });
+    if (url.endsWith('/platforms') && method === 'GET') return json(200, { platforms });
+    if (url.endsWith('/cover/youtube')) return json(youtubeAnswer.status, youtubeAnswer.body);
     // Refetch after a save: the profile endpoints answer with the profile.
     if ((url.endsWith('/network/me/profile') || url.endsWith('/creators/me')) && method === 'GET') return json(200, PROFILE);
     if (url.endsWith('/uploads/cover')) return json(200, { coverImageUrl: 'https://cdn.example.com/new-cover.png' });
@@ -179,6 +198,60 @@ describe('creator profile page (same editor, creator endpoints)', () => {
     const body = await savedBody(page);
     expect(calls.find((c) => c.method === 'PATCH')!.url).toBe('/api/network/me/profile');
     expect(body).toMatchObject({ coverImageUrl: 'https://cdn.example.com/new-cover.png' });
+  });
+
+  it("uses the verified YouTube channel's banner, marks it as YouTube's, and saves its URL", async () => {
+    platforms = [VERIFIED_YOUTUBE];
+    const page = renderWith(<CreatorMyProfilePage />, 'creator-my-profile', { ...PROFILE, coverImageUrl: null, coverSource: null });
+    fireEvent.click(await page.findByRole('button', { name: 'Use my YouTube banner' }));
+    const cover = page.getByText('Cover image (optional)').parentElement!;
+    await waitFor(() => expect(cover.querySelector('img')?.getAttribute('src')).toBe(COPY_URL));
+    expect(calls.find((c) => c.url.endsWith('/cover/youtube'))).toMatchObject({
+      method: 'POST',
+      url: '/api/creator-api/creators/me/cover/youtube',
+    });
+    // YouTube's icon on the copy, linking to the channel; the button goes.
+    expect(page.getByRole('link', { name: 'YouTube' }).getAttribute('href')).toBe(CHANNEL_SOURCE.url);
+    expect(page.queryByRole('button', { name: 'Use my YouTube banner' })).toBeNull();
+    expect(page.getByRole('button', { name: 'Remove' }).getAttribute('title')).toBe('Removes it here. Your YouTube banner stays.');
+    expect(await savedBody(page)).toMatchObject({ coverImageUrl: COPY_URL });
+  });
+
+  it("shows the Network's reason when there's no banner to use", async () => {
+    platforms = [VERIFIED_YOUTUBE];
+    youtubeAnswer = { status: 409, body: { error: 'no_youtube_banner', detail: 'Your YouTube channel has no banner.' } };
+    const page = renderWith(<CreatorMyProfilePage />, 'creator-my-profile', { ...PROFILE, coverImageUrl: null, coverSource: null });
+    fireEvent.click(await page.findByRole('button', { name: 'Use my YouTube banner' }));
+    expect(await page.findByText('Your YouTube channel has no banner.')).toBeTruthy();
+  });
+
+  it('a cover already from YouTube shows the icon and no button', async () => {
+    platforms = [VERIFIED_YOUTUBE];
+    const page = renderWith(<CreatorMyProfilePage />, 'creator-my-profile', { ...PROFILE, coverImageUrl: COPY_URL, coverSource: CHANNEL_SOURCE });
+    await waitFor(() => expect(calls.some((c) => c.url.endsWith('/platforms'))).toBe(true));
+    expect(page.getByRole('link', { name: 'YouTube' }).getAttribute('href')).toBe(CHANNEL_SOURCE.url);
+    expect(page.queryByRole('button', { name: 'Use my YouTube banner' })).toBeNull();
+  });
+
+  it('offers no YouTube banner without a verified channel, or on a Network that predates it', async () => {
+    platforms = [{ ...VERIFIED_YOUTUBE, verified: false }];
+    const unverified = renderWith(<CreatorMyProfilePage />, 'creator-my-profile', { ...PROFILE, coverImageUrl: null, coverSource: null });
+    await waitFor(() => expect(unverified.getByText('Verify')).toBeTruthy());
+    expect(unverified.queryByRole('button', { name: 'Use my YouTube banner' })).toBeNull();
+    cleanup();
+
+    platforms = [VERIFIED_YOUTUBE];
+    const older = renderWith(<CreatorMyProfilePage />, 'creator-my-profile', { ...PROFILE, coverImageUrl: null });
+    await waitFor(() => expect(older.getByLabelText('YouTube followers')).toBeTruthy());
+    expect(older.queryByRole('button', { name: 'Use my YouTube banner' })).toBeNull();
+  });
+
+  it('the partner page uses the YouTube banner through the brand proxy', async () => {
+    platforms = [VERIFIED_YOUTUBE];
+    const page = renderWith(<MyProfilePage />, 'network-my-profile', { ...PROFILE, coverImageUrl: null, coverSource: null });
+    fireEvent.click(await page.findByRole('button', { name: 'Use my YouTube banner' }));
+    await waitFor(() => expect(page.getByRole('link', { name: 'YouTube' })).toBeTruthy());
+    expect(calls.find((c) => c.url.endsWith('/cover/youtube'))).toMatchObject({ method: 'POST', url: '/api/network/me/cover/youtube' });
   });
 
   it('the partner page leaves the cover out on a Network that predates it', async () => {

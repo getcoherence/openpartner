@@ -16,7 +16,7 @@ import { ExternalLink } from 'lucide-react';
 import { audienceSizeLabel } from '@openpartner/db';
 import { theme } from '../../theme.js';
 import { VerifiedBadge } from '../../lib/VerifiedBadge.js';
-import { PlatformMark } from '../../lib/PlatformMark.js';
+import { PlatformMark, type CoverSource } from '../../lib/PlatformMark.js';
 import { SectionCard, SectionGap } from '../../lib/Surface.js';
 import { creatorApi } from './creator-api.js';
 import { ListingBanner } from './ListingBanner.js';
@@ -29,6 +29,8 @@ export interface PublicProfile {
   avatarUrl: string | null;
   /** Wide banner; null or absent (older Network) → washed from the avatar. */
   coverImageUrl?: string | null;
+  /** Set when the cover is a copy of their YouTube banner. */
+  coverSource?: CoverSource | null;
   bio: string | null;
   categories: string[];
   audienceLocations: string[];
@@ -65,7 +67,7 @@ export function CreatorProfileView({ data, storefront }: { data: PublicProfile; 
       <SectionCard style={{ overflow: 'hidden' }}>
         {/* Cover (or a wash of the avatar), bleeding over the Card's 20px
             padding; the avatar sits half over it, profile style. */}
-        <ListingBanner coverUrl={data.coverImageUrl} logoUrl={data.avatarUrl} style={{ margin: '-20px -20px 0' }} />
+        <ListingBanner coverUrl={data.coverImageUrl} logoUrl={data.avatarUrl} coverSource={data.coverSource} style={{ margin: '-20px -20px 0' }} />
         <div style={{ position: 'relative', marginTop: -40 }}>
           {data.avatarUrl ? (
             <img

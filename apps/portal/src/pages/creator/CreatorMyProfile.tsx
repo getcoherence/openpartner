@@ -11,6 +11,7 @@ import {
   type VerificationStart,
 } from '../../lib/NetworkProfileEditor.js';
 import { publicStorefrontUrl } from '../../lib/public-site.js';
+import type { CoverSource } from '../../lib/PlatformMark.js';
 import { PasswordSection, type PasswordBody } from '../Account.js';
 import { creatorErrorCode } from './CreatorSignin.js';
 import { CreatorMessagesCard } from './CreatorReview.js';
@@ -22,6 +23,8 @@ export const creatorProfileAdapter: NetworkProfileAdapter = {
   updateProfile: (body) => creatorApi('/creators/me', { method: 'PATCH', body }),
   uploadAvatar: (file) => creatorApi<{ avatarUrl: string }>('/creators/me/uploads/avatar', { method: 'POST', body: file }),
   uploadCover: (file) => creatorApi<{ coverImageUrl: string }>('/creators/me/uploads/cover', { method: 'POST', body: file }),
+  copyYouTubeBanner: () =>
+    creatorApi<{ coverImageUrl: string; coverSource: CoverSource | null }>('/creators/me/cover/youtube', { method: 'POST', body: {} }),
   listPlatforms: () => creatorApi<{ platforms: PlatformRow[] }>('/creators/me/platforms'),
   putPlatform: (platform, body) => creatorApi(`/creators/me/platforms/${platform}`, { method: 'PUT', body }),
   deletePlatform: (platform) => creatorApi(`/creators/me/platforms/${platform}`, { method: 'DELETE' }),
