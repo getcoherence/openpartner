@@ -123,6 +123,7 @@ export function Table({
   empty = 'No rows yet.',
   maxHeight,
   footer,
+  dense,
 }: {
   columns: (string | { label: string; align?: 'left' | 'right' })[];
   rows: ReactNode[][];
@@ -132,6 +133,8 @@ export function Table({
   maxHeight?: number;
   /** Under the rows, inside the scroll: a "load more", say. */
   footer?: ReactNode;
+  /** Tighter cells, for a wide table to fit a laptop screen. */
+  dense?: boolean;
 }) {
   const cols = columns.map((c) => (typeof c === 'string' ? { label: c, align: 'left' as const } : c));
   const isMobile = useIsMobile();
@@ -220,7 +223,7 @@ export function Table({
                 key={c.label}
                 style={{
                   textAlign: c.align ?? 'left',
-                  padding: '12px 18px',
+                  padding: dense ? '10px 12px' : '12px 18px',
                   fontWeight: 500,
                   color: theme.textMuted,
                   fontSize: 12,
@@ -250,7 +253,7 @@ export function Table({
                   <td
                     key={j}
                     style={{
-                      padding: '14px 18px',
+                      padding: dense ? '10px 12px' : '14px 18px',
                       textAlign: cols[j]?.align ?? 'left',
                       fontVariantNumeric: 'tabular-nums',
                     }}
