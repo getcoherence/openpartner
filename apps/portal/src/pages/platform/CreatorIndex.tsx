@@ -31,17 +31,18 @@ import { brandSignalLabel, shortUrl, type PartnershipSignal } from '../../lib/pa
 import { PlatformMark, platformName } from '../../lib/PlatformMark.js';
 import { MailboxesSection, type MailboxState } from './Mailboxes.js';
 
-type DiscoverySource = 'storefronts' | 'sponsorPages' | 'people';
+type DiscoverySource = 'creatorDatabase' | 'storefronts' | 'sponsorPages' | 'people';
 
 /** Where seed queries are searched, as ops read it. */
 const DISCOVERY_SOURCES: Array<{ key: DiscoverySource; label: string }> = [
+  { key: 'creatorDatabase', label: 'Creator database (YouTube and X, with brand deals)' },
   { key: 'storefronts', label: 'Sponsorship storefronts' },
   { key: 'sponsorPages', label: 'Creators’ sponsor and media-kit pages' },
   { key: 'people', label: 'Anyone who posts about the topic' },
 ];
 
 /** Until the Network sends its own. */
-const SOURCE_DEFAULTS: Record<DiscoverySource, boolean> = { storefronts: true, sponsorPages: true, people: false };
+const SOURCE_DEFAULTS: Record<DiscoverySource, boolean> = { creatorDatabase: false, storefronts: true, sponsorPages: true, people: false };
 
 interface IndexSettings {
   enabled: boolean;
@@ -58,7 +59,11 @@ interface IndexSettings {
   excludedCountries: string[];
   hiddenRegions: string[];
   seedQueries: string[];
-  discoverySources?: Record<DiscoverySource, boolean>;
+  /** creatorDatabase is absent from a Network that predates it, and then
+   *  isn't offered (nor sent). */
+  discoverySources?: Partial<Record<DiscoverySource, boolean>>;
+  /** Creators taken from the creator database per run. */
+  creatorDatabasePerRun?: number;
   requirePartnershipSignal?: boolean;
   /** Profiles read at once (1–20). */
   readConcurrency?: number;
@@ -206,6 +211,17 @@ function contactFrom(source: string): string {
   return shortUrl(source);
 }
 
+/** A Discover run's creator-database source, when it ran. */
+function databaseRun(r: Record<string, unknown>): { searches?: unknown; stoppedBy?: unknown } | null {
+  const by = r.bySource as Record<string, { searches?: unknown; stoppedBy?: unknown }> | undefined;
+  return by?.creatorDatabase ?? null;
+}
+
+function databasePages(r: Record<string, unknown>): number {
+  const pages = databaseRun(r)?.searches;
+  return typeof pages === 'number' ? pages : 0;
+}
+
 /** What a finished run did, in one line. */
 function runSummary(job: RunKind, r: Record<string, unknown> | null): string {
   if (!r) return '';
@@ -219,8 +235,12 @@ function runSummary(job: RunKind, r: Record<string, unknown> | null): string {
       ? [
           `${n('searches')} searches`,
           n('deeper') ? `${n('deeper')} of them deeper` : '',
+          databasePages(r) ? `${databasePages(r)} of them creator-database pages` : '',
           `${n('found')} found`,
           `${n('queued')} new`,
+          // Absent from a Network that predates them.
+          typeof r.known === 'number' ? `${n('known')} already known` : '',
+          n('unusable') ? `${n('unusable')} unusable` : '',
           n('recent') ? `${n('recent')} seed searches made this month` : '',
         ]
       : job === 'read'
@@ -243,6 +263,9 @@ function RunLine({ job, run }: { job: RunKind; run: IndexRun | undefined }) {
           : `${formatDate(run.finishedAt, { relative: true })}: ${runSummary(job, r)}`}
       </span>
       {!running && typeof r?.stoppedBy === 'string' && <div style={{ color: theme.danger }}>Stopped early: {reasonText(r.stoppedBy)}.</div>}
+      {!running && job === 'discover' && r && typeof databaseRun(r)?.stoppedBy === 'string' && (
+        <div style={{ color: theme.danger }}>Creator database stopped early: {reasonText(databaseRun(r)!.stoppedBy as string)}.</div>
+      )}
       {skipped.map(([platform, why]) => (
         <div key={platform} style={{ color: theme.danger }}>
           {platform === 'youtube' ? 'YouTube' : platform} set aside: {reasonText(why)}. Those profiles are tried again in an hour.
@@ -920,13 +943,13 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
             <div style={{ marginTop: 14 }}>
               <Label>Search each query in</Label>
               <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
-                {DISCOVERY_SOURCES.map((src) => {
+                {DISCOVERY_SOURCES.filter((src) => src.key !== 'creatorDatabase' || draft.discoverySources?.creatorDatabase !== undefined).map((src) => {
                   const sources = draft.discoverySources ?? SOURCE_DEFAULTS;
                   return (
                     <label key={src.key} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
                       <input
                         type="checkbox"
-                        checked={sources[src.key]}
+                        checked={sources[src.key] ?? SOURCE_DEFAULTS[src.key]}
                         disabled={!canWrite}
                         onChange={(e) => setDraft({ ...draft, discoverySources: { ...sources, [src.key]: e.target.checked } })}
                       />
@@ -935,9 +958,25 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                   );
                 })}
               </div>
+              {draft.discoverySources?.creatorDatabase && draft.creatorDatabasePerRun !== undefined && (
+                <div style={{ marginTop: 10, maxWidth: 280 }}>
+                  <Label>Creator database: creators per run</Label>
+                  <Input
+                    type="number"
+                    aria-label="Creator database: creators per run"
+                    min={0}
+                    max={500}
+                    step={25}
+                    value={draft.creatorDatabasePerRun}
+                    disabled={!canWrite}
+                    onChange={(e) => setDraft({ ...draft, creatorDatabasePerRun: Math.min(500, Math.max(0, Math.round(Number(e.target.value) || 0))) })}
+                  />
+                  <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 4 }}>$0.03 each, in pages of 25.</div>
+                </div>
+              )}
               <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 6 }}>
                 Each query is searched once a month. Discover again goes further on the same topics: each query once more for up to 100 results, then
-                related queries written from it (up to 20 per query).
+                related queries written from it (up to 20 per query). The creator database goes a page further each run.
               </div>
               <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14, marginTop: 10 }}>
                 <input
@@ -946,7 +985,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                   disabled={!canWrite}
                   onChange={(e) => setDraft({ ...draft, requirePartnershipSignal: e.target.checked })}
                 />
-                Only index creators who already take partnerships (a storefront, a sponsor page, sponsored posts, or a profile that says so)
+                Only index creators who already take partnerships (a storefront, a sponsor page, sponsored posts, brand deals, or a profile that says so)
               </label>
             </div>
             <div style={{ marginTop: 14 }}>
