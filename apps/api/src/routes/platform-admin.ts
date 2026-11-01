@@ -73,6 +73,7 @@ import {
   adminRunCreatorIndexJob,
   adminRunCreatorIndexOutreach,
   adminSearchIndexedCreators,
+  adminSendCreatorIndexOutreachSample,
   adminSetCreatorIndexSettings,
   adminBlockCreator,
   adminCompleteMailboxConnect,
@@ -2248,6 +2249,32 @@ platformAdminRouter.post('/platform-admin/creator-index/outreach/run', requirePl
       await writeAudit(db, { actor: req.platformAdminActor!, action: 'creator_index.outreach_run', targetType: 'platform', detail: { limit } });
     }
     res.status(dryRun ? 200 : 202).json(result);
+  } catch (err) {
+    sendNetworkFailure(res, err);
+  }
+});
+
+const outreachSampleSchema = z.object({
+  to: z.array(z.string().trim().toLowerCase().email().max(254)).min(1).max(20),
+});
+
+/** The outreach email to addresses an admin types, one message each, for a
+ *  seed test (openpartner-network docs/creator-index.md §5.5). It's about
+ *  a made-up creator and counts nowhere. Audited with the addresses. */
+platformAdminRouter.post('/platform-admin/creator-index/outreach/sample', requirePlatformAdmin, requirePlatformAdminWrite, async (req, res) => {
+  const body = outreachSampleSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const networkUrl = networkOr503(res);
+  if (!networkUrl) return;
+  try {
+    const result = await adminSendCreatorIndexOutreachSample(networkUrl, body.data.to);
+    await writeAudit(db, {
+      actor: req.platformAdminActor!,
+      action: 'creator_index.outreach_sample',
+      targetType: 'platform',
+      detail: { to: body.data.to, sent: result.sent.length, failed: result.failed.length },
+    });
+    res.json(result);
   } catch (err) {
     sendNetworkFailure(res, err);
   }

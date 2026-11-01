@@ -142,6 +142,11 @@ beforeAll(async () => {
             if (body?.limit === 7) return json(409, { error: 'mailer_not_configured' });
             return json(202, { started: true });
           }
+          if (path === '/admin/creator-index/outreach/sample') {
+            const to = (body?.to ?? []) as string[];
+            if (to.includes('busy@example.com')) return json(429, { error: 'rate_limited', retryAfterSec: 1200 });
+            return json(200, { sender: 'ops@openpartner.test', senderName: 'Ops', subject: 'Your creator profile on OpenPartner', sent: to, failed: [] });
+          }
           if (path === '/admin/creator-index/invites/run') {
             return json(200, { ran: true, dryRun: body?.dryRun, candidates: 1, sent: body?.dryRun ? 0 : 1, skipped: 0, failed: 0, expired: 0, unreachable: 0 });
           }
@@ -503,6 +508,28 @@ describe.skipIf(skipIntegration)('creator index: the outreach email', () => {
     const refused = await request(app).post('/platform-admin/creator-index/outreach/run').set('Cookie', admin).send({ dryRun: false, limit: 7 });
     expect(refused.status).toBe(409);
     expect(refused.body).toEqual({ error: 'mailer_not_configured' });
+  });
+
+  it('sends a sample for admins only, to the addresses typed, audited with them, and passes the Network’s limit back', async () => {
+    const support = await operator('support');
+    expect((await request(app).post('/platform-admin/creator-index/outreach/sample').set('Cookie', support).send({ to: ['seed@example.com'] })).status).toBe(403);
+
+    const admin = await operator();
+    calls.length = 0;
+    for (const to of [[], ['not an address'], Array.from({ length: 21 }, (_, i) => `seed-${i}@example.com`)]) {
+      expect((await request(app).post('/platform-admin/creator-index/outreach/sample').set('Cookie', admin).send({ to })).status).toBe(400);
+    }
+    expect(calls).toHaveLength(0);
+    const sent = await request(app).post('/platform-admin/creator-index/outreach/sample').set('Cookie', admin).send({ to: [' Seed-1@Example.com', 'seed-2@example.com'] });
+    expect(sent.status).toBe(200);
+    expect(sent.body).toMatchObject({ sent: ['seed-1@example.com', 'seed-2@example.com'], failed: [] });
+    expect(last('/admin/creator-index/outreach/sample')).toMatchObject({ auth: `Bearer ${NETWORK_ADMIN}`, body: { to: ['seed-1@example.com', 'seed-2@example.com'], publicUrl: networkUrl } });
+    const audit = await db(TABLES.PlatformAuditLog).where({ action: 'creator_index.outreach_sample', platformAdminEmail: OPS_EMAIL }).orderBy('createdAt', 'desc').first();
+    expect(audit?.detail).toEqual({ to: ['seed-1@example.com', 'seed-2@example.com'], sent: 2, failed: 0 });
+
+    const limited = await request(app).post('/platform-admin/creator-index/outreach/sample').set('Cookie', admin).send({ to: ['busy@example.com'] });
+    expect(limited.status).toBe(429);
+    expect(limited.body).toEqual({ error: 'rate_limited' });
   });
 
   it('passes the outreach switch through with the settings', async () => {

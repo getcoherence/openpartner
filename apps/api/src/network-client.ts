@@ -1735,6 +1735,31 @@ export async function adminRunCreatorIndexOutreach(
   );
 }
 
+export interface CreatorIndexOutreachSample {
+  sender: string | null;
+  senderName: string | null;
+  subject: string;
+  sent: string[];
+  /** maybeSent: the mailbox may have taken it, so it may still arrive. */
+  failed: Array<{ to: string; error: string; maybeSent: boolean }>;
+}
+
+/** The outreach email (§5.5) to each of `to`, one message apiece, for a
+ *  seed test: about a made-up creator, with links that open nothing, and
+ *  counted nowhere. 409s with mailer_not_configured or already_running,
+ *  429 with rate_limited. */
+export async function adminSendCreatorIndexOutreachSample(networkUrl: string, to: string[]): Promise<CreatorIndexOutreachSample> {
+  return callNetworkAdmin(
+    networkUrl,
+    'POST',
+    '/admin/creator-index/outreach/sample',
+    { to, publicUrl: networkUrl },
+    {},
+    // Up to 20 messages, which the outreach mailer spaces a few seconds apart.
+    120_000,
+  );
+}
+
 /** Send one creator their next reminder now. Throws NetworkAdminError with
  *  `code` profile_complete | opted_out | not_eligible | email_unverified |
  *  max_reminders_sent | not_found when it can't. */

@@ -161,6 +161,12 @@ interface OutreachPreview {
   targets: OutreachTarget[];
 }
 
+interface OutreachSampleResult {
+  sent: string[];
+  /** maybeSent: the mailbox may have taken it, so it may still arrive. */
+  failed: Array<{ to: string; error: string; maybeSent: boolean }>;
+}
+
 /** Why a listed creator isn't in the outreach batch, in ops' words. */
 const OUTREACH_EXCLUDED: Record<string, string> = {
   already_sent: 'already sent it',
@@ -535,6 +541,57 @@ function BlockedDomains({ canWrite, onBlocked }: { canWrite: boolean; onBlocked:
       {done && <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 8 }}>{done}</div>}
       {error && <div style={{ fontSize: 13, color: theme.danger, marginTop: 8 }}>{domainError(error)}</div>}
     </form>
+  );
+}
+
+/** Why a sample didn't go, in ops' terms. */
+const SAMPLE_ERRORS: Record<string, string> = {
+  invalid_body: 'Up to 20 email addresses.',
+  mailer_not_configured: 'No outreach mailbox is set up.',
+  already_running: 'A batch is sending. Try again when it’s done.',
+  rate_limited: 'Three samples an hour. Try again later.',
+};
+
+/** The outreach email to a seed test's inboxes (openpartner-network
+ *  docs/creator-index.md §5.5): one message each, as a creator gets it,
+ *  about a made-up creator, counted nowhere. */
+function OutreachSample({ disabled }: { disabled: boolean }) {
+  const [text, setText] = useState('');
+  const to = [...new Set(text.split(/[\s,;]+/).map((a) => a.toLowerCase()).filter(Boolean))];
+  const send = useMutation({
+    mutationFn: () => papi<OutreachSampleResult>('/platform-admin/creator-index/outreach/sample', { method: 'POST', body: { to } }),
+  });
+  const r = send.data;
+  const code = send.error instanceof Error ? send.error.message : '';
+  return (
+    <div style={{ marginTop: 14, maxWidth: 560 }}>
+      <Label>Seed test addresses</Label>
+      <Textarea
+        rows={2}
+        value={text}
+        placeholder="seed-1@example.com, seed-2@example.com"
+        onChange={(e) => {
+          setText(e.target.value);
+          send.reset();
+        }}
+      />
+      <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <Button size="sm" variant="secondary" onClick={() => send.mutate()} disabled={disabled || to.length === 0 || to.length > 20 || send.isPending}>
+          {send.isPending ? 'Sending…' : to.length > 1 ? `Send sample to ${to.length}` : 'Send sample'}
+        </Button>
+        {r && (
+          <span style={{ fontSize: 13, color: theme.textMuted }}>
+            Sent to {r.sent.length} of {r.sent.length + r.failed.length}
+          </span>
+        )}
+      </div>
+      {r && r.failed.length > 0 && (
+        <div style={{ fontSize: 13, color: theme.danger, marginTop: 6 }}>
+          {r.failed.map((f) => `${f.to}: ${f.maybeSent ? 'may still arrive' : f.error}`).join(' · ')}
+        </div>
+      )}
+      {send.error && <div style={{ fontSize: 13, color: theme.danger, marginTop: 6 }}>{SAMPLE_ERRORS[code] ?? friendlyPlatformError(send.error)}</div>}
+    </div>
   );
 }
 
@@ -1424,6 +1481,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                   Started. The Network sends it a few seconds apart; the run shows above when it&rsquo;s done.
                 </div>
               )}
+              {canWrite && <OutreachSample disabled={!mailbox?.configured} />}
               {preview && (
                 <div style={{ marginTop: 12 }}>
                   <div style={{ fontSize: 13 }}>

@@ -1206,6 +1206,11 @@ describe('ops console: creator index settings', () => {
           const body = calls[calls.length - 1]!.body as { dryRun: boolean };
           return body.dryRun ? { status: 200, body: { ...PREVIEW, enabled: opts.outreachEnabled, ...opts.preview } } : { status: 202, body: { started: true } };
         }
+        if (url.endsWith('/creator-index/outreach/sample') && method === 'POST') {
+          const { to } = calls[calls.length - 1]!.body as { to: string[] };
+          if (to.includes('busy@example.com')) return { status: 429, body: { error: 'rate_limited' } };
+          return { status: 200, body: { sent: to.slice(1), failed: [{ to: to[0], error: 'graph 400: refused', maybeSent: false }] } };
+        }
         return { status: 200, body: { creators: [] } };
       };
     }
@@ -1274,6 +1279,23 @@ describe('ops console: creator index settings', () => {
       expect(screen.getByText(/no invite mailbox set up, so brands’ invites aren’t emailed\. They never go from the outreach mailbox/)).toBeTruthy();
       expect(screen.getByText('Preview batch')).toBeTruthy();
       expect(screen.queryByText('Send this batch')).toBeNull();
+      expect(screen.queryByText('Send sample')).toBeNull();
+    });
+
+    it('sends a sample to each address typed, with outreach off, says which went, and why one didn’t', async () => {
+      respondWith({ outreachEnabled: false, mailer: { configured: true, from: 'keith@openpartner.test' } });
+      wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />, '/?tab=runs');
+      const box = (await screen.findByText('Seed test addresses')).parentElement!.querySelector('textarea')!;
+      expect((screen.getByText('Send sample').closest('button') as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.change(box, { target: { value: 'Seed-1@Example.com, seed-2@example.com\nseed-3@example.com seed-1@example.com' } });
+      fireEvent.click(screen.getByText('Send sample to 3'));
+      expect(await screen.findByText('Sent to 2 of 3')).toBeTruthy();
+      expect(screen.getByText('seed-1@example.com: graph 400: refused')).toBeTruthy();
+      expect(calls.find((c) => c.url.endsWith('/outreach/sample'))?.body).toEqual({ to: ['seed-1@example.com', 'seed-2@example.com', 'seed-3@example.com'] });
+
+      fireEvent.change(box, { target: { value: 'busy@example.com' } });
+      fireEvent.click(screen.getByText('Send sample'));
+      expect(await screen.findByText('Three samples an hour. Try again later.')).toBeTruthy();
     });
   });
 });
