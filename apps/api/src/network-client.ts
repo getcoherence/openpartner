@@ -1609,6 +1609,16 @@ export async function adminRemoveIndexedCreator(networkUrl: string, id: string):
   return callNetworkAdmin<void>(networkUrl, 'DELETE', `/admin/creator-index/creators/${encodeURIComponent(id)}`);
 }
 
+/** Block a domain: no index email to anyone there, and their listings go
+ *  (the Network's creator-index/blocked-domains.ts). */
+export async function adminBlockIndexDomain(networkUrl: string, domain: string): Promise<{ domain: string; alreadyBlocked: boolean; removed: number }> {
+  return callNetworkAdmin(networkUrl, 'POST', '/admin/creator-index/blocked-domains', { domain });
+}
+
+export async function adminUnblockIndexDomain(networkUrl: string, domain: string): Promise<void> {
+  return callNetworkAdmin<void>(networkUrl, 'DELETE', `/admin/creator-index/blocked-domains/${encodeURIComponent(domain)}`);
+}
+
 export interface IndexedCreatorContact {
   address: string;
   foundOn: string | null;

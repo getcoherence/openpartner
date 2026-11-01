@@ -65,6 +65,8 @@ import {
   adminGetIndexedCreatorContact,
   adminQueueIndexSeeds,
   adminRemoveIndexedCreator,
+  adminBlockIndexDomain,
+  adminUnblockIndexDomain,
   adminSetIndexedCreatorContact,
   adminSetIndexedCreatorState,
   adminRunCreatorIndexInvites,
@@ -2015,6 +2017,57 @@ platformAdminRouter.delete(
     try {
       await adminRemoveIndexedCreator(networkUrl, req.params.id!);
       await writeAudit(db, { actor: req.platformAdminActor!, action: 'creator_index.remove', targetType: 'indexed_creator', targetId: req.params.id! });
+      res.status(204).send();
+    } catch (err) {
+      sendNetworkFailure(res, err);
+    }
+  },
+);
+
+const blockDomainSchema = z.object({ domain: z.string().trim().min(3).max(253) }).strict();
+
+/** A company that asked for no one there to be emailed. The Network keeps
+ *  only a hash; the audit log is where ops can see which domains were blocked. */
+platformAdminRouter.post(
+  '/platform-admin/creator-index/blocked-domains',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = blockDomainSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_domain' });
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    try {
+      const result = await adminBlockIndexDomain(networkUrl, body.data.domain);
+      await writeAudit(db, {
+        actor: req.platformAdminActor!,
+        action: 'creator_index.domain_block',
+        targetType: 'email_domain',
+        targetId: result.domain,
+        detail: { removed: result.removed },
+      });
+      res.json(result);
+    } catch (err) {
+      sendNetworkFailure(res, err);
+    }
+  },
+);
+
+platformAdminRouter.delete(
+  '/platform-admin/creator-index/blocked-domains/:domain',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    try {
+      await adminUnblockIndexDomain(networkUrl, req.params.domain!);
+      await writeAudit(db, {
+        actor: req.platformAdminActor!,
+        action: 'creator_index.domain_unblock',
+        targetType: 'email_domain',
+        targetId: req.params.domain!.trim().toLowerCase(),
+      });
       res.status(204).send();
     } catch (err) {
       sendNetworkFailure(res, err);

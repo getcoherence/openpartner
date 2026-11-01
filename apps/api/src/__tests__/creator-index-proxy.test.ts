@@ -109,6 +109,15 @@ beforeAll(async () => {
           if (path === '/admin/creator-index/stats') return json(200, { creators: { listed: 3 } });
           if (path.startsWith('/admin/creator-index/creators?')) return json(200, { creators: [] });
           if (path === '/admin/creator-index/creators/ixc_gone' && req.method === 'DELETE') return json(404, { error: 'not_found' });
+          if (path === '/admin/creator-index/blocked-domains' && req.method === 'POST') {
+            if (body?.domain === 'gmail.com') return json(400, { error: 'shared_mail_domain' });
+            return json(200, { domain: String(body?.domain).toLowerCase(), alreadyBlocked: false, removed: 2 });
+          }
+          if (path === '/admin/creator-index/blocked-domains/nowhere.test' && req.method === 'DELETE') return json(404, { error: 'not_found' });
+          if (path.startsWith('/admin/creator-index/blocked-domains/') && req.method === 'DELETE') {
+            res.writeHead(204);
+            return res.end();
+          }
           if (path === '/admin/creator-index/creators/ixc_1/contact' && req.method === 'GET') {
             return json(200, { contact: { address: 'hello@jorivera.co', foundOn: 'https://jorivera.substack.com/about', verified: true } });
           }
@@ -385,6 +394,27 @@ describe.skipIf(skipIntegration)('creator index: ops console', () => {
     expect((await request(app).delete('/platform-admin/creator-index/creators/ixc_1').set('Cookie', admin)).status).toBe(204);
     expect((await request(app).delete('/platform-admin/creator-index/creators/ixc_gone').set('Cookie', admin)).body).toEqual({ error: 'not_found' });
     expect((await request(app).post('/platform-admin/creator-index/invites/run').set('Cookie', admin).send({ dryRun: false })).body).toMatchObject({ sent: 1 });
+  });
+});
+
+describe.skipIf(skipIntegration)('creator index: blocked domains', () => {
+  it('blocks and unblocks a domain for admins only, audited by name, and passes the Network’s refusal back', async () => {
+    const admin = await operator();
+    const block = (cookie: string, domain: unknown) => request(app).post('/platform-admin/creator-index/blocked-domains').set('Cookie', cookie).send({ domain });
+    expect((await block(await operator('support'), 'jo.co')).status).toBe(403);
+    const r = await block(admin, ' Jo.co ');
+    expect([r.status, r.body]).toEqual([200, { domain: 'jo.co', alreadyBlocked: false, removed: 2 }]);
+    expect(last('/admin/creator-index/blocked-domains')).toMatchObject({ auth: `Bearer ${NETWORK_ADMIN}`, body: { domain: 'Jo.co' } });
+    const audit = await db(TABLES.PlatformAuditLog).where({ action: 'creator_index.domain_block', platformAdminEmail: OPS_EMAIL }).first();
+    expect(audit).toMatchObject({ targetType: 'email_domain', targetId: 'jo.co', detail: { removed: 2 } });
+    expect([(await block(admin, 'gmail.com')).status, (await block(admin, 'gmail.com')).body]).toEqual([400, { error: 'shared_mail_domain' }]);
+    expect((await block(admin, 42)).body).toEqual({ error: 'invalid_domain' });
+
+    expect((await request(app).delete('/platform-admin/creator-index/blocked-domains/jo.co').set('Cookie', admin)).status).toBe(204);
+    expect(last(/^\/admin\/creator-index\/blocked-domains\/jo\.co$/)?.method).toBe('DELETE');
+    expect(await db(TABLES.PlatformAuditLog).where({ action: 'creator_index.domain_unblock', targetId: 'jo.co' }).first()).toBeTruthy();
+    const gone = await request(app).delete('/platform-admin/creator-index/blocked-domains/nowhere.test').set('Cookie', admin);
+    expect([gone.status, gone.body]).toEqual([404, { error: 'not_found' }]);
   });
 });
 
