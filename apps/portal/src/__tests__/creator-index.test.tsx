@@ -900,7 +900,7 @@ describe('ops console: creator index settings', () => {
         body: {
           creators: [
             { ...base, id: 'a', name: 'Jo Rivera', listedAt: hoursAgo(2), country: 'KR', region: null, location: { text: 'Seoul, South Korea', from: 'linkedin' } },
-            { ...base, id: 'b', name: 'Sam Lee', listedAt: hoursAgo(72) },
+            { ...base, id: 'b', name: 'Sam Lee', listedAt: hoursAgo(72), emailsSent: 1, outreachSentAt: hoursAgo(5) },
           ],
           total: 52,
         },
@@ -911,6 +911,8 @@ describe('ops console: creator index settings', () => {
     expect(await screen.findByText('52 in all, newest 2 shown')).toBeTruthy();
     expect(screen.getByText('37 new in the last 24 hours')).toBeTruthy();
     expect(screen.getAllByText(/^new · listed/)).toHaveLength(1);
+    // Who has had the outreach email, and when: only Sam.
+    expect(screen.getAllByText(/^outreach sent/).map((e) => e.textContent)).toEqual(['outreach sent 5h ago']);
     // Where each country was read from.
     expect(screen.getByText('LinkedIn: “Seoul, South Korea”')).toBeTruthy();
     expect(screen.getByText(/6 searches · 1 of them deeper · 120 found · 37 new · 2 seed searches made this month/)).toBeTruthy();

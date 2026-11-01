@@ -274,6 +274,9 @@ interface OpsCreator {
   totalReach: number;
   contact: { masked: string; foundOn: string | null; verified: boolean } | null;
   emailsSent: number;
+  /** When the outreach email went to them, if it has. Absent from a
+   *  Network that predates it. */
+  outreachSentAt?: string | null;
   /** When they were listed. */
   listedAt?: string;
   platforms: Array<{ platform: string; handle: string | null; profileUrl: string; followerCount: number | null }>;
@@ -1248,6 +1251,11 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                   {c.listedAt && (
                     <div style={{ fontSize: 12, color: isNew(c.listedAt) ? theme.success : theme.textMuted, whiteSpace: 'nowrap' }}>
                       {isNew(c.listedAt) ? 'new · ' : ''}listed {formatDate(c.listedAt, { relative: true })}
+                    </div>
+                  )}
+                  {c.outreachSentAt && (
+                    <div title={formatDate(c.outreachSentAt)} style={{ fontSize: 12, color: theme.textMuted, whiteSpace: 'nowrap' }}>
+                      outreach sent {formatDate(c.outreachSentAt, { relative: true })}
                     </div>
                   )}
                 </div>,
