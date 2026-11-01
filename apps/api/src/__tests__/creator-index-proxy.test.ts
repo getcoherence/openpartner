@@ -343,6 +343,14 @@ describe.skipIf(skipIntegration)('creator index: ops console', () => {
     });
     expect((await request(app).put('/platform-admin/creator-index/settings').set('Cookie', cookie).send({ ...SETTINGS, readConcurrency: 50 })).status).toBe(400);
 
+    // The follower cap, and null for none.
+    for (const maxFollowers of [500_000, null]) {
+      const capped = await request(app).put('/platform-admin/creator-index/settings').set('Cookie', cookie).send({ ...SETTINGS, maxFollowers });
+      expect(capped.status).toBe(200);
+      expect(last('/admin/creator-index/settings')!.body).toMatchObject({ maxFollowers });
+    }
+    expect((await request(app).put('/platform-admin/creator-index/settings').set('Cookie', cookie).send({ ...SETTINGS, maxFollowers: 0 })).status).toBe(400);
+
     // The creator database source, and how many creators a run takes.
     const withDatabase = await request(app)
       .put('/platform-admin/creator-index/settings')
