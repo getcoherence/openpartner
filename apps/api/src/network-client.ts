@@ -1610,9 +1610,10 @@ export async function adminRemoveIndexedCreator(networkUrl: string, id: string):
 }
 
 /** Block a domain: no index email to anyone there, and their listings go
- *  (the Network's creator-index/blocked-domains.ts). */
+ *  (the Network's creator-index/blocked-domains.ts). It reads every stored
+ *  address to find them, so it gets longer than most calls. */
 export async function adminBlockIndexDomain(networkUrl: string, domain: string): Promise<{ domain: string; alreadyBlocked: boolean; removed: number }> {
-  return callNetworkAdmin(networkUrl, 'POST', '/admin/creator-index/blocked-domains', { domain });
+  return callNetworkAdmin(networkUrl, 'POST', '/admin/creator-index/blocked-domains', { domain }, {}, 30_000);
 }
 
 export async function adminUnblockIndexDomain(networkUrl: string, domain: string): Promise<void> {
