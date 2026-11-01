@@ -78,6 +78,8 @@ function Badge({ tone, children, title }: { tone: Tone; children: ReactNode; tit
 function errorText(error: string): string {
   if (error === 'youtube_not_configured') return 'YouTube checks aren’t set up';
   if (error === 'video_not_found') return 'Video not found or not public';
+  // YouTube's data goes when the creator asks to delete their account.
+  if (error === 'creator_deleting') return 'The creator is deleting their account';
   if (error.startsWith('http_')) return `Page returned ${error.slice(5)}`;
   if (error.startsWith('blocked:')) return 'Page can’t be fetched safely';
   if (error.startsWith('youtube_api_error')) return 'YouTube didn’t answer';
