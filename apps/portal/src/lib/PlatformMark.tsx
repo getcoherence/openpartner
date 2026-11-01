@@ -190,6 +190,8 @@ export interface CoverSource {
  * back to YouTube.
  */
 export function CoverSourceLink({ source }: { source: CoverSource }) {
+  // The Network builds a channel URL; anything else gets no link.
+  if (source.platform !== 'youtube' || !source.url.startsWith('https://www.youtube.com/')) return null;
   return (
     <a
       href={source.url}

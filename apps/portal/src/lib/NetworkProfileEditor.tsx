@@ -172,6 +172,7 @@ export function NetworkProfileEditor({
   const [avatarUrl, setAvatarUrl] = useState('');
   const [coverImageUrl, setCoverImageUrl] = useState('');
   const [coverSource, setCoverSource] = useState<CoverSource | null>(null);
+  const [coverBusy, setCoverBusy] = useState(false);
   const [bio, setBio] = useState('');
   const [categories, setCategories] = useState<string[]>([]);
   // Audience locations is kept as a raw text string while the user is
@@ -280,6 +281,7 @@ export function NetworkProfileEditor({
                 avatarUrl={avatarUrl}
                 upload={coverUpload}
                 fromYouTube={copyYouTubeBanner}
+                onBusyChange={setCoverBusy}
               />
             </Field>
           )}
@@ -365,7 +367,7 @@ export function NetworkProfileEditor({
 
       <Card>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <Button onClick={() => save.mutate()} disabled={save.isPending}>
+          <Button onClick={() => save.mutate()} disabled={save.isPending || coverBusy}>
             {save.isPending ? 'Saving…' : save.isSuccess ? 'Saved' : 'Save profile'}
           </Button>
           {publicProfileHref && (
@@ -497,6 +499,7 @@ function CoverUploader({
   avatarUrl,
   upload: uploadCover,
   fromYouTube,
+  onBusyChange,
 }: {
   value: string;
   /** Set while the cover is a copy of their YouTube banner. */
@@ -506,6 +509,9 @@ function CoverUploader({
   upload: NonNullable<NetworkProfileAdapter['uploadCover']>;
   /** Present when they can use their verified YouTube channel's banner. */
   fromYouTube?: NetworkProfileAdapter['copyYouTubeBanner'];
+  /** An upload or the YouTube banner is on its way: the page holds Save,
+   *  so the answer can't land after a later change. */
+  onBusyChange: (busy: boolean) => void;
 }) {
   const [error, setError] = useState<string | null>(null);
   const upload = useMutation({
@@ -528,6 +534,7 @@ function CoverUploader({
     },
   });
   const busy = upload.isPending || youtube.isPending;
+  useEffect(() => onBusyChange(busy), [busy, onBusyChange]);
 
   const onPick = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -593,9 +600,10 @@ function CoverUploader({
       {value && (
         <button
           onClick={() => onChange('')}
+          disabled={busy}
           // YouTube's policies: removing our copy must say it leaves theirs.
           title={source ? 'Removes it here. Your YouTube banner stays.' : undefined}
-          style={{ marginLeft: 8, background: 'transparent', border: 'none', color: theme.textMuted, fontSize: 12, cursor: 'pointer' }}
+          style={{ marginLeft: 8, background: 'transparent', border: 'none', color: theme.textMuted, fontSize: 12, cursor: busy ? 'wait' : 'pointer' }}
         >
           Remove
         </button>

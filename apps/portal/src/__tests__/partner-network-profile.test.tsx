@@ -53,8 +53,9 @@ interface Call {
 let calls: Call[] = [];
 /** What GET …/platforms answers. */
 let platforms: unknown[] = [];
-/** What POST …/cover/youtube answers. */
+/** What POST …/cover/youtube answers, once `youtubeGate` (if set) opens. */
 let youtubeAnswer: { status: number; body: unknown } = { status: 200, body: {} };
+let youtubeGate: Promise<void> | null = null;
 
 const COPY_URL = 'https://cdn.example.com/creators/crt_1/youtube/banner.jpg';
 const CHANNEL_SOURCE = { platform: 'youtube', url: 'https://www.youtube.com/channel/UC_pat' };
@@ -75,12 +76,16 @@ beforeEach(() => {
   calls = [];
   platforms = [];
   youtubeAnswer = { status: 200, body: { coverImageUrl: COPY_URL, coverSource: CHANNEL_SOURCE } };
+  youtubeGate = null;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = init?.method ?? 'GET';
     calls.push({ method, url, body: typeof init?.body === 'string' ? JSON.parse(init.body) : null });
     if (url.endsWith('/platforms') && method === 'GET') return json(200, { platforms });
-    if (url.endsWith('/cover/youtube')) return json(youtubeAnswer.status, youtubeAnswer.body);
+    if (url.endsWith('/cover/youtube')) {
+      if (youtubeGate) await youtubeGate;
+      return json(youtubeAnswer.status, youtubeAnswer.body);
+    }
     // Refetch after a save: the profile endpoints answer with the profile.
     if ((url.endsWith('/network/me/profile') || url.endsWith('/creators/me')) && method === 'GET') return json(200, PROFILE);
     if (url.endsWith('/uploads/cover')) return json(200, { coverImageUrl: 'https://cdn.example.com/new-cover.png' });
@@ -165,7 +170,10 @@ describe('creator profile page (same editor, creator endpoints)', () => {
   });
 
   async function savedBody(page: ReturnType<typeof renderWith>): Promise<Record<string, unknown>> {
-    fireEvent.click(page.getByRole('button', { name: 'Save profile' }));
+    // Save waits for a cover on its way.
+    const save = page.getByRole('button', { name: 'Save profile' });
+    await waitFor(() => expect(save.hasAttribute('disabled')).toBe(false));
+    fireEvent.click(save);
     await waitFor(() => expect(calls.some((c) => c.method === 'PATCH')).toBe(true));
     return calls.find((c) => c.method === 'PATCH')!.body as Record<string, unknown>;
   }
@@ -215,6 +223,27 @@ describe('creator profile page (same editor, creator endpoints)', () => {
     expect(page.queryByRole('button', { name: 'Use my YouTube banner' })).toBeNull();
     expect(page.getByRole('button', { name: 'Remove' }).getAttribute('title')).toBe('Removes it here. Your YouTube banner stays.');
     expect(await savedBody(page)).toMatchObject({ coverImageUrl: COPY_URL });
+  });
+
+  it('holds Save, Remove and Upload until the banner arrives', async () => {
+    platforms = [VERIFIED_YOUTUBE];
+    let open!: () => void;
+    youtubeGate = new Promise<void>((resolve) => (open = resolve));
+    const page = renderWith(<CreatorMyProfilePage />, 'creator-my-profile', {
+      ...PROFILE,
+      coverImageUrl: 'https://cdn.example.com/cover.png',
+      coverSource: null,
+    });
+    fireEvent.click(await page.findByRole('button', { name: 'Use my YouTube banner' }));
+    await waitFor(() => expect(page.getByRole('button', { name: 'Save profile' }).hasAttribute('disabled')).toBe(true));
+    expect(page.getByRole('button', { name: 'Remove' }).hasAttribute('disabled')).toBe(true);
+    const cover = page.getByText('Cover image (optional)').parentElement!;
+    expect(cover.querySelector('input[type="file"]')!.hasAttribute('disabled')).toBe(true);
+
+    open();
+    await waitFor(() => expect(page.getByRole('link', { name: 'YouTube' })).toBeTruthy());
+    await waitFor(() => expect(page.getByRole('button', { name: 'Save profile' }).hasAttribute('disabled')).toBe(false));
+    expect(page.getByRole('button', { name: 'Remove' }).hasAttribute('disabled')).toBe(false);
   });
 
   it("shows the Network's reason when there's no banner to use", async () => {
