@@ -342,6 +342,15 @@ describe.skipIf(skipIntegration)('creator index: ops console', () => {
       memberStatsBudgetUsd: 15,
     });
     expect((await request(app).put('/platform-admin/creator-index/settings').set('Cookie', cookie).send({ ...SETTINGS, readConcurrency: 50 })).status).toBe(400);
+
+    // The creator database source, and how many creators a run takes.
+    const withDatabase = await request(app)
+      .put('/platform-admin/creator-index/settings')
+      .set('Cookie', cookie)
+      .send({ ...SETTINGS, discoverySources: { ...sources, creatorDatabase: true }, creatorDatabasePerRun: 100 });
+    expect(withDatabase.status).toBe(200);
+    expect(last('/admin/creator-index/settings')!.body).toMatchObject({ discoverySources: { creatorDatabase: true }, creatorDatabasePerRun: 100 });
+    expect((await request(app).put('/platform-admin/creator-index/settings').set('Cookie', cookie).send({ ...SETTINGS, creatorDatabasePerRun: 501 })).status).toBe(400);
     expect((await request(app).put('/platform-admin/creator-index/settings').set('Cookie', cookie).send({ ...SETTINGS, memberStatsBudgetUsd: -1 })).status).toBe(400);
     const partial = await request(app)
       .put('/platform-admin/creator-index/settings')
