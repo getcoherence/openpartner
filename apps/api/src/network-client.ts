@@ -1472,6 +1472,8 @@ export interface CreatorIndexSettings {
   /** Ops can send the "claim your profile" outreach email. Optional: a
    *  Network that predates it doesn't send it. */
   outreachEnabled?: boolean;
+  /** How batches send it. Optional: an older Network doesn't send it. */
+  outreachStyle?: OutreachStyle;
   monthlyBudgetUsd: number;
   /** Members' Instagram and TikTok reads. Optional: an older Network
    *  doesn't send it. */
@@ -1746,9 +1748,16 @@ export async function adminRunCreatorIndexOutreach(
   );
 }
 
+/** How the outreach email looks: the shared layout with a button and a
+ *  screenshot, or a person's plain mail. */
+export const OUTREACH_STYLES = ['designed', 'plain'] as const;
+export type OutreachStyle = (typeof OUTREACH_STYLES)[number];
+
 export interface CreatorIndexOutreachSample {
   sender: string | null;
   senderName: string | null;
+  /** Absent from a Network that predates the styles. */
+  style?: OutreachStyle;
   subject: string;
   sent: string[];
   /** maybeSent: the mailbox may have taken it, so it may still arrive. */
@@ -1757,14 +1766,14 @@ export interface CreatorIndexOutreachSample {
 
 /** The outreach email (§5.5) to each of `to`, one message apiece, for a
  *  seed test: about a made-up creator, with links that open nothing, and
- *  counted nowhere. 409s with mailer_not_configured or already_running,
- *  429 with rate_limited. */
-export async function adminSendCreatorIndexOutreachSample(networkUrl: string, to: string[]): Promise<CreatorIndexOutreachSample> {
+ *  counted nowhere. In `style`, else the one batches send. 409s with
+ *  mailer_not_configured or already_running, 429 with rate_limited. */
+export async function adminSendCreatorIndexOutreachSample(networkUrl: string, to: string[], style?: OutreachStyle): Promise<CreatorIndexOutreachSample> {
   return callNetworkAdmin(
     networkUrl,
     'POST',
     '/admin/creator-index/outreach/sample',
-    { to, publicUrl: networkUrl },
+    { to, ...(style ? { style } : {}), publicUrl: networkUrl },
     {},
     // Up to 20 messages, which the outreach mailer spaces a few seconds apart.
     120_000,
