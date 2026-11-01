@@ -281,6 +281,7 @@ export function NetworkProfileEditor({
                 avatarUrl={avatarUrl}
                 upload={coverUpload}
                 fromYouTube={copyYouTubeBanner}
+                saving={save.isPending}
                 onBusyChange={setCoverBusy}
               />
             </Field>
@@ -499,6 +500,7 @@ function CoverUploader({
   avatarUrl,
   upload: uploadCover,
   fromYouTube,
+  saving,
   onBusyChange,
 }: {
   value: string;
@@ -509,6 +511,9 @@ function CoverUploader({
   upload: NonNullable<NetworkProfileAdapter['uploadCover']>;
   /** Present when they can use their verified YouTube channel's banner. */
   fromYouTube?: NetworkProfileAdapter['copyYouTubeBanner'];
+  /** The page is saving: the cover waits, so a save can't remove a cover
+   *  that arrives meanwhile. */
+  saving: boolean;
   /** An upload or the YouTube banner is on its way: the page holds Save,
    *  so the answer can't land after a later change. */
   onBusyChange: (busy: boolean) => void;
@@ -533,8 +538,9 @@ function CoverUploader({
       setError(typeof detail === 'string' ? detail : err instanceof Error ? err.message : 'Couldn’t use your YouTube banner.');
     },
   });
-  const busy = upload.isPending || youtube.isPending;
-  useEffect(() => onBusyChange(busy), [busy, onBusyChange]);
+  const pending = upload.isPending || youtube.isPending;
+  useEffect(() => onBusyChange(pending), [pending, onBusyChange]);
+  const busy = pending || saving;
 
   const onPick = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];

@@ -56,6 +56,8 @@ let platforms: unknown[] = [];
 /** What POST …/cover/youtube answers, once `youtubeGate` (if set) opens. */
 let youtubeAnswer: { status: number; body: unknown } = { status: 200, body: {} };
 let youtubeGate: Promise<void> | null = null;
+/** A save (PATCH) waits for this, if set. */
+let saveGate: Promise<void> | null = null;
 
 const COPY_URL = 'https://cdn.example.com/creators/crt_1/youtube/banner.jpg';
 const CHANNEL_SOURCE = { platform: 'youtube', url: 'https://www.youtube.com/channel/UC_pat' };
@@ -77,10 +79,12 @@ beforeEach(() => {
   platforms = [];
   youtubeAnswer = { status: 200, body: { coverImageUrl: COPY_URL, coverSource: CHANNEL_SOURCE } };
   youtubeGate = null;
+  saveGate = null;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = init?.method ?? 'GET';
     calls.push({ method, url, body: typeof init?.body === 'string' ? JSON.parse(init.body) : null });
+    if (method === 'PATCH' && saveGate) await saveGate;
     if (url.endsWith('/platforms') && method === 'GET') return json(200, { platforms });
     if (url.endsWith('/cover/youtube')) {
       if (youtubeGate) await youtubeGate;
@@ -244,6 +248,18 @@ describe('creator profile page (same editor, creator endpoints)', () => {
     await waitFor(() => expect(page.getByRole('link', { name: 'YouTube' })).toBeTruthy());
     await waitFor(() => expect(page.getByRole('button', { name: 'Save profile' }).hasAttribute('disabled')).toBe(false));
     expect(page.getByRole('button', { name: 'Remove' }).hasAttribute('disabled')).toBe(false);
+  });
+
+  it('holds the cover while a save is on its way', async () => {
+    platforms = [VERIFIED_YOUTUBE];
+    let open!: () => void;
+    saveGate = new Promise<void>((resolve) => (open = resolve));
+    const page = renderWith(<CreatorMyProfilePage />, 'creator-my-profile', { ...PROFILE, coverImageUrl: null, coverSource: null });
+    const button = await page.findByRole('button', { name: 'Use my YouTube banner' });
+    fireEvent.click(page.getByRole('button', { name: 'Save profile' }));
+    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(true));
+    open();
+    await waitFor(() => expect(page.getByRole('button', { name: 'Saved' }).hasAttribute('disabled')).toBe(false));
   });
 
   it("shows the Network's reason when there's no banner to use", async () => {
