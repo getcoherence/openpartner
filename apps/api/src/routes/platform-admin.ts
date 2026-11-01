@@ -65,6 +65,7 @@ import {
   adminGetIndexedCreatorContact,
   adminQueueIndexSeeds,
   adminRemoveIndexedCreator,
+  adminHideIndexedCreators,
   adminBlockIndexDomain,
   adminUnblockIndexDomain,
   adminSetIndexedCreatorContact,
@@ -1926,6 +1927,9 @@ const creatorIndexSettingsSchema = z
     minFollowers: z.number().int().min(0).max(10_000_000),
     // Null: no cap. The Network checks it's over minFollowers.
     maxFollowers: z.number().int().min(1).max(1_000_000_000).nullable().optional(),
+    // Kept in the index but hidden over it. Null: none; the Network checks
+    // it's over minFollowers.
+    hideOverFollowers: z.number().int().min(1).max(1_000_000_000).nullable().optional(),
     minPostsPer30d: z.number().int().min(0).max(1_000),
     refreshDays: z.number().int().min(7).max(90),
     excludedCountries: z.array(z.string().trim().length(2).transform((v) => v.toUpperCase()).refine(isCountryCode, 'unknown country code')).max(250),
@@ -1985,8 +1989,9 @@ platformAdminRouter.get('/platform-admin/creator-index/creators', requirePlatfor
   if (!networkUrl) return;
   const qs = new URLSearchParams();
   // `missing`: address, state, or both, for who ops can still fill in;
-  // `sort`, a reach range, and `after` (the next page's cursor).
-  for (const key of ['q', 'status', 'limit', 'missing', 'sort', 'minFollowers', 'maxFollowers', 'after']) {
+  // `sort`, a reach range, `hidden` (yes or no), and `after` (the next
+  // page's cursor).
+  for (const key of ['q', 'status', 'limit', 'missing', 'sort', 'minFollowers', 'maxFollowers', 'hidden', 'after']) {
     const v = req.query[key];
     if (typeof v === 'string' && v) qs.set(key, v);
   }
@@ -1996,6 +2001,52 @@ platformAdminRouter.get('/platform-admin/creator-index/creators', requirePlatfor
     sendNetworkFailure(res, err);
   }
 });
+
+const hideCreatorsSchema = z
+  .object({
+    hidden: z.boolean(),
+    ids: z.array(z.string().min(1).max(64)).min(1).max(1_000).optional(),
+    // The list's own filters: everyone they match.
+    match: z
+      .object({
+        q: z.string().trim().max(80).optional(),
+        status: z.enum(['active', 'muted', 'claimed']).optional(),
+        missing: z.string().max(40).optional(),
+        minFollowers: z.coerce.number().int().min(0).optional(),
+        maxFollowers: z.coerce.number().int().min(0).optional(),
+        hidden: z.enum(['yes', 'no']).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .refine((b) => !!b.ids !== !!b.match, 'ids or match');
+
+/** Hide or unhide in bulk: kept in the index, but not shown to brands or
+ *  emailed. Audited with how many and how they were picked. */
+platformAdminRouter.post(
+  '/platform-admin/creator-index/creators/hidden',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = hideCreatorsSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body' });
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    try {
+      const result = await adminHideIndexedCreators(networkUrl, body.data);
+      await writeAudit(db, {
+        actor: req.platformAdminActor!,
+        action: body.data.hidden ? 'creator_index.hide' : 'creator_index.unhide',
+        targetType: 'indexed_creator',
+        detail: { changed: result.changed, ...(body.data.ids ? { ids: body.data.ids.length } : { match: body.data.match }) },
+      });
+      res.json(result);
+    } catch (err) {
+      sendNetworkFailure(res, err);
+    }
+  },
+);
 
 platformAdminRouter.get('/platform-admin/creator-index/creators/:id', requirePlatformAdmin, async (req, res) => {
   const networkUrl = networkOr503(res);

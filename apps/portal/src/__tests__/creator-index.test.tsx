@@ -1069,6 +1069,47 @@ describe('ops console: creator index settings', () => {
     confirm.mockRestore();
   });
 
+  it('hides the creators ticked, or all the filters match, after a confirm, and offers the reach setting', async () => {
+    const base = { status: 'active', headline: null, country: 'US', region: 'US-TX', brandVisible: true, emailsSent: 0, contact: null, platforms: [] };
+    const listed = [
+      { ...base, id: 'a', name: 'Jo Rivera', totalReach: 5_000 },
+      { ...base, id: 'b', name: 'Sam Lee', totalReach: 200_000, brandVisible: false },
+      { ...base, id: 'c', name: 'Ana Ruiz', totalReach: 8_000, brandVisible: false, hiddenAt: '2026-11-01T12:00:00.000Z' },
+    ];
+    respond = (url, method) => {
+      if (url.endsWith('/creator-index/settings')) {
+        const settings = { ...SETTINGS, hideOverFollowers: 50_000 };
+        return { status: 200, body: { settings, defaults: settings, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {} } };
+      }
+      if (url.endsWith('/creator-index/stats')) return { status: 404, body: { error: 'not_found' } };
+      if (url.endsWith('/creator-index/creators/hidden') && method === 'POST') return { status: 200, body: { changed: 2 } };
+      return { status: 200, body: { creators: listed, total: listed.length } };
+    };
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    // Over the reach setting, or hidden by ops.
+    expect(await screen.findAllByText('active · hidden')).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Tick Jo Rivera' }));
+    expect(screen.getByText('1 ticked')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Hide accounts' }));
+    expect(confirm).toHaveBeenCalledWith("Hide 1 ticked? They stay in the index, but brands won't see them and they won't be emailed.");
+    await waitFor(() => expect(calls.find((c) => c.url.endsWith('/creators/hidden'))?.body).toEqual({ hidden: true, ids: ['a'] }));
+    expect(await screen.findByText('2 hidden')).toBeTruthy();
+
+    // None ticked: everyone the filters match.
+    fireEvent.click(screen.getByRole('button', { name: 'Hidden' }));
+    await waitFor(() => expect(calls.map((c) => c.url)).toContain('/api/platform-admin/creator-index/creators?hidden=yes'));
+    expect(await screen.findByText('All 3 matching')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Unhide accounts' }));
+    expect(confirm).toHaveBeenLastCalledWith('Unhide all 3 matching?');
+    await waitFor(() => expect(calls.filter((c) => c.url.endsWith('/creators/hidden')).at(-1)?.body).toEqual({ hidden: false, match: { hidden: 'yes' } }));
+
+    await openTab('Settings');
+    expect(((await screen.findByLabelText('Hide over (reach)')) as HTMLInputElement).value).toBe('50000');
+    confirm.mockRestore();
+  });
+
   it('blocks a domain from Settings after a confirm, says what went, and unblocks one', async () => {
     respond = (url, method) => {
       if (url.endsWith('/creator-index/settings')) {

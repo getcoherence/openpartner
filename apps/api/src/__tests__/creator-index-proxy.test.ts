@@ -109,6 +109,7 @@ beforeAll(async () => {
           if (path === '/admin/creator-index/stats') return json(200, { creators: { listed: 3 } });
           if (path.startsWith('/admin/creator-index/creators?')) return json(200, { creators: [] });
           if (path === '/admin/creator-index/creators/ixc_gone' && req.method === 'DELETE') return json(404, { error: 'not_found' });
+          if (path === '/admin/creator-index/creators/hidden' && req.method === 'POST') return json(200, { changed: body?.ids ? (body.ids as string[]).length : 7 });
           if (path === '/admin/creator-index/blocked-domains' && req.method === 'POST') {
             if (body?.domain === 'gmail.com') return json(400, { error: 'shared_mail_domain' });
             return json(200, { domain: String(body?.domain).toLowerCase(), alreadyBlocked: false, removed: 2 });
@@ -394,6 +395,31 @@ describe.skipIf(skipIntegration)('creator index: ops console', () => {
     expect((await request(app).delete('/platform-admin/creator-index/creators/ixc_1').set('Cookie', admin)).status).toBe(204);
     expect((await request(app).delete('/platform-admin/creator-index/creators/ixc_gone').set('Cookie', admin)).body).toEqual({ error: 'not_found' });
     expect((await request(app).post('/platform-admin/creator-index/invites/run').set('Cookie', admin).send({ dryRun: false })).body).toMatchObject({ sent: 1 });
+  });
+});
+
+describe.skipIf(skipIntegration)('creator index: hiding creators', () => {
+  it('hides the ones ticked or all a filter matches, admins only, audited, and passes the hidden filter on', async () => {
+    const admin = await operator();
+    const hide = (cookie: string, body: Record<string, unknown>) => request(app).post('/platform-admin/creator-index/creators/hidden').set('Cookie', cookie).send(body);
+    expect((await hide(await operator('support'), { hidden: true, ids: ['ixc_1'] })).status).toBe(403);
+    expect((await hide(admin, { hidden: true, ids: ['ixc_1', 'ixc_2'] })).body).toEqual({ changed: 2 });
+    expect(last('/admin/creator-index/creators/hidden')).toMatchObject({ auth: `Bearer ${NETWORK_ADMIN}`, body: { hidden: true, ids: ['ixc_1', 'ixc_2'] } });
+    const r = await hide(admin, { hidden: false, match: { minFollowers: '100000', hidden: 'yes' } });
+    expect(r.body).toEqual({ changed: 7 });
+    expect(last('/admin/creator-index/creators/hidden')?.body).toEqual({ hidden: false, match: { minFollowers: 100000, hidden: 'yes' } });
+    const audits = await db(TABLES.PlatformAuditLog).whereIn('action', ['creator_index.hide', 'creator_index.unhide']).andWhere({ platformAdminEmail: OPS_EMAIL }).orderBy('createdAt');
+    expect(audits.map((a) => [a.action, a.detail])).toEqual([
+      ['creator_index.hide', { changed: 2, ids: 2 }],
+      ['creator_index.unhide', { changed: 7, match: { minFollowers: 100000, hidden: 'yes' } }],
+    ]);
+    // Both, neither, or a filter the list doesn't have.
+    expect((await hide(admin, { hidden: true, ids: ['ixc_1'], match: {} })).status).toBe(400);
+    expect((await hide(admin, { hidden: true })).status).toBe(400);
+    expect((await hide(admin, { hidden: true, match: { sort: 'reach' } })).status).toBe(400);
+
+    await request(app).get('/platform-admin/creator-index/creators?hidden=yes&minFollowers=100000').set('Cookie', admin);
+    expect(last(/^\/admin\/creator-index\/creators\?/)?.path).toBe('/admin/creator-index/creators?minFollowers=100000&hidden=yes');
   });
 });
 
