@@ -752,6 +752,8 @@ describe('ops console: creator index settings', () => {
     expect(await screen.findByText('3 open to partnerships')).toBeTruthy();
     expect((screen.getByLabelText('Sponsorship storefronts') as HTMLInputElement).checked).toBe(true);
     expect((screen.getByLabelText('Anyone who posts about the topic') as HTMLInputElement).checked).toBe(false);
+    // This Network predates the creator database: it isn't offered.
+    expect(screen.queryByLabelText(/^Creator database/)).toBeNull();
     fireEvent.click(screen.getByLabelText('Anyone who posts about the topic'));
     fireEvent.click(screen.getByLabelText(/Only index creators who already take partnerships/));
     fireEvent.click(screen.getByText('Save settings'));
@@ -762,6 +764,27 @@ describe('ops console: creator index settings', () => {
     });
     // Ops see where a signal was read; brands never do.
     expect(await screen.findByText('example-storefront.test/jo')).toBeTruthy();
+  });
+
+  it('switches the creator database on, with how many creators a run takes, only where the Network has it', async () => {
+    const withDatabase = { ...SETTINGS, discoverySources: { creatorDatabase: false, storefronts: true, sponsorPages: true, people: false }, creatorDatabasePerRun: 50 };
+    respond = (url, method) => {
+      if (url.endsWith('/creator-index/settings') && method === 'PUT') return { status: 200, body: { settings: calls[calls.length - 1]!.body, visibilityChanged: 0 } };
+      if (url.endsWith('/creator-index/settings')) {
+        return { status: 200, body: { settings: withDatabase, defaults: withDatabase, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {} } };
+      }
+      if (url.endsWith('/creator-index/stats')) return { status: 404, body: { error: 'not_found' } };
+      return { status: 200, body: { creators: [] } };
+    };
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    const database = (await screen.findByLabelText(/^Creator database/)) as HTMLInputElement;
+    expect(database.checked).toBe(false);
+    expect(screen.queryByLabelText('Creator database: creators per run')).toBeNull();
+    fireEvent.click(database);
+    fireEvent.change(screen.getByLabelText('Creator database: creators per run'), { target: { value: '100' } });
+    fireEvent.click(screen.getByText('Save settings'));
+    await waitFor(() => expect(calls.some((c) => c.method === 'PUT')).toBe(true));
+    expect(calls.find((c) => c.method === 'PUT')!.body).toMatchObject({ discoverySources: { creatorDatabase: true, storefronts: true }, creatorDatabasePerRun: 100 });
   });
 
   it('starts runs in the background, shows each run and why a platform was set aside, and sets how many profiles are read at once', async () => {
@@ -873,7 +896,18 @@ describe('ops console: creator index settings', () => {
   it('counts the creators listed lately, marks the new ones, and says how Discover went further', async () => {
     const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
     const discover = (result: Record<string, unknown>) => ({ startedAt: hoursAgo(1), finishedAt: hoursAgo(1), result });
-    let run = discover({ ran: true, searches: 6, deeper: 1, related: ['RevOps newsletters', 'cold email outreach'], found: 120, queued: 37, recent: 2 });
+    let run = discover({
+      ran: true,
+      searches: 6,
+      deeper: 1,
+      related: ['RevOps newsletters', 'cold email outreach'],
+      found: 120,
+      queued: 37,
+      known: 80,
+      unusable: 3,
+      recent: 2,
+      bySource: { creatorDatabase: { searches: 2, stoppedBy: 'treg_402' } },
+    });
     respond = (url) => {
       if (url.endsWith('/creator-index/settings')) {
         return { status: 200, body: { settings: SETTINGS, defaults: SETTINGS, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {} } };
@@ -915,7 +949,8 @@ describe('ops console: creator index settings', () => {
     expect(screen.getAllByText(/^outreach sent/).map((e) => e.textContent)).toEqual(['outreach sent 5h ago']);
     // Where each country was read from.
     expect(screen.getByText('LinkedIn: “Seoul, South Korea”')).toBeTruthy();
-    expect(screen.getByText(/6 searches · 1 of them deeper · 120 found · 37 new · 2 seed searches made this month/)).toBeTruthy();
+    expect(screen.getByText(/6 searches · 1 of them deeper · 2 of them creator-database pages · 120 found · 37 new · 80 already known · 3 unusable · 2 seed searches made this month/)).toBeTruthy();
+    expect(screen.getByText('Creator database stopped early: treg 402.')).toBeTruthy();
     expect(screen.getByText('Related queries searched: RevOps newsletters · cold email outreach')).toBeTruthy();
     unmount();
 

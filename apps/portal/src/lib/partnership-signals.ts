@@ -5,7 +5,7 @@
  * creator also get the page it was read from.
  */
 
-export type PartnershipSignalKind = 'storefront' | 'sponsor_page' | 'sponsored_posts' | 'paid_placement' | 'profile_offer';
+export type PartnershipSignalKind = 'storefront' | 'sponsor_page' | 'sponsored_posts' | 'paid_placement' | 'profile_offer' | 'brand_deals';
 
 export interface PartnershipSignal {
   kind: PartnershipSignalKind;
@@ -31,6 +31,8 @@ export function brandSignalLabel(s: PartnershipSignal): string {
       return s.count ? `${plural(s.count, 'paid placement')} on YouTube lately` : 'Paid placements on YouTube';
     case 'profile_offer':
       return 'Invites brand partnerships';
+    case 'brand_deals':
+      return 'Has done brand deals';
     default:
       return 'Open to partnerships';
   }
@@ -49,6 +51,8 @@ export function creatorSignalLabel(s: PartnershipSignal): string {
       return s.count ? `${plural(s.count, 'recent video')} marked as paid placement` : 'recent videos marked as paid placement';
     case 'profile_offer':
       return 'your profile saying you take partnerships';
+    case 'brand_deals':
+      return 'a creator database listing your brand deals';
     default:
       return 'your public pages';
   }
