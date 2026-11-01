@@ -6,6 +6,7 @@ import { Button, Card, ErrorBanner, Input, Label, Select, Textarea } from '../ui
 import { alpha, theme } from '../theme.js';
 import { useIsMobile } from './useMediaQuery.js';
 import { VerifiedBadge } from './VerifiedBadge.js';
+import { CoverSourceLink, type CoverSource } from './PlatformMark.js';
 
 /**
  * The Network profile editor: completeness checklist, basics, audience,
@@ -25,6 +26,9 @@ export interface NetworkProfileAdapter {
   /** The banner on the public profile and the marketplace storefront card.
    *  Absent → no cover field, and saves never send coverImageUrl. */
   uploadCover?: (file: File) => Promise<{ coverImageUrl: string }>;
+  /** Make the cover a copy of the verified YouTube channel's banner, which
+   *  the Network keeps in step with YouTube. Absent → no button. */
+  copyYouTubeBanner?: () => Promise<{ coverImageUrl: string; coverSource: CoverSource | null }>;
   listPlatforms: () => Promise<{ platforms: PlatformRow[] }>;
   putPlatform: (
     platform: Platform,
@@ -47,6 +51,9 @@ export interface NetworkProfile {
   avatarUrl: string | null;
   /** Absent on a Network that predates covers. */
   coverImageUrl?: string | null;
+  /** Set while the cover is a copy of their YouTube banner. Absent on a
+   *  Network that predates it. */
+  coverSource?: CoverSource | null;
   bio: string | null;
   profile: Record<string, unknown> | null;
   categories: string[];
@@ -164,6 +171,8 @@ export function NetworkProfileEditor({
   const [handle, setHandle] = useState('');
   const [avatarUrl, setAvatarUrl] = useState('');
   const [coverImageUrl, setCoverImageUrl] = useState('');
+  const [coverSource, setCoverSource] = useState<CoverSource | null>(null);
+  const [coverBusy, setCoverBusy] = useState(false);
   const [bio, setBio] = useState('');
   const [categories, setCategories] = useState<string[]>([]);
   // Audience locations is kept as a raw text string while the user is
@@ -182,6 +191,7 @@ export function NetworkProfileEditor({
       setHandle(data.handle ?? '');
       setAvatarUrl(data.avatarUrl ?? '');
       setCoverImageUrl(data.coverImageUrl ?? '');
+      setCoverSource(data.coverSource ?? null);
       setBio(data.bio ?? '');
       setCategories(data.categories ?? []);
       setAudienceLocationsRaw((data.audienceLocations ?? []).join(', '));
@@ -194,6 +204,15 @@ export function NetworkProfileEditor({
 
   // Covers need the adapter's upload and a Network that knows the field.
   const coverUpload = data && 'coverImageUrl' in data ? adapter.uploadCover : undefined;
+  // The YouTube banner needs a verified channel (the platforms card's list).
+  const platforms = useQuery({
+    queryKey: adapter.platformsKey,
+    queryFn: () => adapter.listPlatforms(),
+    retry: false,
+    enabled: !!adapter.copyYouTubeBanner,
+  });
+  const youtubeVerified = !!platforms.data?.platforms.some((p) => p.platform === 'youtube' && p.verified);
+  const copyYouTubeBanner = youtubeVerified && data && 'coverSource' in data ? adapter.copyYouTubeBanner : undefined;
 
   const save = useMutation({
     mutationFn: () => {
@@ -252,7 +271,19 @@ export function NetworkProfileEditor({
               label="Cover image (optional)"
               hint="A wide banner across the top of your public profile and your marketplace storefront card. 1500×500 (3:1) works best. Without one, the banner is made from your photo."
             >
-              <CoverUploader value={coverImageUrl} onChange={setCoverImageUrl} avatarUrl={avatarUrl} upload={coverUpload} />
+              <CoverUploader
+                value={coverImageUrl}
+                source={coverSource}
+                onChange={(url, source = null) => {
+                  setCoverImageUrl(url);
+                  setCoverSource(source);
+                }}
+                avatarUrl={avatarUrl}
+                upload={coverUpload}
+                fromYouTube={copyYouTubeBanner}
+                saving={save.isPending}
+                onBusyChange={setCoverBusy}
+              />
             </Field>
           )}
           <Field
@@ -337,7 +368,7 @@ export function NetworkProfileEditor({
 
       <Card>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <Button onClick={() => save.mutate()} disabled={save.isPending}>
+          <Button onClick={() => save.mutate()} disabled={save.isPending || coverBusy}>
             {save.isPending ? 'Saving…' : save.isSuccess ? 'Saved' : 'Save profile'}
           </Button>
           {publicProfileHref && (
@@ -464,14 +495,28 @@ function AvatarUploader({
 
 function CoverUploader({
   value,
+  source,
   onChange,
   avatarUrl,
   upload: uploadCover,
+  fromYouTube,
+  saving,
+  onBusyChange,
 }: {
   value: string;
-  onChange: (v: string) => void;
+  /** Set while the cover is a copy of their YouTube banner. */
+  source: CoverSource | null;
+  onChange: (v: string, source?: CoverSource | null) => void;
   avatarUrl: string;
   upload: NonNullable<NetworkProfileAdapter['uploadCover']>;
+  /** Present when they can use their verified YouTube channel's banner. */
+  fromYouTube?: NetworkProfileAdapter['copyYouTubeBanner'];
+  /** The page is saving: the cover waits, so a save can't remove a cover
+   *  that arrives meanwhile. */
+  saving: boolean;
+  /** An upload or the YouTube banner is on its way: the page holds Save,
+   *  so the answer can't land after a later change. */
+  onBusyChange: (busy: boolean) => void;
 }) {
   const [error, setError] = useState<string | null>(null);
   const upload = useMutation({
@@ -482,6 +527,20 @@ function CoverUploader({
     },
     onError: (err) => setError(err instanceof Error ? err.message : 'upload failed'),
   });
+  const youtube = useMutation({
+    mutationFn: () => fromYouTube!(),
+    onSuccess: (r) => {
+      setError(null);
+      onChange(r.coverImageUrl, r.coverSource);
+    },
+    onError: (err) => {
+      const detail = networkErrorBody(err)?.detail;
+      setError(typeof detail === 'string' ? detail : err instanceof Error ? err.message : 'Couldn’t use your YouTube banner.');
+    },
+  });
+  const pending = upload.isPending || youtube.isPending;
+  useEffect(() => onBusyChange(pending), [pending, onBusyChange]);
+  const busy = pending || saving;
 
   const onPick = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -498,7 +557,6 @@ function CoverUploader({
     <div>
       {/* Preview: the cover, else the wash the marketplace makes from the photo. */}
       <div
-        aria-hidden
         style={{
           position: 'relative',
           maxWidth: 480,
@@ -528,6 +586,7 @@ function CoverUploader({
             }}
           />
         ) : null}
+        {value && source && <CoverSourceLink source={source} />}
       </div>
       <label>
         <input
@@ -535,28 +594,22 @@ function CoverUploader({
           accept="image/jpeg,image/png,image/webp"
           onChange={onPick}
           style={{ display: 'none' }}
-          disabled={upload.isPending}
+          disabled={busy}
         />
-        <span
-          style={{
-            display: 'inline-block',
-            padding: '6px 12px',
-            background: theme.surface,
-            border: `1px solid ${theme.border}`,
-            borderRadius: theme.radiusSm,
-            fontSize: 13,
-            color: theme.text,
-            cursor: upload.isPending ? 'wait' : 'pointer',
-            opacity: upload.isPending ? 0.6 : 1,
-          }}
-        >
-          {upload.isPending ? 'Uploading…' : value ? 'Replace' : 'Upload'}
-        </span>
+        <span style={pickerStyle(busy)}>{upload.isPending ? 'Uploading…' : value ? 'Replace' : 'Upload'}</span>
       </label>
+      {fromYouTube && !source && (
+        <button type="button" onClick={() => youtube.mutate()} disabled={busy} style={{ ...pickerStyle(busy), marginLeft: 8 }}>
+          {youtube.isPending ? 'Getting banner…' : 'Use my YouTube banner'}
+        </button>
+      )}
       {value && (
         <button
           onClick={() => onChange('')}
-          style={{ marginLeft: 8, background: 'transparent', border: 'none', color: theme.textMuted, fontSize: 12, cursor: 'pointer' }}
+          disabled={busy}
+          // YouTube's policies: removing our copy must say it leaves theirs.
+          title={source ? 'Removes it here. Your YouTube banner stays.' : undefined}
+          style={{ marginLeft: 8, background: 'transparent', border: 'none', color: theme.textMuted, fontSize: 12, cursor: busy ? 'wait' : 'pointer' }}
         >
           Remove
         </button>
@@ -565,6 +618,22 @@ function CoverUploader({
       {error && <p style={{ fontSize: 12, color: theme.danger, margin: '4px 0 0' }}>{error}</p>}
     </div>
   );
+}
+
+/** The cover's Upload / Replace and YouTube banner controls. */
+function pickerStyle(busy: boolean): React.CSSProperties {
+  return {
+    display: 'inline-block',
+    padding: '6px 12px',
+    background: theme.surface,
+    border: `1px solid ${theme.border}`,
+    borderRadius: theme.radiusSm,
+    fontSize: 13,
+    fontFamily: 'inherit',
+    color: theme.text,
+    cursor: busy ? 'wait' : 'pointer',
+    opacity: busy ? 0.6 : 1,
+  };
 }
 
 function CategoryChips({ selected, onChange }: { selected: string[]; onChange: (v: string[]) => void }) {
@@ -1202,11 +1271,11 @@ function ExternalButton({ href, children }: { href: string; children: ReactNode 
 }
 
 /**
- * The Network's error code and a sentence for the creator. The creator
- * portal relays the Network body as-is; the brand partner proxy wraps it
- * as `{ error: 'network_call_failed', detail: '<Network JSON>' }`.
+ * The Network's answer behind an error. The creator portal relays the
+ * Network body as-is; the brand partner proxy wraps it as
+ * `{ error: 'network_call_failed', detail: '<Network JSON>' }`.
  */
-function verificationError(err: unknown): { code: string; message: string } {
+function networkErrorBody(err: unknown): Record<string, unknown> | null {
   let body = (err as { detail?: unknown } | null)?.detail as Record<string, unknown> | null | undefined;
   if (body?.error === 'network_call_failed' && typeof body.detail === 'string') {
     try {
@@ -1215,6 +1284,12 @@ function verificationError(err: unknown): { code: string; message: string } {
       /* not JSON: keep the wrapper */
     }
   }
+  return body ?? null;
+}
+
+/** The Network's error code and a sentence for the creator. */
+function verificationError(err: unknown): { code: string; message: string } {
+  const body = networkErrorBody(err);
   const code = typeof body?.error === 'string' ? body.error : 'unknown';
   const detail = typeof body?.detail === 'string' ? body.detail : null;
   switch (code) {

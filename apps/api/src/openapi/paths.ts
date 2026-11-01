@@ -79,6 +79,7 @@ export const HANDLER_GUARDED_ROUTES_OUTSIDE_SPEC: Record<string, string> = {
   'GET /network/me/affiliations/:id/earnings': NETWORK_PROXY,
   'POST /network/me/uploads/avatar': NETWORK_PROXY,
   'POST /network/me/uploads/cover': NETWORK_PROXY,
+  'POST /network/me/cover/youtube': NETWORK_PROXY,
   'GET /network/me/consent': NETWORK_CONSENT,
   'POST /network/me/consent': NETWORK_CONSENT,
 };

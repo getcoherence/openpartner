@@ -1851,6 +1851,16 @@ export const partnerProxy = {
       actingVendorPartnerId: vendorPartnerId,
       rawContentType: contentType,
     }),
+  // The cover from the partner's verified YouTube banner, kept in step by the Network.
+  useMyYouTubeBanner: (db: Knex, tenantId: string, vendorPartnerId: string) =>
+    callNetwork<{ coverImageUrl: string; coverSource: { platform: 'youtube'; url: string } | null }>(
+      db,
+      tenantId,
+      'POST',
+      '/creators/me/cover/youtube',
+      {},
+      { actingVendorPartnerId: vendorPartnerId },
+    ),
 };
 
 // ---------- Network-originated payouts reporting ----------

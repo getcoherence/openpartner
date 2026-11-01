@@ -405,3 +405,13 @@ function imageUpload(
 networkPartnerRouter.post('/network/me/uploads/avatar', ...imageUpload(partnerProxy.uploadMyAvatar));
 // The banner on the public profile and the marketplace storefront card.
 networkPartnerRouter.post('/network/me/uploads/cover', ...imageUpload(partnerProxy.uploadMyCover));
+
+// The cover from the partner's verified YouTube banner. The Network reads
+// it, keeps a copy in step with YouTube, and refuses without a verified
+// channel or a banner.
+networkPartnerRouter.post('/network/me/cover/youtube', requireAuth, async (req, res) => {
+  const partnerId = requirePartnerPrincipal(req, res);
+  if (!partnerId) return;
+  if (!(await requireConsent(req, res, partnerId))) return;
+  return proxy(req, res, (db, tenantId) => partnerProxy.useMyYouTubeBanner(db, tenantId, partnerId));
+});
