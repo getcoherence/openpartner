@@ -311,8 +311,53 @@ interface OpsCreator {
   /** When they were listed. */
   listedAt?: string;
   platforms: Array<{ platform: string; handle: string | null; profileUrl: string; followerCount: number | null }>;
+  /** What they're about, as the classifier read it, the main ones first. */
+  topics?: string[];
   /** With the page each was read from. */
   partnershipSignals?: PartnershipSignal[];
+}
+
+/** Topics shown in the Tags column; the rest are in a tooltip. */
+const TAGS_SHOWN = 5;
+
+/** The Tags column: what a creator is about. A tag clicked searches for
+ *  it, to find the rest like them (Keith, Nov 1: political creators had
+ *  got in; their business categories can't say so, their topics do). */
+function TagsCell({ topics, onPick }: { topics: string[]; onPick: (topic: string) => void }) {
+  if (!topics.length) return <span style={{ color: theme.textMuted }}>—</span>;
+  const rest = topics.slice(TAGS_SHOWN);
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, width: 150 }}>
+      {topics.slice(0, TAGS_SHOWN).map((t) => (
+        <button
+          key={t}
+          type="button"
+          onClick={() => onPick(t)}
+          title={`Search “${t}”`}
+          style={{
+            fontSize: 11,
+            padding: '2px 7px',
+            borderRadius: 999,
+            border: `1px solid ${theme.border}`,
+            background: theme.surface2,
+            color: theme.textMuted,
+            cursor: 'pointer',
+            maxWidth: '100%',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {t}
+        </button>
+      ))}
+      {rest.length > 0 && (
+        <span title={rest.join(', ')} style={{ fontSize: 11, color: theme.textMuted, padding: '2px 4px' }}>
+          +{rest.length}
+        </span>
+      )}
+    </div>
+  );
 }
 
 /** Listed in the last 24 hours. */
@@ -362,7 +407,7 @@ function AddressCell({ creator, canWrite, onSaved }: { creator: OpsCreator; canW
   const c = creator.contact;
   const error = save.error ?? show.error;
   return (
-    <div style={{ width: 220, overflowWrap: 'anywhere' }}>
+    <div style={{ width: 200, overflowWrap: 'anywhere' }}>
       {c ? (
         <>
             <div style={{ wordBreak: 'break-all' }}>{`${shown ?? c.masked}${c.verified ? '' : ' (unverified)'}`}</div>
@@ -463,7 +508,7 @@ function LocationCell({
   const c = creator;
   const byOps = c.location?.from === 'ops';
   return (
-    <div style={{ width: 180, overflowWrap: 'anywhere' }}>
+    <div style={{ width: 160, overflowWrap: 'anywhere' }}>
       <div>{`${c.country ?? '—'}${c.region ? ` (${c.region})` : ''}${c.brandVisible ? '' : ' · hidden'}`}</div>
       {c.location &&
         (byOps ? (
@@ -1360,7 +1405,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                 }}
                 style={{ display: 'flex', gap: 8, flex: '1 1 320px', maxWidth: 480 }}
               >
-                <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name, headline, handle or profile URL" />
+                <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name, topic, headline, handle or profile URL" />
                 <Button type="submit" variant="secondary">Search</Button>
               </form>
               <span style={{ fontSize: 13, color: theme.textMuted, marginLeft: 8 }}>Only:</span>
@@ -1404,12 +1449,13 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
             )}
             <div ref={listRef}>
               <Table
-                columns={['Creator', 'Where', 'Reach', 'Address', 'Status']}
+                columns={['Creator', 'Tags', 'Where', 'Reach', 'Address', 'Status']}
                 maxHeight={listHeight}
+                dense
                 footer={creators.hasNextPage ? <LoadMore loading={creators.isFetchingNextPage} onMore={() => !creators.isFetchingNextPage && creators.fetchNextPage()} /> : null}
                 rows={listed.map((c) => [
                   // Widths capped so the columns wrap to fit a laptop screen.
-                  <div key="n" style={{ maxWidth: 220, overflowWrap: 'anywhere' }}>
+                  <div key="n" style={{ maxWidth: 190, overflowWrap: 'anywhere' }}>
                     <div style={{ fontWeight: 500 }}>{c.name ?? '—'}</div>
                     <div style={{ fontSize: 12, color: theme.textMuted }}>
                       {c.platforms.map((p) => (
@@ -1440,6 +1486,14 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                       </div>
                     ))}
                   </div>,
+                  <TagsCell
+                    key={`t-${c.id}`}
+                    topics={c.topics ?? []}
+                    onPick={(t) => {
+                      setQ(t);
+                      setSearchFor(t);
+                    }}
+                  />,
                   <LocationCell
                     key={`w-${c.id}`}
                     creator={c}

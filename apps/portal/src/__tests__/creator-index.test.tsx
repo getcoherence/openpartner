@@ -1069,6 +1069,27 @@ describe('ops console: creator index settings', () => {
     confirm.mockRestore();
   });
 
+  it('tags each creator with their topics, and a tag clicked searches for the rest like them', async () => {
+    const topics = ['us politics', 'elections', 'current events', 'interviews', 'media', 'podcast', 'journalism'];
+    respond = (url) => {
+      if (url.endsWith('/creator-index/settings')) {
+        return { status: 200, body: { settings: SETTINGS, defaults: SETTINGS, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {} } };
+      }
+      if (url.endsWith('/creator-index/stats')) return { status: 404, body: { error: 'not_found' } };
+      const base = { status: 'active', headline: null, country: 'GB', region: null, brandVisible: true, emailsSent: 0, totalReach: 5_000, contact: null, platforms: [] };
+      return { status: 200, body: { creators: [{ ...base, id: 'a', name: 'Jo Rivera', topics }, { ...base, id: 'b', name: 'Sam Lee', topics: [] }], total: 2 } };
+    };
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    expect(await screen.findByRole('columnheader', { name: 'Tags' })).toBeTruthy();
+    // The first five, and the rest in a tooltip.
+    expect(screen.getByRole('button', { name: 'us politics' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'podcast' })).toBeNull();
+    expect(screen.getByText('+2').getAttribute('title')).toBe('podcast, journalism');
+    fireEvent.click(screen.getByRole('button', { name: 'us politics' }));
+    await waitFor(() => expect(calls.map((c) => c.url)).toContain('/api/platform-admin/creator-index/creators?q=us+politics'));
+    expect((screen.getByPlaceholderText(/Name, topic/) as HTMLInputElement).value).toBe('us politics');
+  });
+
   it('pages on through the list, sorted by reach and narrowed to a reach range', async () => {
     const creator = (id: string, totalReach: number) => ({ id, status: 'active', name: `Creator ${id}`, headline: null, country: 'GB', region: null, brandVisible: true, emailsSent: 0, totalReach, contact: null, platforms: [] });
     respond = (url) => {
