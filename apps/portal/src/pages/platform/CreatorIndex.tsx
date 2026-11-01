@@ -16,6 +16,7 @@
  *     has written to, previewed and sent in small batches.
  *   - Mailboxes: the outreach email's and brands' invites', each connected
  *     by Microsoft sign-in (Mailboxes.tsx).
+ *   - Blocked domains: a company that asked for no one there to be emailed.
  *
  * Settings, Runs and Mailboxes fold away, remembered in this browser.
  *
@@ -469,6 +470,79 @@ function AddressCell({ creator, canWrite, onSaved }: { creator: OpsCreator; canW
       )}
       {error && <div style={{ fontSize: 12, color: theme.danger, marginTop: 4 }}>{addressError(error)}</div>}
     </div>
+  );
+}
+
+/** Why a domain couldn't be blocked or unblocked, in ops' terms. */
+const DOMAIN_ERRORS: Record<string, string> = {
+  invalid_domain: 'Give a domain, like example.com.',
+  shared_mail_domain: 'Anyone can sign up there. Remove those creators one at a time.',
+  not_found: 'That domain isn’t blocked.',
+};
+
+function domainError(err: unknown): string {
+  const code = err instanceof Error ? err.message : '';
+  return DOMAIN_ERRORS[code] ?? friendlyPlatformError(err);
+}
+
+/** Blocked domains: no index email to anyone there, and their listings go
+ *  (Keith, Nov 1: a company asked to be left out). The Network keeps only a
+ *  hash, so there's no list to show: a domain is blocked or unblocked by
+ *  name, and the audit log says which were. */
+function BlockedDomains({ canWrite, onBlocked }: { canWrite: boolean; onBlocked: () => void }) {
+  const path = '/platform-admin/creator-index/blocked-domains';
+  const [domain, setDomain] = useState('');
+  const [done, setDone] = useState<string | null>(null);
+  const typed = domain.trim();
+  const block = useMutation({
+    mutationFn: (d: string) => papi<{ domain: string; alreadyBlocked: boolean; removed: number }>(path, { method: 'POST', body: { domain: d } }),
+    onSuccess: (r) => {
+      setDone(r.alreadyBlocked ? `${r.domain} was already blocked` : `${r.domain} blocked · ${r.removed} ${r.removed === 1 ? 'listing' : 'listings'} removed`);
+      setDomain('');
+      onBlocked();
+    },
+  });
+  const unblock = useMutation({
+    mutationFn: (d: string) => papi(`${path}/${encodeURIComponent(d)}`, { method: 'DELETE' }),
+    onSuccess: (_r, d) => {
+      setDone(`${d.toLowerCase()} unblocked`);
+      setDomain('');
+    },
+  });
+  const error = block.error ?? unblock.error;
+  const busy = block.isPending || unblock.isPending;
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (window.confirm(`Block ${typed}? No one there gets an index email, and their listings are deleted.`)) block.mutate(typed);
+      }}
+    >
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ width: 260, maxWidth: '100%' }}>
+          <Input
+            aria-label="Domain"
+            placeholder="example.com"
+            value={domain}
+            disabled={!canWrite}
+            onChange={(e) => {
+              setDomain(e.target.value);
+              setDone(null);
+              block.reset();
+              unblock.reset();
+            }}
+          />
+        </div>
+        <Button type="submit" size="sm" disabled={!canWrite || busy || !typed}>
+          Block
+        </Button>
+        <Button type="button" size="sm" variant="secondary" disabled={!canWrite || busy || !typed} onClick={() => unblock.mutate(typed)}>
+          Unblock
+        </Button>
+      </div>
+      {done && <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 8 }}>{done}</div>}
+      {error && <div style={{ fontSize: 13, color: theme.danger, marginTop: 8 }}>{domainError(error)}</div>}
+    </form>
   );
 }
 
@@ -1307,6 +1381,18 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
           {tab === 'settings' && (
           <Section title="Mailboxes">
             <MailboxesSection outreach={mailbox} invite={inviteMailbox} oauth={!!state.data.mailboxOAuth} canWrite={canWrite} onChange={refresh} />
+          </Section>
+          )}
+
+          {tab === 'settings' && (
+          <Section title="Blocked domains">
+            <BlockedDomains
+              canWrite={canWrite}
+              onBlocked={() => {
+                refresh();
+                qc.invalidateQueries({ queryKey: ['platform-creator-index-creators'] });
+              }}
+            />
           </Section>
           )}
 

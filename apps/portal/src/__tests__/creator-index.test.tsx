@@ -1110,6 +1110,40 @@ describe('ops console: creator index settings', () => {
     confirm.mockRestore();
   });
 
+  it('blocks a domain from Settings after a confirm, says what went, and unblocks one', async () => {
+    respond = (url, method) => {
+      if (url.endsWith('/creator-index/settings')) {
+        return { status: 200, body: { settings: SETTINGS, defaults: SETTINGS, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {} } };
+      }
+      if (url.endsWith('/creator-index/stats')) return { status: 404, body: { error: 'not_found' } };
+      if (url.endsWith('/creator-index/blocked-domains') && method === 'POST') {
+        const domain = String((calls[calls.length - 1]!.body as { domain: string }).domain);
+        if (domain === 'gmail.com') return { status: 400, body: { error: 'shared_mail_domain' } };
+        return { status: 200, body: { domain: domain.toLowerCase(), alreadyBlocked: false, removed: 2 } };
+      }
+      if (url.includes('/creator-index/blocked-domains/') && method === 'DELETE') return { status: 204, body: null };
+      return { status: 200, body: { creators: [], total: 0 } };
+    };
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />, '/?tab=settings');
+    const domain = await screen.findByLabelText('Domain');
+    fireEvent.change(domain, { target: { value: ' Jo.co ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Block' }));
+    expect(confirm).toHaveBeenCalledWith('Block Jo.co? No one there gets an index email, and their listings are deleted.');
+    expect(await screen.findByText('jo.co blocked · 2 listings removed')).toBeTruthy();
+    expect(calls.find((c) => c.url === '/api/platform-admin/creator-index/blocked-domains')?.body).toEqual({ domain: 'Jo.co' });
+
+    fireEvent.change(domain, { target: { value: 'gmail.com' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Block' }));
+    expect(await screen.findByText('Anyone can sign up there. Remove those creators one at a time.')).toBeTruthy();
+
+    fireEvent.change(domain, { target: { value: 'jo.co' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Unblock' }));
+    expect(await screen.findByText('jo.co unblocked')).toBeTruthy();
+    expect(calls.some((c) => c.url === '/api/platform-admin/creator-index/blocked-domains/jo.co' && c.method === 'DELETE')).toBe(true);
+    confirm.mockRestore();
+  });
+
   it('tags each creator with their topics, and a tag clicked searches for the rest like them', async () => {
     const topics = ['us politics', 'elections', 'current events', 'interviews', 'media', 'podcast', 'journalism'];
     respond = (url) => {
