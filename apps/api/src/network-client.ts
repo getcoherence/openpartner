@@ -1597,8 +1597,8 @@ export async function adminCreatorIndexStats(networkUrl: string): Promise<Record
   return callNetworkAdmin<Record<string, unknown>>(networkUrl, 'GET', '/admin/creator-index/stats');
 }
 
-export async function adminSearchIndexedCreators(networkUrl: string, querystring: string): Promise<{ creators: unknown[]; total?: number }> {
-  return callNetworkAdmin<{ creators: unknown[]; total?: number }>(networkUrl, 'GET', `/admin/creator-index/creators${querystring ? `?${querystring}` : ''}`);
+export async function adminSearchIndexedCreators(networkUrl: string, querystring: string): Promise<{ creators: unknown[]; total?: number; nextCursor?: string | null }> {
+  return callNetworkAdmin<{ creators: unknown[]; total?: number; nextCursor?: string | null }>(networkUrl, 'GET', `/admin/creator-index/creators${querystring ? `?${querystring}` : ''}`);
 }
 
 export async function adminGetIndexedCreator(networkUrl: string, id: string): Promise<{ creator: unknown; invites: Record<string, number> }> {

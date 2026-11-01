@@ -22,15 +22,15 @@
  * changes, runs and sends need an admin.
  */
 
-import { useEffect, useLayoutEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { theme } from '../../theme.js';
 import { useIsMobile } from '../../lib/useMediaQuery.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select, Table, Textarea, formatDate } from '../../ui.js';
 import { friendlyPlatformError, papi, PlatformApiError, type PlatformOperator } from './lib.js';
 import { brandSignalLabel, shortUrl, type PartnershipSignal } from '../../lib/partnership-signals.js';
-import { PlatformMark, platformName } from '../../lib/PlatformMark.js';
+import { PlatformMark, compactCount, platformName } from '../../lib/PlatformMark.js';
 import { MailboxesSection, type MailboxState } from './Mailboxes.js';
 
 type DiscoverySource = 'creatorDatabase' | 'storefronts' | 'sponsorPages' | 'people';
@@ -683,6 +683,59 @@ function MissingToggle({ on, onClick, children }: { on: boolean; onClick: () => 
   );
 }
 
+type Count = number | '';
+
+/** Reach ranges, [at least, at most], as brands' search offers them. */
+const REACH_RANGES: Array<[Count, Count]> = [
+  ['', ''],
+  ['', 10_000],
+  [10_000, 50_000],
+  [50_000, 100_000],
+  [100_000, 1_000_000],
+  [1_000_000, ''],
+];
+
+/** "10K–50K", "Up to 10K", "1M+". */
+function reachLabel([min, max]: [Count, Count]): string {
+  if (min === '') return max === '' ? 'Any reach' : `Up to ${compactCount(max)}`;
+  return max === '' ? `${compactCount(min)}+` : `${compactCount(min)}–${compactCount(max)}`;
+}
+
+type ListSort = 'newest' | 'reach';
+
+/** One page of the list. */
+interface CreatorsPage {
+  creators: OpsCreator[];
+  total?: number;
+  /** Absent from a Network that predates paging: the first page is all. */
+  nextCursor?: string | null;
+}
+
+/** Loads the next page once it's scrolled into view, and again while it
+ *  stays in view; the button does it too, and is all there is without
+ *  IntersectionObserver. */
+function LoadMore({ loading, onMore }: { loading: boolean; onMore: () => void }) {
+  const [el, setEl] = useState<HTMLDivElement | null>(null);
+  const more = useRef(onMore);
+  more.current = onMore;
+  useEffect(() => {
+    if (!el || loading || typeof IntersectionObserver === 'undefined') return;
+    // A new observer after each page: it reports at once if still in view.
+    const seen = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) more.current();
+    });
+    seen.observe(el);
+    return () => seen.disconnect();
+  }, [el, loading]);
+  return (
+    <div ref={setEl} style={{ padding: 12, textAlign: 'center' }}>
+      <Button variant="ghost" size="sm" disabled={loading} onClick={onMore}>
+        {loading ? 'Loading…' : 'Load more'}
+      </Button>
+    </div>
+  );
+}
+
 /** The highest follower cap the API takes. */
 const MAX_FOLLOWERS_CAP = 1_000_000_000;
 
@@ -785,19 +838,40 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
   const [searchFor, setSearchFor] = useState('');
   const [missing, setMissing] = useState<Missing[]>([]);
   const toggleMissing = (m: Missing) => setMissing((xs) => (xs.includes(m) ? xs.filter((x) => x !== m) : [...xs, m].sort()));
+  const [reachAt, setReachAt] = useState(0);
+  const [minReach, maxReach] = REACH_RANGES[reachAt]!;
+  const [sort, setSort] = useState<ListSort>('newest');
   const listQuery = new URLSearchParams();
   if (searchFor) listQuery.set('q', searchFor);
   if (missing.length) listQuery.set('missing', missing.join(','));
-  const filtered = !!searchFor || missing.length > 0;
-  const creators = useQuery({
-    queryKey: ['platform-creator-index-creators', searchFor, missing.join(',')],
-    queryFn: () => papi<{ creators: OpsCreator[]; total?: number }>(`/platform-admin/creator-index/creators${filtered ? `?${listQuery}` : ''}`),
-    refetchInterval: watching ? 4_000 : false,
+  if (sort !== 'newest') listQuery.set('sort', sort);
+  if (minReach !== '') listQuery.set('minFollowers', String(minReach));
+  if (maxReach !== '') listQuery.set('maxFollowers', String(maxReach));
+  const filtered = !!searchFor || missing.length > 0 || reachAt > 0;
+  const creators = useInfiniteQuery({
+    queryKey: ['platform-creator-index-creators', listQuery.toString()],
+    queryFn: ({ pageParam }) => {
+      const p = new URLSearchParams(listQuery);
+      if (pageParam) p.set('after', pageParam);
+      const qs = p.toString();
+      return papi<CreatorsPage>(`/platform-admin/creator-index/creators${qs ? `?${qs}` : ''}`);
+    },
+    initialPageParam: '',
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+    // Every page loaded is read again, so only while few are.
+    refetchInterval: (query) => (watching && (query.state.data?.pages.length ?? 1) <= 2 ? 4_000 : false),
   });
+  const listed = creators.data?.pages.flatMap((p) => p.creators) ?? [];
+  const total = creators.data?.pages[0]?.total;
   const remove = useMutation({
     mutationFn: (id: string) => papi(`/platform-admin/creator-index/creators/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['platform-creator-index-creators'] });
+    onSuccess: (_r, id) => {
+      // Out of every list loaded, without reading all their pages again.
+      qc.setQueriesData<InfiniteData<CreatorsPage>>({ queryKey: ['platform-creator-index-creators'] }, (d) =>
+        d && d.pages.some((p) => p.creators.some((c) => c.id === id))
+          ? { ...d, pages: d.pages.map((p) => ({ ...p, creators: p.creators.filter((c) => c.id !== id), total: p.total == null ? p.total : p.total - 1 })) }
+          : d,
+      );
       refresh();
     },
   });
@@ -1296,13 +1370,23 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
               <MissingToggle on={missing.includes('state')} onClick={() => toggleMissing('state')}>
                 No state
               </MissingToggle>
+              <div style={{ width: 130 }}>
+                <Select aria-label="Reach" value={String(reachAt)} onChange={(e) => setReachAt(Number(e.target.value))}>
+                  {REACH_RANGES.map((r, i) => (
+                    <option key={i} value={i}>
+                      {reachLabel(r)}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div style={{ width: 150 }}>
+                <Select aria-label="Sort" value={sort} onChange={(e) => setSort(e.target.value as ListSort)}>
+                  <option value="newest">Newest first</option>
+                  <option value="reach">Most reach first</option>
+                </Select>
+              </div>
               <span style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginLeft: 'auto', fontSize: 13 }}>
-                {creators.data?.total != null && (
-                  <span style={{ color: theme.textMuted }}>
-                    {filtered ? `${creators.data.total.toLocaleString()} match` : `${creators.data.total.toLocaleString()} in all`}
-                    {creators.data.total > creators.data.creators.length ? `, newest ${creators.data.creators.length} shown` : ''}
-                  </span>
-                )}
+                {total != null && <span style={{ color: theme.textMuted }}>{filtered ? `${total.toLocaleString()} match` : `${total.toLocaleString()} in all`}</span>}
                 {!filtered && (s?.creators.listedLast24h ?? 0) > 0 && (
                   <span style={{ color: theme.success }}>{s!.creators.listedLast24h!.toLocaleString()} new in the last 24 hours</span>
                 )}
@@ -1322,7 +1406,8 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
               <Table
                 columns={['Creator', 'Where', 'Reach', 'Address', 'Status']}
                 maxHeight={listHeight}
-                rows={(creators.data?.creators ?? []).map((c) => [
+                footer={creators.hasNextPage ? <LoadMore loading={creators.isFetchingNextPage} onMore={() => !creators.isFetchingNextPage && creators.fetchNextPage()} /> : null}
+                rows={listed.map((c) => [
                   // Widths capped so the columns wrap to fit a laptop screen.
                   <div key="n" style={{ maxWidth: 220, overflowWrap: 'anywhere' }}>
                     <div style={{ fontWeight: 500 }}>{c.name ?? '—'}</div>

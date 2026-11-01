@@ -985,7 +985,7 @@ describe('ops console: creator index settings', () => {
       };
     };
     const { unmount } = wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
-    expect(await screen.findByText('52 in all, newest 2 shown')).toBeTruthy();
+    expect(await screen.findByText('52 in all')).toBeTruthy();
     expect(screen.getByText('37 new in the last 24 hours')).toBeTruthy();
     expect(screen.getAllByText(/^new · listed/)).toHaveLength(1);
     // Who has had the outreach email, and when: only Sam.
@@ -1041,8 +1041,8 @@ describe('ops console: creator index settings', () => {
     expect(screen.getByDisplayValue('DE')).toBeTruthy();
   });
 
-  it('removes a creator after a confirm, and reads the list again', async () => {
-    let listed = [{ id: 'a', status: 'active', name: 'Jo Rivera', headline: null, country: 'US', region: 'US-TX', brandVisible: true, emailsSent: 0, totalReach: 5_000, contact: null, platforms: [] }];
+  it('removes a creator after a confirm, from the list as loaded', async () => {
+    const listed = [{ id: 'a', status: 'active', name: 'Jo Rivera', headline: null, country: 'US', region: 'US-TX', brandVisible: true, emailsSent: 0, totalReach: 5_000, contact: null, platforms: [] }];
     respond = (url, method) => {
       if (url.endsWith('/creator-index/settings')) {
         return { status: 200, body: { settings: SETTINGS, defaults: SETTINGS, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {} } };
@@ -1054,10 +1054,7 @@ describe('ops console: creator index settings', () => {
         };
       }
       // No Content, as the API answers a removal.
-      if (url.endsWith('/creator-index/creators/a') && method === 'DELETE') {
-        listed = [];
-        return { status: 204, body: null };
-      }
+      if (url.endsWith('/creator-index/creators/a') && method === 'DELETE') return { status: 204, body: null };
       return { status: 200, body: { creators: listed, total: listed.length } };
     };
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
@@ -1067,7 +1064,35 @@ describe('ops console: creator index settings', () => {
     expect(await screen.findByText('0 in all')).toBeTruthy();
     expect(screen.queryByText('Jo Rivera')).toBeNull();
     expect(screen.queryByText(/JSON/)).toBeNull();
+    // Not read again for it.
+    expect(calls.filter((c) => c.url.startsWith('/api/platform-admin/creator-index/creators') && c.method === 'GET')).toHaveLength(1);
     confirm.mockRestore();
+  });
+
+  it('pages on through the list, sorted by reach and narrowed to a reach range', async () => {
+    const creator = (id: string, totalReach: number) => ({ id, status: 'active', name: `Creator ${id}`, headline: null, country: 'GB', region: null, brandVisible: true, emailsSent: 0, totalReach, contact: null, platforms: [] });
+    respond = (url) => {
+      if (url.endsWith('/creator-index/settings')) {
+        return { status: 200, body: { settings: SETTINGS, defaults: SETTINGS, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {} } };
+      }
+      if (url.endsWith('/creator-index/stats')) return { status: 404, body: { error: 'not_found' } };
+      if (url.includes('after=p2')) return { status: 200, body: { creators: [creator('c', 1_000)], total: 3, nextCursor: null } };
+      return { status: 200, body: { creators: [creator('a', 9_000), creator('b', 5_000)], total: 3, nextCursor: 'p2' } };
+    };
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    expect(await screen.findByText('Creator a')).toBeTruthy();
+    // Without IntersectionObserver, as here, the button loads the next page.
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(await screen.findByText('Creator c')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull();
+    const listed = () => calls.filter((c) => c.url.startsWith('/api/platform-admin/creator-index/creators')).map((c) => c.url);
+    expect(listed()).toEqual(['/api/platform-admin/creator-index/creators', '/api/platform-admin/creator-index/creators?after=p2']);
+
+    fireEvent.change(screen.getByLabelText('Sort'), { target: { value: 'reach' } });
+    fireEvent.change(screen.getByLabelText('Reach'), { target: { value: String(2) } });
+    expect((screen.getByLabelText('Reach') as HTMLSelectElement).selectedOptions[0]!.textContent).toBe('10K–50K');
+    await waitFor(() => expect(listed()).toContain('/api/platform-admin/creator-index/creators?sort=reach&minFollowers=10000&maxFollowers=50000'));
+    expect(await screen.findByText('3 match')).toBeTruthy();
   });
 
   describe('the outreach email', () => {

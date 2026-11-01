@@ -420,10 +420,12 @@ describe.skipIf(skipIntegration)('creator index: addresses', () => {
   });
 
   it('passes the list’s filters on, and nothing else', async () => {
-    const r = await request(app).get('/platform-admin/creator-index/creators?q=jo&missing=address,state&extra=1').set('Cookie', await operator('support'));
+    const r = await request(app)
+      .get('/platform-admin/creator-index/creators?q=jo&missing=address,state&sort=reach&minFollowers=10000&maxFollowers=50000&after=eyJ2IjoxfQ&extra=1')
+      .set('Cookie', await operator('support'));
     expect(r.status).toBe(200);
     const url = new URL(`http://network${last(/^\/admin\/creator-index\/creators\?/)!.path}`);
-    expect(Object.fromEntries(url.searchParams)).toEqual({ q: 'jo', missing: 'address,state' });
+    expect(Object.fromEntries(url.searchParams)).toEqual({ q: 'jo', missing: 'address,state', sort: 'reach', minFollowers: '10000', maxFollowers: '50000', after: 'eyJ2IjoxfQ' });
   });
 
   it('sets a state with the page that shows it, audits both, and passes the Network’s refusal back', async () => {
