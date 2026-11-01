@@ -572,6 +572,40 @@ describe('ops console: creator index settings', () => {
     await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({ monthlyBudgetUsd: 10, memberStatsBudgetUsd: 25 }));
   });
 
+  it('caps followers over the floor, and empty means no cap', async () => {
+    const stats = { creators: { byStatus: {}, listed: 0, shownToBrands: 0, hiddenFromBrands: 0 }, byCountry: [], candidates: {}, rejections: {}, invites: {}, emailsSent30d: 0, suppressions: {}, spend: { thisMonthUsd: 0, budgetUsd: 10 } };
+    const respondFor = (settings: Record<string, unknown>) => {
+      respond = (url, method) => {
+        if (url.endsWith('/creator-index/settings') && method === 'PUT') return { status: 200, body: { settings: calls[calls.length - 1]!.body, visibilityChanged: 0 } };
+        if (url.endsWith('/creator-index/settings')) return { status: 200, body: { settings, defaults: settings, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {} } };
+        if (url.endsWith('/creator-index/stats')) return { status: 200, body: stats };
+        return { status: 200, body: { creators: [] } };
+      };
+    };
+    // A Network that predates it isn't offered it.
+    respondFor(SETTINGS);
+    const older = wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    await screen.findByText('Save settings');
+    expect(screen.queryByLabelText('Max. followers')).toBeNull();
+    older.unmount();
+
+    respondFor({ ...SETTINGS, maxFollowers: null });
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    const cap = (await screen.findByLabelText('Max. followers')) as HTMLInputElement;
+    expect(cap.value).toBe('');
+    const save = () => screen.getByText('Save settings').closest('button') as HTMLButtonElement;
+    fireEvent.change(cap, { target: { value: '3000' } });
+    expect(screen.getByText('Must be over min. followers')).toBeTruthy();
+    expect(save().disabled).toBe(true);
+    fireEvent.change(cap, { target: { value: '500000' } });
+    expect(save().disabled).toBe(false);
+    fireEvent.click(save());
+    await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({ minFollowers: 3000, maxFollowers: 500_000 }));
+    fireEvent.change(cap, { target: { value: '' } });
+    fireEvent.click(save());
+    await waitFor(() => expect(calls.filter((c) => c.method === 'PUT').at(-1)?.body).toMatchObject({ maxFollowers: null }));
+  });
+
   it('shows an address in full on request, and adds one ops found published, saying why one was refused', async () => {
     let refuse = true;
     respond = (url, method) => {
@@ -1034,7 +1068,12 @@ describe('ops console: creator index settings', () => {
       ],
     };
 
-    function respondWith(opts: { outreachEnabled: boolean; mailer: { configured: boolean; from: string | null }; inviteMailer?: { configured: boolean; from: string | null } }) {
+    function respondWith(opts: {
+      outreachEnabled: boolean;
+      mailer: { configured: boolean; from: string | null };
+      inviteMailer?: { configured: boolean; from: string | null };
+      preview?: Record<string, unknown>;
+    }) {
       respond = (url, method) => {
         if (url.endsWith('/creator-index/settings')) {
           return {
@@ -1045,7 +1084,7 @@ describe('ops console: creator index settings', () => {
         if (url.endsWith('/creator-index/stats')) return { status: 200, body: STATS };
         if (url.endsWith('/creator-index/outreach/run') && method === 'POST') {
           const body = calls[calls.length - 1]!.body as { dryRun: boolean };
-          return body.dryRun ? { status: 200, body: { ...PREVIEW, enabled: opts.outreachEnabled } } : { status: 202, body: { started: true } };
+          return body.dryRun ? { status: 200, body: { ...PREVIEW, enabled: opts.outreachEnabled, ...opts.preview } } : { status: 202, body: { started: true } };
         }
         return { status: 200, body: { creators: [] } };
       };
@@ -1074,6 +1113,22 @@ describe('ops console: creator index settings', () => {
       // Off in Settings: nothing to send yet.
       expect((screen.getByText('Send this batch').closest('button') as HTMLButtonElement).disabled).toBe(true);
       expect(screen.getByText(/Switch .Outreach email on. in Settings to send/)).toBeTruthy();
+    });
+
+    it('names the sender, or says the email will say “we” without a name, and counts who the follower cap leaves out', async () => {
+      const mailer = { configured: true, from: 'keith@openpartner.test' };
+      respondWith({ outreachEnabled: true, mailer, preview: { senderName: null, excluded: { over_max_followers: 12 } } });
+      const { unmount } = wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+      fireEvent.click(await screen.findByText('Preview batch'));
+      expect(await screen.findByText('No sender name, so the email says “we”. Add yours to Send as under Mailboxes.')).toBeTruthy();
+      expect(screen.getByText(/over max\. followers 12/)).toBeTruthy();
+      unmount();
+
+      respondWith({ outreachEnabled: true, mailer, preview: { senderName: 'Jo Smith' } });
+      wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+      fireEvent.click(await screen.findByText('Preview batch'));
+      expect(await screen.findByText(/Sends from Jo Smith <keith@openpartner\.test>/)).toBeTruthy();
+      expect(screen.queryByText(/No sender name/)).toBeNull();
     });
 
     it('sends a previewed batch after a confirm, and says so', async () => {

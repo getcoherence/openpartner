@@ -54,6 +54,9 @@ interface IndexSettings {
    *  from a Network that predates them. */
   memberStatsBudgetUsd?: number;
   minFollowers: number;
+  /** Null: no cap. Absent from a Network that predates it, and then not
+   *  offered (nor sent). */
+  maxFollowers?: number | null;
   minPostsPer30d: number;
   refreshDays: number;
   excludedCountries: string[];
@@ -146,6 +149,8 @@ interface OutreachPreview {
   enabled: boolean;
   mailerConfigured: boolean;
   sender: string | null;
+  /** Without one the email says "we". Absent from an older Network. */
+  senderName?: string | null;
   due: number;
   candidates: number;
   excluded: Record<string, number>;
@@ -163,6 +168,7 @@ const OUTREACH_EXCLUDED: Record<string, string> = {
   no_verified_address: 'no verified email',
   country_not_cleared: 'country not cleared for it',
   published_address_only: 'Canada, Australia or New Zealand, with an email we looked up rather than one they published',
+  over_max_followers: 'over max. followers',
 };
 
 /** Why a creator in the batch would be skipped when it's sent. */
@@ -757,6 +763,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
   const preview = outreachPreview.data;
   const running = (Object.entries(s?.runs ?? {}) as Array<[RunKind, IndexRun | undefined]>).filter(([, r]) => r && !r.finishedAt).map(([job]) => JOB_LABEL[job]);
   const unsaved = !!draft && !!state.data && settingsKey(draft) !== settingsKey(state.data.settings);
+  const capTooLow = draft?.maxFollowers != null && draft.maxFollowers <= draft.minFollowers;
 
   return (
     <Page
@@ -874,6 +881,25 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                 <Label>Min. followers</Label>
                 <Input type="number" min={0} value={draft.minFollowers} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, minFollowers: Math.max(0, Math.round(Number(e.target.value) || 0)) })} />
               </div>
+              {draft.maxFollowers !== undefined && (
+                <div>
+                  <Label>Max. followers</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    aria-label="Max. followers"
+                    placeholder="No cap"
+                    title="Bigger creators aren't listed or emailed"
+                    value={draft.maxFollowers ?? ''}
+                    disabled={!canWrite}
+                    onChange={(e) => {
+                      const n = Math.round(Number(e.target.value));
+                      setDraft({ ...draft, maxFollowers: n >= 1 ? n : null });
+                    }}
+                  />
+                  {capTooLow && <div style={{ fontSize: 12, color: theme.danger, marginTop: 4 }}>Must be over min. followers</div>}
+                </div>
+              )}
               <div>
                 <Label>Min. posts in 30 days</Label>
                 <Input type="number" min={0} value={draft.minPostsPer30d} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, minPostsPer30d: Math.max(0, Math.round(Number(e.target.value) || 0)) })} />
@@ -1017,7 +1043,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
             </div>
             {canWrite && (
               <div style={{ display: 'flex', gap: 8, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>
-                <Button onClick={() => save.mutate(draft)} disabled={save.isPending}>{save.isPending ? 'Saving…' : 'Save settings'}</Button>
+                <Button onClick={() => save.mutate(draft)} disabled={save.isPending || capTooLow}>{save.isPending ? 'Saving…' : 'Save settings'}</Button>
                 <Button variant="secondary" onClick={() => replaceDraft(state.data!.settings)}>Discard changes</Button>
                 {save.data && <span style={{ fontSize: 12, color: theme.textMuted }}>Saved. {save.data.visibilityChanged} listings changed visibility.</span>}
               </div>
@@ -1078,7 +1104,12 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                 &ldquo;Claim your profile&rdquo;, once ever, to listed creators no brand has written to: the only way in for creators hidden from brands.
                 Biggest reach first. It opens with their own storefront or sponsor page, and counts as one of their three emails.{' '}
                 {mailbox?.configured ? (
-                  <>Sends from {mailbox.from ?? 'the Network’s outreach mailbox'}, a few seconds apart.</>
+                  <>
+                    Sends from {preview?.senderName && mailbox.from ? `${preview.senderName} <${mailbox.from}>` : (mailbox.from ?? 'the Network’s outreach mailbox')}, a few seconds apart.
+                    {preview?.sender && preview.senderName === null && (
+                      <div style={{ color: theme.danger, marginTop: 2 }}>No sender name, so the email says “we”. Add yours to Send as under Mailboxes.</div>
+                    )}
+                  </>
                 ) : (
                   <span style={{ color: theme.danger }}>
                     {mailbox?.connection?.status === 'lost' ? 'The outreach mailbox’s connection was lost' : 'The Network has no outreach mailbox set up'}, so nothing can be sent.

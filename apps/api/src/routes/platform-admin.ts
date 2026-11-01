@@ -1922,6 +1922,8 @@ const creatorIndexSettingsSchema = z
     monthlyBudgetUsd: z.number().int().min(0).max(100_000),
     memberStatsBudgetUsd: z.number().int().min(0).max(100_000).optional(),
     minFollowers: z.number().int().min(0).max(10_000_000),
+    // Null: no cap. The Network checks it's over minFollowers.
+    maxFollowers: z.number().int().min(1).max(1_000_000_000).nullable().optional(),
     minPostsPer30d: z.number().int().min(0).max(1_000),
     refreshDays: z.number().int().min(7).max(90),
     excludedCountries: z.array(z.string().trim().length(2).transform((v) => v.toUpperCase()).refine(isCountryCode, 'unknown country code')).max(250),

@@ -1477,6 +1477,9 @@ export interface CreatorIndexSettings {
    *  doesn't send it. */
   memberStatsBudgetUsd?: number;
   minFollowers: number;
+  /** Too big to need OpenPartner: not listed or emailed. Null: no cap.
+   *  Optional: an older Network doesn't send it. */
+  maxFollowers?: number | null;
   minPostsPer30d: number;
   refreshDays: number;
   excludedCountries: string[];
