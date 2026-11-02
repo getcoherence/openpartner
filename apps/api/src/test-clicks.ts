@@ -41,6 +41,7 @@ import { ulid } from 'ulid';
 import { TABLES, type ProgramRow, type TenantRow, type TestClickRow } from '@openpartner/db';
 import { campaignStatus } from './campaign-lifecycle.js';
 import { LINKING_FIX, SCRIPT_FIX_ADD, SCRIPT_FIX_CHECK, isStripeCheckout } from './setup-checks.js';
+import { markTrackingTestPassed } from './tracking-verification.js';
 
 export const TEST_CLICK = {
   /** The link must be opened this soon after it's made. */
@@ -92,14 +93,15 @@ export async function createTestClick(
   if (program.blockedAt || campaignStatus(program, now) !== 'active') {
     return { ok: false, status: 409, error: 'program_not_active' };
   }
-  // The router records no clicks for such a brand (its servesClicks), so a
-  // test would only ever 404.
+  // The router serves no test link for such a brand (its servesTestClicks),
+  // so a test would only ever 404. A brand still in review can test: that is
+  // how it verifies its tracking before approval (tracking-verification.ts).
   const tenant = (await db<TenantRow>(TABLES.Tenant)
     .where({ id: tenantId })
     .first('status', 'approvalStatus', 'pendingDeletionAt')) as
     | Pick<TenantRow, 'status' | 'approvalStatus' | 'pendingDeletionAt'>
     | undefined;
-  if (!tenant || tenant.status !== 'active' || tenant.approvalStatus !== 'approved' || tenant.pendingDeletionAt != null) {
+  if (!tenant || tenant.status !== 'active' || tenant.approvalStatus === 'rejected' || tenant.pendingDeletionAt != null) {
     return { ok: false, status: 409, error: 'links_paused' };
   }
   // Nothing lands on Stripe's page, and the destination check covers it.
@@ -317,8 +319,9 @@ export async function recordTestLanding(
 /**
  * POST /attribution/identify for a test click: the first within the window
  * is kept, and nothing else is written (no Identity, no attribution). The
- * user id isn't stored. Null when `clickId` isn't a test click of the
- * brand's.
+ * user id isn't stored. The first pass also verifies the brand's tracking
+ * (tracking-verification.ts). Null when `clickId` isn't a test click of
+ * the brand's.
  */
 export async function recordTestIdentify(
   db: Knex,
@@ -333,6 +336,7 @@ export async function recordTestIdentify(
     .where({ id: test.id, tenantId })
     .whereNull('identifiedAt')
     .update({ identifiedAt: now });
+  if (n > 0) await markTrackingTestPassed(db, tenantId, now);
   return { first: n > 0 };
 }
 

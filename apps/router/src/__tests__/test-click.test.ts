@@ -129,14 +129,31 @@ describe('router test clicks', () => {
     expect(row.clickedAt).toBeNull();
   });
 
+  it('serves a brand still in review, whose partner links stay off', async () => {
+    tables.Tenant![0]!.approvalStatus = 'pending';
+    const t = token();
+    const row = addTest(t);
+    expect((await get(`/r/_test/${t}`)).status).toBe(302);
+    expect(row.clickedAt).not.toBeNull();
+    expect((await get('/r/acme/ada')).status).toBe(404);
+    expect(tables.Click).toEqual([]);
+  });
+
   it('honours the brand gate and a blocked program, and leaves the test unclaimed', async () => {
     const t1 = token();
-    const pending = addTest(t1);
-    tables.Tenant![0]!.approvalStatus = 'pending';
+    const rejected = addTest(t1);
+    tables.Tenant![0]!.approvalStatus = 'rejected';
     expect((await get(`/r/_test/${t1}`)).status).toBe(404);
-    expect(pending.clickedAt).toBeNull();
+    expect(rejected.clickedAt).toBeNull();
 
     tables.Tenant![0]!.approvalStatus = 'approved';
+    tables.Tenant![0]!.pendingDeletionAt = new Date();
+    const t3 = token();
+    const deleting = addTest(t3);
+    expect((await get(`/r/_test/${t3}`)).status).toBe(404);
+    expect(deleting.clickedAt).toBeNull();
+
+    tables.Tenant![0]!.pendingDeletionAt = null;
     tables.Program![0]!.blockedAt = new Date();
     const t2 = token();
     const blocked = addTest(t2);

@@ -3,7 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { alpha, theme } from '../../theme.js';
 import { countryName } from '../../lib/CountryField.js';
 import { Button, Card, ErrorBanner, Label, Page, Select, Textarea, formatDate } from '../../ui.js';
-import { ApprovalBadge, StatusBadge } from './components.js';
+import { ApprovalBadge, Pill, StatusBadge } from './components.js';
+import { TrackingGatePanel } from './TrackingGate.js';
 import { ScreeningDetail, screeningSummary } from './ScreeningReview.js';
 import {
   papi,
@@ -49,7 +50,8 @@ export function BrandsPage({ operator }: { operator: PlatformOperator }) {
   const invalidate = () => qc.invalidateQueries({ queryKey: ['platform-brands'] });
 
   const approve = useMutation({
-    mutationFn: (id: string) => papi(`/platform-admin/brands/${id}/approve`, { method: 'POST' }),
+    mutationFn: (v: { id: string; withoutTracking: boolean }) =>
+      papi(`/platform-admin/brands/${v.id}/approve`, { method: 'POST', body: { withoutTracking: v.withoutTracking } }),
     onSuccess: invalidate,
   });
   const reinstate = useMutation({
@@ -119,6 +121,8 @@ export function BrandsPage({ operator }: { operator: PlatformOperator }) {
         </div>
       )}
 
+      <TrackingGatePanel canWrite={canWrite} />
+
       <ErrorBanner error={actionError ? friendlyPlatformError(actionError) : brands.error} />
 
       {brands.isLoading ? (
@@ -134,10 +138,20 @@ export function BrandsPage({ operator }: { operator: PlatformOperator }) {
               key={b.id}
               brand={b}
               canWrite={canWrite}
-              approveBusy={approve.isPending && approve.variables === b.id}
+              approveBusy={approve.isPending && approve.variables?.id === b.id}
               reinstateBusy={reinstate.isPending && reinstate.variables === b.id}
               rejectBusy={reject.isPending && reject.variables?.id === b.id}
-              onApprove={() => approve.mutate(b.id)}
+              onApprove={() => {
+                if (
+                  !b.trackingVerified &&
+                  !window.confirm(
+                    `${b.displayName} hasn’t verified its tracking. Its links go live, but partners can’t join until it sends a test click. Approve anyway?`,
+                  )
+                ) {
+                  return;
+                }
+                approve.mutate({ id: b.id, withoutTracking: !b.trackingVerified });
+              }}
               onReinstate={() => reinstate.mutate(b.id)}
               onReject={(v, opts) => reject.mutate({ id: b.id, ...v }, opts)}
             />
@@ -223,6 +237,14 @@ function BrandCard({
             <span style={{ fontSize: 15, fontWeight: 600 }}>{brand.displayName}</span>
             <ApprovalBadge status={brand.approvalStatus} />
             <StatusBadge status={brand.status} />
+            <Pill
+              label={brand.trackingVerified ? 'tracking verified' : 'tracking not verified'}
+              tone={
+                brand.trackingVerified
+                  ? { bg: theme.successSoft, fg: theme.success }
+                  : { bg: theme.warnSoft, fg: theme.warn }
+              }
+            />
           </div>
           <div style={{ fontSize: 12, color: theme.textDim, marginTop: 2, fontFamily: theme.fontMono }}>
             /t/{brand.slug}/
@@ -242,8 +264,13 @@ function BrandCard({
             )}
             {brand.approvalStatus === 'pending' && (
               <>
-                <Button onClick={onApprove} disabled={approveBusy} size="sm">
-                  {approveBusy ? 'Approving…' : 'Approve'}
+                <Button
+                  onClick={onApprove}
+                  disabled={approveBusy}
+                  size="sm"
+                  variant={brand.trackingVerified ? undefined : 'secondary'}
+                >
+                  {approveBusy ? 'Approving…' : brand.trackingVerified ? 'Approve' : 'Approve anyway'}
                 </Button>
                 <Button variant="danger" size="sm" onClick={() => setForm(form === 'reject' ? null : 'reject')}>
                   Reject

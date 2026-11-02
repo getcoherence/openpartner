@@ -30,6 +30,10 @@ interface PublicStorefront {
   packages?: StorefrontPackage[];
 }
 
+/** The API's tracking_not_verified: an approved brand whose tracking the
+ *  tracking gate is still waiting for (apps/api tracking-verification.ts). */
+export const TRACKING_NOT_VERIFIED_TEXT = 'Verify your tracking first: send a test click from Tracking health.';
+
 /** The Network's error code from a proxied call ("network_call_failed" with
  *  the Network's JSON body as the detail). */
 export function networkErrorCode(err: unknown): string | null {
@@ -56,6 +60,7 @@ const ERROR_TEXT: Record<string, string> = {
   amount_too_large: 'That amount is too large to charge in one payment.',
   brand_pending_review: 'Your brand is still being reviewed. You can book creators once it’s approved.',
   vendor_pending_review: 'Your brand is still being reviewed. You can book creators once it’s approved.',
+  tracking_not_verified: TRACKING_NOT_VERIFIED_TEXT,
   plan_required: 'Tracking a booking adds the creator as your partner, which needs an active plan. Leave the offering empty to book without tracking.',
   rate_limited: 'You’ve started a lot of conversations today. Try again tomorrow.',
 };

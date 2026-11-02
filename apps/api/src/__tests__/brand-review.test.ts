@@ -111,6 +111,8 @@ async function purgeSlug(slug: string): Promise<void> {
     // screens it against the sanctions lists (sanctions-screening.ts).
     TABLES.LocationDeclaration,
     TABLES.SanctionsScreening,
+    // The tracking gate's notice (tracking-gate-notice.ts).
+    TABLES.BrandNotification,
   ]) {
     await db(table).where({ tenantId: t.id }).del();
   }
@@ -274,7 +276,7 @@ describe.skipIf(skipIntegration)('brand approval — signup + gate', () => {
     const approve = await request(app)
       .post(`/platform-admin/brands/${t!.id}/approve`)
       .set('Cookie', cookie)
-      .send({});
+      .send({ withoutTracking: true });
     expect(approve.status).toBe(200);
     expect((await tenantBySlug(slug))?.approvalStatus).toBe('approved');
 
@@ -393,7 +395,7 @@ describe.skipIf(skipIntegration)('brand approval — operator console', () => {
     await federate(t.id, 'vnd_new');
 
     const cookie = await makeOperator('admin');
-    await request(app).post(`/platform-admin/brands/${t.id}/approve`).set('Cookie', cookie).send({}).expect(200);
+    await request(app).post(`/platform-admin/brands/${t.id}/approve`).set('Cookie', cookie).send({ withoutTracking: true }).expect(200);
 
     const review = netCalls.find((c) => c.path === '/admin/vendors/vnd_new/review');
     expect(review, 'expected the approval to reach the Network').toBeDefined();
@@ -463,6 +465,155 @@ describe.skipIf(skipIntegration)('brand approval — operator console', () => {
       .send({});
     expect(res.status).toBe(403);
     expect(res.body.error).toBe('read_only_operator');
+  });
+});
+
+describe.skipIf(skipIntegration)('tracking gate (tracking-verification.ts)', () => {
+  const setGate = async (enforceFrom: Date | null) =>
+    db(TABLES.PlatformSetting)
+      .insert({ key: 'trackingGate', value: { enforceFrom: enforceFrom?.toISOString() ?? null } as never, updatedAt: new Date() })
+      .onConflict('key')
+      .merge();
+  const pastGate = () => setGate(new Date(Date.now() - 60_000));
+  const addPartner = (slug: string) =>
+    request(app)
+      .post(`/t/${slug}/partners`)
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ email: `p-${rnd()}@example.test`, name: 'P' });
+
+  afterEach(async () => {
+    await db(TABLES.PlatformSetting).where({ key: 'trackingGate' }).del();
+  });
+
+  it('asks before approving an unverified brand, and not a verified one', async () => {
+    const cookie = await makeOperator('admin');
+    const { slug } = await signup();
+    const t = (await tenantBySlug(slug))!;
+
+    const refused = await request(app).post(`/platform-admin/brands/${t.id}/approve`).set('Cookie', cookie).send({});
+    expect([refused.status, refused.body.error]).toEqual([409, 'tracking_not_verified']);
+    expect((await tenantBySlug(slug))?.approvalStatus).toBe('pending');
+
+    const list = await request(app).get('/platform-admin/brands?status=pending').set('Cookie', cookie);
+    expect(list.body.brands.find((b: { id: string }) => b.id === t.id).trackingVerified).toBe(false);
+
+    // A passed test click verifies it.
+    await db(TABLES.Tenant).where({ id: t.id }).update({ trackingTestPassedAt: new Date() });
+    await request(app).post(`/platform-admin/brands/${t.id}/approve`).set('Cookie', cookie).send({}).expect(200);
+    const audit = await db(TABLES.PlatformAuditLog)
+      .where({ action: 'brand.approve', targetId: t.id })
+      .first('detail');
+    expect((audit.detail as { trackingVerified: boolean }).trackingVerified).toBe(true);
+  });
+
+  it('from its date, holds partners back from an approved brand until it verifies', async () => {
+    const cookie = await makeOperator('admin');
+    const { slug } = await signup();
+    const t = (await tenantBySlug(slug))!;
+    await request(app).post(`/platform-admin/brands/${t.id}/approve`).set('Cookie', cookie).send({ withoutTracking: true }).expect(200);
+
+    // Before the date: nothing changes.
+    await setGate(new Date(Date.now() + 86_400_000));
+    expect((await addPartner(slug)).body?.error).not.toBe('tracking_not_verified');
+
+    await pastGate();
+    const held = await addPartner(slug);
+    expect([held.status, held.body.error]).toEqual([403, 'tracking_not_verified']);
+    // Granting a new program to every partner is a join; creating one isn't.
+    const programBody = {
+      name: 'Second',
+      commissionRule: [{ trigger: 'every', type: 'percent', value: 10 }],
+      destinationUrl: 'https://brand.example/two',
+    };
+    const granted = await request(app)
+      .post(`/t/${slug}/programs`)
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ ...programBody, grantToAllPartners: true });
+    expect([granted.status, granted.body.error]).toEqual([403, 'tracking_not_verified']);
+    const plain = await request(app).post(`/t/${slug}/programs`).set('Authorization', `Bearer ${ADMIN_KEY}`).send(programBody);
+    expect(plain.body?.error).not.toBe('tracking_not_verified');
+    // The public signup form tells a creator, not the brand.
+    const signupForm = await request(app)
+      .post(`/t/${slug}/partner-signup`)
+      .send({ email: `c-${rnd()}@example.test`, name: 'Creator' });
+    expect(signupForm.body.error).toBe('tracking_not_verified');
+    expect(signupForm.body.detail).toMatch(/isn’t taking new partners/);
+
+    // A partner click linked to a customer verifies it as well as a test click.
+    const programId = await seedProgram(t.id, 'https://brand.example/');
+    const partnerId = ulid();
+    await db(TABLES.Partner).insert({ id: partnerId, tenantId: t.id, email: `seed-${rnd()}@example.test`, name: 'Seed' });
+    const clickId = ulid();
+    await db(TABLES.Click).insert({ id: clickId, tenantId: t.id, partnerId, programId, landingUrl: 'https://brand.example/', ts: new Date() });
+    await db(TABLES.Identity).insert({ id: ulid(), tenantId: t.id, clickId, userId: 'customer-1' });
+    try {
+      expect((await addPartner(slug)).body?.error).not.toBe('tracking_not_verified');
+    } finally {
+      await db(TABLES.Identity).where({ tenantId: t.id }).del();
+      await db(TABLES.Click).where({ tenantId: t.id }).del();
+    }
+  });
+
+  it('keeps an unverified approved brand off the Network, on approval and in the reconcile job', async () => {
+    process.env.NETWORK_ADMIN_API_KEY = 'netadm_test_key_0123456789abcdef';
+    process.env.NETWORK_URL = netUrl;
+    await pastGate();
+    const cookie = await makeOperator('admin');
+    const { slug: heldSlug } = await signup();
+    const { slug: verifiedSlug } = await signup();
+    const held = (await tenantBySlug(heldSlug))!;
+    const verified = (await tenantBySlug(verifiedSlug))!;
+    await federate(held.id, 'vnd_held');
+    await federate(verified.id, 'vnd_ok');
+    netCalls = [];
+
+    await request(app).post(`/platform-admin/brands/${held.id}/approve`).set('Cookie', cookie).send({ withoutTracking: true }).expect(200);
+    const push = netCalls.find((c) => c.path === '/admin/vendors/vnd_held/review');
+    expect((push!.body as { status: string }).status).toBe('pending');
+
+    await db(TABLES.Tenant).where({ id: verified.id }).update({ approvalStatus: 'approved', trackingTestPassedAt: new Date() });
+    netVendors = [
+      { id: 'vnd_held', instanceUrl: 'x', status: 'active', reviewStatus: 'approved' },
+      { id: 'vnd_ok', instanceUrl: 'y', status: 'active', reviewStatus: 'pending' },
+    ];
+    netCalls = [];
+    const { reconcileNetworkReview } = await import('../network-review-reconcile.js');
+    expect((await reconcileNetworkReview()).failed).toBe(0);
+    const pushed = (id: string) =>
+      (netCalls.find((c) => c.path === `/admin/vendors/${id}/review`)?.body as { status: string } | undefined)?.status;
+    expect(pushed('vnd_held')).toBe('pending');
+    expect(pushed('vnd_ok')).toBe('approved');
+  });
+
+  it('sets the date, counts who it touches, and sends the notice once', async () => {
+    const cookie = await makeOperator('admin');
+    const { slug } = await signup();
+    const t = (await tenantBySlug(slug))!;
+    await db(TABLES.Tenant).where({ id: t.id }).update({ approvalStatus: 'approved' });
+    await db(TABLES.Admin).where({ tenantId: t.id }).update({ activatedAt: new Date() });
+
+    const noDate = await request(app).post('/platform-admin/tracking-gate/notices').set('Cookie', cookie);
+    expect([noDate.status, noDate.body.error]).toEqual([409, 'no_enforce_date']);
+
+    const from = new Date(Date.now() + 7 * 86_400_000).toISOString();
+    const put = await request(app).put('/platform-admin/tracking-gate').set('Cookie', cookie).send({ enforceFrom: from });
+    expect(put.status).toBe(200);
+    expect(put.body).toMatchObject({ settings: { enforceFrom: from }, enforced: false });
+
+    const before = await request(app).get('/platform-admin/tracking-gate').set('Cookie', cookie);
+    expect(before.body.affected.brands).toBeGreaterThanOrEqual(1);
+
+    const first = await request(app).post('/platform-admin/tracking-gate/notices').set('Cookie', cookie);
+    expect(first.status).toBe(200);
+    const rows = await db(TABLES.BrandNotification).where({ tenantId: t.id, kind: 'tracking_required' });
+    expect(rows).toHaveLength(1);
+    const again = await request(app).post('/platform-admin/tracking-gate/notices').set('Cookie', cookie);
+    expect(again.body.sent).toBe(0);
+    expect(await db(TABLES.BrandNotification).where({ tenantId: t.id, kind: 'tracking_required' })).toHaveLength(1);
+
+    const support = await makeOperator('support');
+    const ro = await request(app).put('/platform-admin/tracking-gate').set('Cookie', support).send({ enforceFrom: null });
+    expect(ro.status).toBe(403);
   });
 });
 

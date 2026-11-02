@@ -56,6 +56,39 @@ export async function setNotificationSettings(
   return next;
 }
 
+/**
+ * Verified tracking before partners (tracking-verification.ts). From
+ * `enforceFrom`, an approved brand whose tracking isn't verified takes no new
+ * partners and its marketplace listings are hidden. Null: not enforced; the
+ * console still asks before approving an unverified brand.
+ */
+export interface TrackingGateSettings {
+  /** ISO time the gate starts. The notice to brands quotes it. */
+  enforceFrom: string | null;
+}
+
+const TRACKING_GATE_KEY = 'trackingGate';
+
+export async function getTrackingGateSettings(db: Knex): Promise<TrackingGateSettings> {
+  const row = await db<PlatformSettingRow>(TABLES.PlatformSetting).where({ key: TRACKING_GATE_KEY }).first();
+  const v = (row?.value ?? {}) as Partial<TrackingGateSettings>;
+  const from = typeof v.enforceFrom === 'string' && !Number.isNaN(Date.parse(v.enforceFrom)) ? new Date(v.enforceFrom).toISOString() : null;
+  return { enforceFrom: from };
+}
+
+export async function setTrackingGateSettings(
+  db: Knex,
+  next: TrackingGateSettings,
+  operatorEmail: string,
+): Promise<TrackingGateSettings> {
+  const value: TrackingGateSettings = { enforceFrom: next.enforceFrom ? new Date(next.enforceFrom).toISOString() : null };
+  await db(TABLES.PlatformSetting)
+    .insert({ key: TRACKING_GATE_KEY, value: value as unknown as never, updatedByEmail: operatorEmail, updatedAt: new Date() })
+    .onConflict('key')
+    .merge({ value: value as unknown as never, updatedByEmail: operatorEmail, updatedAt: new Date() });
+  return value;
+}
+
 /** The commission-floor platform fee's rates, as fractions (0.03 = 3%). */
 export interface FeeRates {
   /** Share of partner-attributed revenue. */

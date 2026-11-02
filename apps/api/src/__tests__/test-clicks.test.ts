@@ -103,6 +103,7 @@ const statuses = (r: { steps: Array<{ id: string; status: string }> }) => r.step
 
 async function cleanup() {
   for (const t of TABLES_TO_CLEAN) await db(t).whereIn('tenantId', [T, OTHER_TENANT_ID]).del();
+  await db(TABLES.Tenant).whereIn('id', [T, OTHER_TENANT_ID]).update({ trackingTestPassedAt: null });
 }
 
 beforeAll(async () => {
@@ -169,11 +170,21 @@ describe.skipIf(skipIntegration)('POST /admin/tracking-health/test-click', () =>
 
   it('refuses while the brand’s links record no clicks', async () => {
     const pid = await program();
-    const was = await db(TABLES.Tenant).where({ id: T }).first('approvalStatus');
-    await db(TABLES.Tenant).where({ id: T }).update({ approvalStatus: 'pending' });
+    await db(TABLES.Tenant).where({ id: T }).update({ pendingDeletionAt: new Date() });
     try {
       const res = await create(pid);
       expect([res.status, res.body.error]).toEqual([409, 'links_paused']);
+    } finally {
+      await db(TABLES.Tenant).where({ id: T }).update({ pendingDeletionAt: null });
+    }
+  });
+
+  it('works for a brand still in review, which verifies its tracking this way', async () => {
+    const pid = await program();
+    const was = await db(TABLES.Tenant).where({ id: T }).first('approvalStatus');
+    await db(TABLES.Tenant).where({ id: T }).update({ approvalStatus: 'pending' });
+    try {
+      expect((await create(pid)).status).toBe(201);
     } finally {
       await db(TABLES.Tenant).where({ id: T }).update({ approvalStatus: was.approvalStatus });
     }
@@ -272,6 +283,9 @@ describe.skipIf(skipIntegration)('GET /admin/tracking-health/test-click/:id', ()
     expect(done.state).toBe('passed');
     expect(statuses(done)).toEqual(['click:done', 'landing:done', 'identify:done']);
     expect(done.steps.every((s) => s.fix === null)).toBe(true);
+    // The pass verifies the brand's tracking (tracking-verification.ts), once.
+    const tenant = await db(TABLES.Tenant).where({ id: T }).first('trackingTestPassedAt');
+    expect(tenant.trackingTestPassedAt).toBeInstanceOf(Date);
 
     for (const table of [TABLES.Click, TABLES.ClickLanding, TABLES.Identity, TABLES.TrackingIssue]) {
       expect(await db(table).where({ tenantId: T })).toEqual([]);

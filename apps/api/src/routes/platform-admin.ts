@@ -118,11 +118,15 @@ import {
   getFeeRuleSettings,
   getInvoiceBillingSettings,
   getNotificationSettings,
+  getTrackingGateSettings,
   setBrandSignupSettings,
   setFeeRuleSettings,
   setInvoiceBillingSettings,
   setNotificationSettings,
+  setTrackingGateSettings,
 } from '../platform-settings.js';
+import { trackingGateEnforced, trackingVerifiedFor } from '../tracking-verification.js';
+import { sendTrackingGateNotices, trackingGateAffected } from '../tracking-gate-notice.js';
 import {
   DAYS_UNTIL_DUE_DEFAULT,
   listInvoiceBillingTenants,
@@ -429,6 +433,7 @@ platformAdminRouter.get('/platform-admin/brands', requirePlatformAdmin, async (r
   // operator sees "stalled at tracking, reminded twice, warned on the 3rd"
   // without opening anything.
   const setups = await brandSetupFor(db, ids);
+  const verified = await trackingVerifiedFor(db, ids);
   const reminders = await brandReminderHistory(db, ids);
   const warnings = ids.length
     ? ((await db<PlatformAuditLogRow>(TABLES.PlatformAuditLog)
@@ -464,6 +469,7 @@ platformAdminRouter.get('/platform-admin/brands', requirePlatformAdmin, async (r
       blockedProgramCount: Number(countsByTenant.get(t.id)?.blocked ?? 0),
       setupComplete: setups.get(t.id)?.complete ?? false,
       setupMissing: setups.get(t.id)?.missing ?? [],
+      trackingVerified: verified.has(t.id),
       setupRemindersSent: reminders.get(t.id)?.sent ?? 0,
       lastSetupReminderAt: reminders.get(t.id)?.lastSentAt ?? null,
       lastPolicyWarningAt: lastWarningBy.get(t.id)?.at ?? null,
@@ -502,13 +508,23 @@ async function loadTenant(id: string): Promise<TenantRow | null> {
   return row ?? null;
 }
 
+/** `withoutTracking`: approve a brand whose tracking isn't verified
+ *  (tracking-verification.ts). Its links go live; partners still wait for
+ *  verification while the tracking gate is in force. */
+const approveSchema = z.object({ withoutTracking: z.boolean().optional() });
+
 platformAdminRouter.post(
   '/platform-admin/brands/:id/approve',
   requirePlatformAdmin,
   requirePlatformAdminWrite,
   async (req, res) => {
+    const body = approveSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body' });
     const tenant = await loadTenant(req.params.id!);
     if (!tenant) return res.status(404).json({ error: 'brand_not_found' });
+    if (!body.data.withoutTracking && !(await trackingVerifiedFor(db, [tenant.id])).has(tenant.id)) {
+      return res.status(409).json({ error: 'tracking_not_verified' });
+    }
     const reinstate = tenant.approvalStatus === 'rejected';
     await approveBrand(db, tenant, req.platformAdminActor!, { reinstate });
     res.json({ ok: true, approvalStatus: 'approved' });
@@ -1367,6 +1383,7 @@ platformAdminRouter.get('/platform-admin/notifications', requirePlatformAdmin, a
   const settings = await getNotificationSettings(db);
   const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   const [recent] = (await db(TABLES.BrandNotification)
+    .where({ kind: 'setup_incomplete' })
     .where('sentAt', '>=', weekAgo)
     .count({ c: '*' })) as Array<{ c: string | number }>;
   res.json({
@@ -1395,6 +1412,50 @@ platformAdminRouter.put(
     const settings = await setNotificationSettings(db, body.data, actor.email);
     await writeAudit(db, { actor, action: 'notifications.settings', targetType: 'platform', detail: body.data });
     res.json({ settings });
+  },
+);
+
+// --------------------------------------------------------------------------
+// Tracking gate (tracking-verification.ts): from a date, approved brands
+// whose tracking isn't verified take no new partners and leave the
+// marketplace. The console sets the date, shows who it touches, and sends
+// those brands a one-time notice first.
+// --------------------------------------------------------------------------
+
+platformAdminRouter.get('/platform-admin/tracking-gate', requirePlatformAdmin, async (_req, res) => {
+  const settings = await getTrackingGateSettings(db);
+  res.json({ settings, enforced: await trackingGateEnforced(db), affected: await trackingGateAffected(db) });
+});
+
+const trackingGateSchema = z.object({ enforceFrom: offsetDateTime().nullable() }).strict();
+
+platformAdminRouter.put(
+  '/platform-admin/tracking-gate',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = trackingGateSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const actor = req.platformAdminActor!;
+    const settings = await setTrackingGateSettings(db, body.data, actor.email);
+    await writeAudit(db, { actor, action: 'tracking_gate.settings', targetType: 'platform', detail: { ...settings } });
+    res.json({ settings, enforced: await trackingGateEnforced(db) });
+  },
+);
+
+/** Send the notice to every affected brand not told yet. Needs a date set:
+ *  the email quotes it. */
+platformAdminRouter.post(
+  '/platform-admin/tracking-gate/notices',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const { enforceFrom } = await getTrackingGateSettings(db);
+    if (!enforceFrom) return res.status(409).json({ error: 'no_enforce_date' });
+    const actor = req.platformAdminActor!;
+    const result = await sendTrackingGateNotices(db, new Date(enforceFrom), actor.email);
+    await writeAudit(db, { actor, action: 'tracking_gate.notices', targetType: 'platform', detail: { ...result, enforceFrom } });
+    res.json(result);
   },
 );
 
