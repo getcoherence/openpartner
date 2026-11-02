@@ -1,10 +1,11 @@
 import { Router } from 'express';
-import { z } from '../zod.js';
+import { utcDateTime, z } from '../zod.js';
 import { ulid } from 'ulid';
 import { TABLES, type ProgramRow, type LinkRow } from '@openpartner/db';
 import { grantScope, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { destinationUrlSchema, destinationWarnings } from '../destination-url.js';
+import { LINK_RESULTS_VERSION, linkResults } from '../link-results.js';
 
 export const createSchema = z.object({
   linkKey: z
@@ -107,6 +108,83 @@ linksRouter.post('/partners/:id/links', requireAuth, grantScope('links:write'), 
     throw err;
   }
 });
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** Longest click window a results read takes (the Network asks for 90
+ *  days after delivery, plus whatever ran before it). */
+const MAX_CLICK_WINDOW_DAYS = 400;
+/** Longest conversion tail after the click window: a year-long attribution
+ *  window and some. With the click window it bounds the daily series. */
+const MAX_CONVERSION_TAIL_DAYS = 400;
+
+export const linkResultsQuerySchema = z
+  .object({
+    clickSince: utcDateTime(),
+    clickUntil: utcDateTime(),
+    /** The end an earlier read returned. Passed back so a later change to
+     *  the program's attribution window doesn't move a report. Defaults to
+     *  clickUntil plus the program's attributionWindowDays. */
+    conversionUntil: utcDateTime().optional(),
+  })
+  .refine((q) => Date.parse(q.clickSince) <= Date.parse(q.clickUntil), 'clickSince must not be after clickUntil')
+  .refine(
+    (q) => Date.parse(q.clickUntil) - Date.parse(q.clickSince) <= MAX_CLICK_WINDOW_DAYS * DAY_MS,
+    `The click window can be at most ${MAX_CLICK_WINDOW_DAYS} days`,
+  )
+  .refine((q) => !q.conversionUntil || Date.parse(q.conversionUntil) >= Date.parse(q.clickUntil), 'conversionUntil must not be before clickUntil')
+  .refine(
+    (q) => !q.conversionUntil || Date.parse(q.conversionUntil) - Date.parse(q.clickUntil) <= MAX_CONVERSION_TAIL_DAYS * DAY_MS,
+    `conversionUntil can be at most ${MAX_CONVERSION_TAIL_DAYS} days after clickUntil`,
+  );
+
+/** One link's clicks and the conversions credited to them (link-results.ts).
+ *  The Network reads it for a booking's report. */
+linksRouter.get(
+  '/partners/:id/links/:linkId/results',
+  requireAuth,
+  grantScope('partners:read'),
+  requirePartnerOrAdmin('id'),
+  async (req, res) => {
+    const { db, tenantId } = tenantOf(req);
+    const q = linkResultsQuerySchema.safeParse(req.query);
+    if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
+
+    const partner = await db(TABLES.Partner).where({ id: req.params.id, tenantId }).first('id');
+    if (!partner) return res.status(404).json({ error: 'partner_not_found' });
+    // By id, or by linkKey: the Network reserves a booking link's key before
+    // creating it, so after a lost response it can find the link by that key
+    // (its federation key can create links but not list them).
+    const link =
+      (await db<LinkRow>(TABLES.Link).where({ id: req.params.linkId, tenantId, partnerId: req.params.id }).first()) ??
+      (await db<LinkRow>(TABLES.Link).where({ linkKey: req.params.linkId, tenantId, partnerId: req.params.id }).first());
+    if (!link) return res.status(404).json({ error: 'link_not_found' });
+    const program = await db<ProgramRow>(TABLES.Program).where({ id: link.programId, tenantId }).first('attributionWindowDays');
+    const attributionWindowDays = program?.attributionWindowDays ?? 0;
+
+    const clickSince = new Date(q.data.clickSince);
+    const clickUntil = new Date(q.data.clickUntil);
+    const conversionUntil = q.data.conversionUntil
+      ? new Date(q.data.conversionUntil)
+      : new Date(clickUntil.getTime() + Math.min(attributionWindowDays, MAX_CONVERSION_TAIL_DAYS) * DAY_MS);
+    const results = await linkResults(db, {
+      tenantId,
+      partnerId: link.partnerId,
+      linkId: link.id,
+      window: { clickSince, clickUntil, conversionUntil },
+    });
+    res.json({
+      reportingVersion: LINK_RESULTS_VERSION,
+      linkId: link.id,
+      partnerId: link.partnerId,
+      programId: link.programId,
+      attributionWindowDays,
+      clickSince: clickSince.toISOString(),
+      clickUntil: clickUntil.toISOString(),
+      conversionUntil: conversionUntil.toISOString(),
+      ...results,
+    });
+  },
+);
 
 function isDeepLinkAllowed(campaign: ProgramRow, url: string): boolean {
   if (!campaign.deepLinkAllowedDomains) return false;

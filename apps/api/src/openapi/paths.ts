@@ -572,6 +572,20 @@ Clicks, partners, conversions, attributed revenue and commission by status for e
     },
   });
 
+  r.operation({
+    method: 'get',
+    path: '/partners/:id/links/:linkId/results',
+    tag: 'Links',
+    operationId: 'getLinkResults',
+    summary: "One link's clicks and the conversions credited to them",
+    description:
+      "Clicks on the link in the click window, and the events credited through them up to `conversionUntil` (default: `clickUntil` plus the program's attribution window). Leads and sales count distinct events; revenue is each sale's value times the link's share of its credit, per currency, with refunds reported separately. `linkId` may be the link's id or its `linkKey`. The OpenPartner Network reads it for booking reports.",
+    access: { kind: 'partnerOrAdmin', scope: 'partners:read' },
+    query: links.linkResultsQuerySchema,
+    responses: { 200: { description: 'Results.', schema: S.LinkResults } },
+    errors: { 400: ['invalid_query'], 404: ['partner_not_found', 'link_not_found'] },
+  });
+
   // ------------------------------------------------------------- Attribution
   r.operation({
     method: 'post',

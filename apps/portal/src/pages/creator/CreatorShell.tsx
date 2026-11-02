@@ -22,6 +22,7 @@ import { CreatorProgramDetailPage } from './CreatorProgramDetail.js';
 import { CreatorStorefrontPage } from './CreatorStorefront.js';
 import { CreatorStorefrontSetupPage } from './CreatorStorefrontSetup.js';
 import { CreatorBookingsPage } from './CreatorBookings.js';
+import { CreatorBookingReportPage } from './CreatorBookingReport.js';
 import { CreatorMessagesPage, CreatorThreadPage, useCreatorUnreadMessages } from './CreatorMessages.js';
 import { UnreadDot } from './conversation-shared.js';
 import { clearAttachmentCache } from './conversation-media.js';
@@ -89,6 +90,7 @@ export function CreatorShell() {
           <Route path="storefront" element={<CreatorStorefrontPage />} />
           <Route path="storefront/setup" element={<CreatorStorefrontSetupPage />} />
           <Route path="bookings" element={<CreatorBookingsPage />} />
+          <Route path="bookings/:id/report" element={<CreatorBookingReportPage />} />
           <Route path="messages" element={<CreatorMessagesPage />} />
           <Route path="messages/:id" element={<CreatorThreadPage />} />
           <Route path="profile" element={<CreatorMyProfilePage />} />

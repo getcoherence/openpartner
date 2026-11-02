@@ -142,6 +142,15 @@ describe('event scrubbing', () => {
     expect(event.$set).toEqual({ $current_url: 'https://partners.brand.com/' });
     expect(posthog.scrubAnalyticsEvent(null)).toBeNull();
   });
+
+  it('captures nothing on a shared booking report', async () => {
+    const { posthog } = await boot();
+    const event = { properties: { $current_url: 'https://app.openpartner.dev/reports' } };
+    window.history.pushState({}, '', '/reports');
+    expect(posthog.dropUntrackedPages(event)).toBeNull();
+    window.history.pushState({}, '', '/creators/ada');
+    expect(posthog.dropUntrackedPages(event)).toBe(event);
+  });
 });
 
 describe('consent banner', () => {

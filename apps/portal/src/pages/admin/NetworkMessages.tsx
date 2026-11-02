@@ -26,6 +26,7 @@ import { alpha, theme } from '../../theme.js';
 import { TenantLink } from '../../tenant-link.js';
 import { useTenantBase } from '../../tenant-base.js';
 import { useConversationLive, type LiveTicket } from '../creator/conversation-live.js';
+import { SHARE_LABELS, type CreatorShare } from '../../lib/BookingReport.js';
 import {
   BookingStatusPill,
   Composer,
@@ -97,6 +98,11 @@ export interface VendorBooking {
   refundedMinor: number;
   disputedAt: string | null;
   deliveryChecks?: DeliveryChecks | null;
+  /** From delivery (the Network's docs/campaign-reports.md). Older Networks
+   *  leave these out. */
+  hasReport?: boolean;
+  trackedUrl?: string | null;
+  linkState?: 'none' | 'pending' | 'ready' | 'failed';
 }
 
 interface VendorThread {
@@ -452,9 +458,24 @@ function VendorBookingCard({
 }) {
   const base = useTenantBase();
   const act = useMutation({
-    mutationFn: (action: 'cancel' | 'approve' | 'recheck') =>
+    mutationFn: (action: 'cancel' | 'recheck') =>
       api(`/admin/network/bookings/${encodeURIComponent(b.id)}/${action}`, { method: 'POST', body: {} }),
     onSuccess: onChanged,
+  });
+  // Approving asks what the creator may share from the booking's report
+  // (the Network's docs/campaign-reports.md); "your default" sends nothing.
+  const [approving, setApproving] = useState(false);
+  const [share, setShare] = useState<CreatorShare | 'default'>('default');
+  const approve = useMutation({
+    mutationFn: () =>
+      api(`/admin/network/bookings/${encodeURIComponent(b.id)}/approve`, {
+        method: 'POST',
+        body: share === 'default' ? {} : { creatorShare: share },
+      }),
+    onSuccess: () => {
+      setApproving(false);
+      onChanged();
+    },
   });
   const pay = useMutation({
     mutationFn: () =>
@@ -466,7 +487,7 @@ function VendorBookingCard({
   });
   const lines = priceLines(b);
   const title = b.package?.title ?? 'Custom collaboration';
-  const error = act.error ?? pay.error;
+  const error = act.error ?? pay.error ?? approve.error;
 
   return (
     <div style={{ border: `1px solid ${theme.border}`, borderRadius: theme.radiusSm, padding: 14, background: theme.surface }}>
@@ -524,16 +545,30 @@ function VendorBookingCard({
             {pay.isPending || pay.isSuccess ? 'Opening Checkout…' : `Pay ${lines?.total ?? ''}`.trim()}
           </Button>
         )}
-        {b.status === 'delivered' && (
-          <Button
-            disabled={act.isPending}
-            onClick={() => {
-              if (window.confirm(`Approve ${creatorName}’s work? This completes the booking.`)) act.mutate('approve');
-            }}
-          >
-            Approve
-          </Button>
-        )}
+        {b.status === 'delivered' &&
+          (approving ? (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', width: '100%' }}>
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+                Let {creatorName} share this booking
+                <Select value={share} onChange={(e) => setShare(e.target.value as CreatorShare | 'default')}>
+                  <option value="default">Your default</option>
+                  {(Object.keys(SHARE_LABELS) as CreatorShare[]).map((k) => (
+                    <option key={k} value={k}>
+                      {SHARE_LABELS[k]}
+                    </option>
+                  ))}
+                </Select>
+              </label>
+              <Button disabled={approve.isPending} onClick={() => approve.mutate()}>
+                {approve.isPending ? 'Approving…' : 'Approve and complete'}
+              </Button>
+              <Button variant="ghost" disabled={approve.isPending} onClick={() => setApproving(false)}>
+                Cancel
+              </Button>
+            </div>
+          ) : (
+            <Button onClick={() => setApproving(true)}>Approve</Button>
+          ))}
         {(b.status === 'pending' || (b.status === 'awaiting_payment' && !b.paymentProcessing)) && (
           <Button
             variant="secondary"
@@ -547,6 +582,11 @@ function VendorBookingCard({
           </Button>
         )}
         <div style={{ flex: 1 }} />
+        {b.hasReport && (
+          <TenantLink to={`/admin/network/bookings/${encodeURIComponent(b.id)}/report`} style={{ fontSize: 13, color: theme.accentText }}>
+            Report
+          </TenantLink>
+        )}
         {b.partnerId ? (
           <TenantLink to={`/admin/partners/${b.partnerId}/commission`} style={{ fontSize: 13, color: theme.accentText }}>
             Partner &amp; results

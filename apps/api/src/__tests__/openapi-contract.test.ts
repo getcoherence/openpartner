@@ -375,7 +375,7 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     check('lookupPartnerSigninLink', await signinKey.post('/partners/signin-link', { email: 'nobody@example.com' }));
     check('updatePartner', await admin.patch(`/partners/${partner.id}`, { portalAccess: false }));
 
-    const link = check<{ linkKey: string }>(
+    const link = check<{ id: string; linkKey: string }>(
       'createPartnerLink',
       await integration.post(`/partners/${partner.id}/links`, { linkKey: 'ada-refers', programId: program.id }),
     );
@@ -431,6 +431,14 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     const offsetQuery = await integration.get(`/partners/${partner.id}/timeseries?since=2026-01-01T00:00:00%2B00:00`);
     expect(offsetQuery.status).toBe(400);
     check('getPartnerTimeseries', offsetQuery);
+    const resultsWindow = `clickSince=${new Date(Date.now() - 86_400_000).toISOString()}&clickUntil=${new Date(Date.now() + 60_000).toISOString()}`;
+    const linkStats = check<{ clicks: number }>(
+      'getLinkResults',
+      await integration.get(`/partners/${partner.id}/links/${link.id}/results?${resultsWindow}`),
+    );
+    expect(linkStats.clicks).toBe(dash.clicks);
+    check('getLinkResults', await integration.get(`/partners/${partner.id}/links/${ulid()}/results?${resultsWindow}`));
+    check('getLinkResults', await integration.get(`/partners/${partner.id}/links/${link.id}/results`));
     const stats = check<{ programs: Array<{ programId: string; clicks: number }> }>('getProgramStats', await admin.get('/programs/stats'));
     expect(stats.programs.find((p) => p.programId === program.id)?.clicks).toBe(dash.clicks);
     check('getProgramStats', await admin.get('/programs/stats?since=2026-10-01T00:00:00Z&until=2026-09-01T00:00:00Z'));
