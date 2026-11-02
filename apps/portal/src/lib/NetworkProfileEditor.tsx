@@ -7,6 +7,7 @@ import { alpha, theme } from '../theme.js';
 import { useIsMobile } from './useMediaQuery.js';
 import { VerifiedBadge } from './VerifiedBadge.js';
 import { CoverSourceLink, type CoverSource } from './PlatformMark.js';
+import { useUnsavedChanges } from './useUnsavedChanges.js';
 
 /**
  * The Network profile editor: completeness checklist, basics, audience,
@@ -187,20 +188,26 @@ export function NetworkProfileEditor({
 
   useEffect(() => {
     if (data) {
-      setName(data.name ?? '');
-      setHandle(data.handle ?? '');
-      setAvatarUrl(data.avatarUrl ?? '');
-      setCoverImageUrl(data.coverImageUrl ?? '');
+      const saved = formFromProfile(data);
+      setName(saved.name);
+      setHandle(saved.handle);
+      setAvatarUrl(saved.avatarUrl);
+      setCoverImageUrl(saved.coverImageUrl);
       setCoverSource(data.coverSource ?? null);
-      setBio(data.bio ?? '');
-      setCategories(data.categories ?? []);
-      setAudienceLocationsRaw((data.audienceLocations ?? []).join(', '));
-      setAudienceAgeRange((data.audienceAgeRange ?? '') as AgeRange | '');
-      setAudienceSize((data.audienceSize ?? '') as AudienceSize | '');
-      setPortfolioLinks(data.portfolioLinks ?? []);
-      setPastBrandsRaw((data.pastBrands ?? []).join(', '));
+      setBio(saved.bio);
+      setCategories(saved.categories);
+      setAudienceLocationsRaw(saved.audienceLocationsRaw);
+      setAudienceAgeRange(saved.audienceAgeRange);
+      setAudienceSize(saved.audienceSize);
+      setPortfolioLinks(saved.portfolioLinks);
+      setPastBrandsRaw(saved.pastBrandsRaw);
     }
   }, [data]);
+
+  const dirty =
+    formKey({ name, handle, avatarUrl, coverImageUrl, bio, categories, audienceLocationsRaw, audienceAgeRange, audienceSize, portfolioLinks, pastBrandsRaw }) !==
+    formKey(formFromProfile(data));
+  useUnsavedChanges(dirty);
 
   // Covers need the adapter's upload and a Network that knows the field.
   const coverUpload = data && 'coverImageUrl' in data ? adapter.uploadCover : undefined;
@@ -369,7 +376,7 @@ export function NetworkProfileEditor({
       <Card>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <Button onClick={() => save.mutate()} disabled={save.isPending || coverBusy}>
-            {save.isPending ? 'Saving…' : save.isSuccess ? 'Saved' : 'Save profile'}
+            {save.isPending ? 'Saving…' : save.isSuccess && !dirty ? 'Saved' : 'Save profile'}
           </Button>
           {publicProfileHref && (
             <a
@@ -385,6 +392,34 @@ export function NetworkProfileEditor({
       </Card>
     </>
   );
+}
+
+type ProfileForm = ReturnType<typeof formFromProfile>;
+
+/** The editor's fields as the saved profile fills them. */
+function formFromProfile(p: NetworkProfile) {
+  return {
+    name: p.name ?? '',
+    handle: p.handle ?? '',
+    avatarUrl: p.avatarUrl ?? '',
+    coverImageUrl: p.coverImageUrl ?? '',
+    bio: p.bio ?? '',
+    categories: p.categories ?? [],
+    audienceLocationsRaw: (p.audienceLocations ?? []).join(', '),
+    audienceAgeRange: (p.audienceAgeRange ?? '') as AgeRange | '',
+    audienceSize: (p.audienceSize ?? '') as AudienceSize | '',
+    portfolioLinks: p.portfolioLinks ?? [],
+    pastBrandsRaw: (p.pastBrands ?? []).join(', '),
+  };
+}
+
+/** Equal keys, nothing to save: category order and blank link rows don't count. */
+function formKey(f: ProfileForm): string {
+  return JSON.stringify({
+    ...f,
+    categories: [...f.categories].sort(),
+    portfolioLinks: f.portfolioLinks.filter((u) => u.trim()),
+  });
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
@@ -919,6 +954,7 @@ function PlatformRowEditor({
   });
 
   const dirty = handle.trim() !== (existing?.handle ?? '') || (followerCount === '' ? null : Number(followerCount)) !== (existing?.followerCount ?? null);
+  useUnsavedChanges(dirty);
   const canVerify = !!existing && !existing.verified && VERIFIABLE.has(platform) && !!adapter.startVerification && !!adapter.checkVerification;
 
   return (

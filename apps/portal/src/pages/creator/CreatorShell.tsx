@@ -91,7 +91,7 @@ export function CreatorShell() {
           <Route path="bookings" element={<CreatorBookingsPage />} />
           <Route path="messages" element={<CreatorMessagesPage />} />
           <Route path="messages/:id" element={<CreatorThreadPage />} />
-          <Route path="profile" element={<CreatorMyProfilePage />} />
+          <Route path="profile/*" element={<CreatorMyProfilePage />} />
           <Route path="*" element={<Navigate to="/creator/discover" replace />} />
         </Routes>
       </main>
