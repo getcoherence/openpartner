@@ -826,8 +826,9 @@ describe('ops console: creator index settings', () => {
     await openTab('Settings');
     expect((screen.getByLabelText('Sponsorship storefronts') as HTMLInputElement).checked).toBe(true);
     expect((screen.getByLabelText('Anyone who posts about the topic') as HTMLInputElement).checked).toBe(false);
-    // This Network predates the creator database: it isn't offered.
+    // This Network predates the creator database and media kits: neither is offered.
     expect(screen.queryByLabelText(/^Creator database/)).toBeNull();
+    expect(screen.queryByLabelText('Media kits on Beacons')).toBeNull();
     fireEvent.click(screen.getByLabelText('Anyone who posts about the topic'));
     fireEvent.click(screen.getByLabelText(/Only index creators who already take partnerships/));
     fireEvent.click(screen.getByText('Save settings'));
@@ -860,6 +861,25 @@ describe('ops console: creator index settings', () => {
     fireEvent.click(screen.getByText('Save settings'));
     await waitFor(() => expect(calls.some((c) => c.method === 'PUT')).toBe(true));
     expect(calls.find((c) => c.method === 'PUT')!.body).toMatchObject({ discoverySources: { creatorDatabase: true, storefronts: true }, creatorDatabasePerRun: 100 });
+  });
+
+  it('switches on Beacons media kits only where the Network has them', async () => {
+    const withKits = { ...SETTINGS, discoverySources: { storefronts: true, sponsorPages: true, mediaKits: false, people: false } };
+    respond = (url, method) => {
+      if (url.endsWith('/creator-index/settings') && method === 'PUT') return { status: 200, body: { settings: calls[calls.length - 1]!.body, visibilityChanged: 0 } };
+      if (url.endsWith('/creator-index/settings')) {
+        return { status: 200, body: { settings: withKits, defaults: withKits, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {} } };
+      }
+      if (url.endsWith('/creator-index/stats')) return { status: 404, body: { error: 'not_found' } };
+      return { status: 200, body: { creators: [] } };
+    };
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />, '/?tab=settings');
+    const kits = (await screen.findByLabelText('Media kits on Beacons')) as HTMLInputElement;
+    expect(kits.checked).toBe(false);
+    fireEvent.click(kits);
+    fireEvent.click(screen.getByText('Save settings'));
+    await waitFor(() => expect(calls.some((c) => c.method === 'PUT')).toBe(true));
+    expect(calls.find((c) => c.method === 'PUT')!.body).toMatchObject({ discoverySources: { storefronts: true, sponsorPages: true, mediaKits: true, people: false } });
   });
 
   it('starts runs in the background, shows each run and why a platform was set aside, and sets how many profiles are read at once', async () => {
