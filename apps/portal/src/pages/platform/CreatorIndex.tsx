@@ -10,8 +10,8 @@
  *     to search them, whether to keep only creators who take partnerships,
  *     model.
  *   - Seed URLs, runs, and search with removal, or only who has no address
- *     or no state yet, to fill in by hand. Creators ticked, or all a search
- *     matches, can be hidden: kept, but not shown to brands or emailed.
+ *     or no state yet, to fill in by hand. Creators ticked can be hidden:
+ *     kept, but not shown to brands or emailed.
  *   - The outreach email: "claim your profile", once, to creators no brand
  *     has written to, previewed and sent in small batches.
  *   - Mailboxes: the outreach email's and brands' invites', each connected
@@ -1101,9 +1101,8 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
     },
   });
 
-  // Ticked for hiding or showing in bulk; with none ticked, Hide and Unhide
-  // take everyone the filters match. A change of filters clears the ticks,
-  // so none out of sight count.
+  // Ticked for hiding or showing in bulk; Hide and Unhide show only once one
+  // is. A change of filters clears the ticks, so none out of sight count.
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   const [bulkNote, setBulkNote] = useState<string | null>(null);
   const listKey = listQuery.toString();
@@ -1112,11 +1111,8 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
     setBulkNote(null);
   }, [listKey]);
   const bulk = useMutation({
-    mutationFn: (v: { hidden: boolean; ids: string[] | null }) =>
-      papi<{ changed: number }>('/platform-admin/creator-index/creators/hidden', {
-        method: 'POST',
-        body: v.ids ? { hidden: v.hidden, ids: v.ids } : { hidden: v.hidden, match: Object.fromEntries([...listQuery].filter(([k]) => k !== 'sort')) },
-      }),
+    mutationFn: (v: { hidden: boolean; ids: string[] }) =>
+      papi<{ changed: number }>('/platform-admin/creator-index/creators/hidden', { method: 'POST', body: v }),
     onSuccess: (r, v) => {
       setTicked(new Set());
       setBulkNote(`${r.changed.toLocaleString()} ${v.hidden ? 'hidden' : 'shown'}`);
@@ -1125,8 +1121,8 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
     },
   });
   const hideOrShow = (hidden: boolean) => {
-    const ids = ticked.size > 0 ? [...ticked] : null;
-    const who = ids ? `${ids.length.toLocaleString()} ticked` : `all ${(total ?? 0).toLocaleString()}${filtered ? ' matching' : ''}`;
+    const ids = [...ticked];
+    const who = `${ids.length.toLocaleString()} ticked`;
     const ask = hidden ? `Hide ${who}? They stay in the index, but brands won't see them and they won't be emailed.` : `Unhide ${who}?`;
     if (window.confirm(ask)) bulk.mutate({ hidden, ids });
   };
@@ -1717,21 +1713,22 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                 Claimed profiles are left out.
               </div>
             )}
+            {/* Its height kept with none ticked, so the list doesn't jump at the first tick. */}
             {canWrite && (
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8, fontSize: 13 }}>
-                <span style={{ color: theme.textMuted }}>
-                  {ticked.size > 0 ? `${ticked.size.toLocaleString()} ticked` : `All ${(total ?? 0).toLocaleString()}${filtered ? ' matching' : ''}`}
-                </span>
-                <Button size="sm" variant="secondary" disabled={bulk.isPending || (ticked.size === 0 && !total)} onClick={() => hideOrShow(true)}>
-                  Hide accounts
-                </Button>
-                <Button size="sm" variant="ghost" disabled={bulk.isPending || (ticked.size === 0 && !total)} onClick={() => hideOrShow(false)}>
-                  Unhide accounts
-                </Button>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', minHeight: 30, marginBottom: 8, fontSize: 13 }}>
                 {ticked.size > 0 && (
-                  <Button size="sm" variant="ghost" onClick={() => setTicked(new Set())}>
-                    Clear
-                  </Button>
+                  <>
+                    <span style={{ color: theme.textMuted }}>{ticked.size.toLocaleString()} ticked</span>
+                    <Button size="sm" variant="secondary" disabled={bulk.isPending} onClick={() => hideOrShow(true)}>
+                      Hide accounts
+                    </Button>
+                    <Button size="sm" variant="ghost" disabled={bulk.isPending} onClick={() => hideOrShow(false)}>
+                      Unhide accounts
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setTicked(new Set())}>
+                      Clear
+                    </Button>
+                  </>
                 )}
                 {bulkNote && <span style={{ color: theme.textMuted }}>{bulkNote}</span>}
                 {bulk.error && <span style={{ color: theme.danger }}>{friendlyPlatformError(bulk.error)}</span>}
