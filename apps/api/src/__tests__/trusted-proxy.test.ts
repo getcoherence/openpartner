@@ -89,6 +89,20 @@ describe('forwardedClientAddress with TRUST_PROXY=cloudflare', () => {
     expect(ip(undefined)).toBe(INGRESS);
     expect(ip(' , ')).toBe(INGRESS);
   });
+
+  it('reads a huge forged header quickly', () => {
+    // A client controls everything left of the hops the proxies add. Runs
+    // of spaces and commas were quadratic for a trimming regex.
+    const spaces = ' '.repeat(200_000);
+    const commas = ','.repeat(200_000);
+    const started = performance.now();
+    expect(ip(`${spaces}x${spaces}, ${ATTACKER}, ${EDGE}`)).toBe(ATTACKER);
+    expect(ip(`${commas}${ATTACKER}${commas}, ${EDGE}`)).toBe(ATTACKER);
+    expect(ip(`${FORGED},${spaces}${ATTACKER}${spaces},${spaces}${EDGE}${spaces}`)).toBe(ATTACKER);
+    // A trust that never stops reads all of it, still in one pass.
+    expect(forwardedClientAddress(INGRESS, `${spaces}x${spaces},${commas}${spaces}${VISITOR}`, () => true)).toBe('x');
+    expect(performance.now() - started).toBeLessThan(500);
+  });
 });
 
 describe('forwardedClientAddress with one trusted hop', () => {
@@ -115,6 +129,7 @@ describe("forwardedClientAddress is Express's req.ip", () => {
     `  ${VISITOR}  ,  2a06:98c0:3600::1  `,
     `${FORGED} ${ATTACKER}, ${EDGE}`,
     'unknown, 2890342092',
+    `${' '.repeat(4000)}x${' '.repeat(4000)}, ${','.repeat(4000)}${VISITOR}, ${EDGE}`,
   ];
   const trusts = { cloudflare: trustProxyFromEnv('cloudflare')!, oneHop: (_a: string, hop: number) => hop < 1 };
 

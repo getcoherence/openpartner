@@ -111,24 +111,38 @@ export function trustProxyFromEnv(value: string | undefined): TrustProxy | null 
 
 /** The client's address, as Express's `req.ip` works it out: walk from the
  *  socket leftwards through X-Forwarded-For and stop at the first hop that
- *  isn't trusted. For the router, which isn't Express. Entries are split
- *  the way Express's `forwarded` package does it: on commas, with only
- *  spaces trimmed and empty entries dropped. */
+ *  isn't trusted. For the router, which isn't Express.
+ *
+ *  Entries are read the way Express's `forwarded` package reads them: one
+ *  pass from the right, split on commas, only spaces trimmed, empty entries
+ *  dropped. The header is the client's, so the pass is linear and ends at
+ *  the first untrusted hop instead of splitting all of it. */
 export function forwardedClientAddress(
   socketAddr: string,
   forwardedFor: string | undefined,
   trust: TrustProxy,
 ): string {
-  const hops = [
-    socketAddr,
-    ...(forwardedFor ?? '')
-      .split(',')
-      .map((s) => s.replace(/^ +| +$/g, ''))
-      .filter(Boolean)
-      .reverse(),
-  ];
-  for (let hop = 0; hop < hops.length - 1; hop += 1) {
-    if (!trust(hops[hop]!, hop)) return hops[hop]!;
+  const header = forwardedFor ?? '';
+  let addr = socketAddr;
+  let hop = 0;
+  // header.slice(start, end) is the entry being read; start === end while
+  // between entries.
+  let start = header.length;
+  let end = header.length;
+  for (let i = header.length - 1; i >= -1; i -= 1) {
+    const char = i >= 0 ? header.charCodeAt(i) : 0x2c; // the header's start ends an entry like a comma
+    if (char === 0x20) {
+      if (start === end) start = end = i;
+    } else if (char === 0x2c) {
+      if (start !== end) {
+        if (!trust(addr, hop)) return addr;
+        addr = header.slice(start, end);
+        hop += 1;
+      }
+      start = end = i;
+    } else {
+      start = i;
+    }
   }
-  return hops[hops.length - 1]!;
+  return addr;
 }
