@@ -238,6 +238,44 @@ describe("the brand's report", () => {
   });
 });
 
+describe('Instagram and TikTok numbers', () => {
+  const TIKTOK_POST = {
+    url: 'https://www.tiktok.com/@ada/video/743',
+    platform: 'tiktok',
+    label: 'tiktok',
+    account: 'verified',
+    reachable: true,
+    publishedAt: '2026-10-28T09:00:00Z',
+    publishedBeforeAccept: false,
+    link: 'unknown',
+    youtube: null,
+    social: { platform: 'tiktok', views: 91000, likes: 4100, comments: 120, shares: 340 },
+    reported: null,
+  };
+
+  it("shows the brand what the creator's verified account says", async () => {
+    routes['GET /api/t/acme/admin/network/bookings/bkr_1/report'] = () => [200, { report: { ...REPORT, posts: [TIKTOK_POST] } }];
+    routes['GET /api/t/acme/admin/network/bookings/bkr_1/report/shares'] = () => [200, { shares: [] }];
+    renderAt('/t/acme/admin/network/bookings/bkr_1/report', <Route path="/t/:slug/admin/network/bookings/:id/report" element={<AdminNetworkBookingReport />} />);
+    expect(await screen.findByText('TikTok')).toBeTruthy();
+    expect(screen.getByText('91,000 views')).toBeTruthy();
+    expect(screen.getByText('4,100 likes')).toBeTruthy();
+    expect(screen.getByText('340 shares')).toBeTruthy();
+    expect(screen.getByText('✓ Verified account')).toBeTruthy();
+    // Not YouTube's numbers, so no YouTube note.
+    expect(screen.queryByText('· not YouTube data', { exact: false })).toBeNull();
+  });
+
+  it("lets the creator add numbers only where the platform gave none", async () => {
+    const creatorReport = { ...REPORT, spend: null, posts: [TIKTOK_POST, REPORT.posts[1]] };
+    routes['GET /api/creator-api/creators/me/bookings/bkr_1/report'] = () => [200, { report: creatorReport }];
+    routes['GET /api/creator-api/creators/me/bookings/bkr_1/report/shares'] = () => [200, { shares: [], allowed: false }];
+    renderAt('/creator/bookings/bkr_1/report', <Route path="/creator/bookings/:id/report" element={<CreatorBookingReportPage />} />);
+    expect(await screen.findByText('91,000 views')).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: /your numbers/ })).toHaveLength(1);
+  });
+});
+
 describe("the creator's report", () => {
   it('saves their own numbers for a post we cannot read, and has no link to make unless allowed', async () => {
     const creatorReport = { ...REPORT, spend: null, price: { amount: 500, currency: 'USD' } };

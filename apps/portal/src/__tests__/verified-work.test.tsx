@@ -34,12 +34,23 @@ const ZETA: CaseStudy = {
   currency: 'USD',
   results: { clicks: 40, leads: 5, sales: 2, netRevenueByCurrency: { EUR: 89, USD: 250 }, asOf: '2026-10-31T10:00:00Z', final: false },
 };
+const REEL: CaseStudy['posts'][number] = {
+  url: 'https://www.instagram.com/reel/DAbc/',
+  platform: 'instagram',
+  label: 'instagram',
+  publishedAt: '2026-10-21T10:00:00Z',
+  verifiedAccount: true,
+  youtube: null,
+  social: { platform: 'instagram', views: 52_000, likes: 812, comments: 46, shares: null },
+  reported: null,
+};
 const ACME: CaseStudy = {
   title: 'Sponsored LinkedIn post',
   platform: 'linkedin',
   brand: { name: 'Acme', logoUrl: null },
   completedAt: '2026-10-20T10:00:00Z',
   posts: [
+    REEL,
     {
       url: 'https://www.linkedin.com/posts/maya_acme-1',
       platform: 'other',
@@ -140,6 +151,9 @@ describe("the brand's view of a storefront", () => {
     // The creator's own numbers, labelled; no results where the brand shares posts only.
     expect(w.getByText('Reported by the creator')).toBeTruthy();
     expect(w.getByText('9,000 impressions')).toBeTruthy();
+    // A reel on their verified Instagram, with what Instagram says.
+    expect(w.getByText('Instagram')).toBeTruthy();
+    expect(w.getByText('52,000 views')).toBeTruthy();
     expect(w.getAllByText(/Tracked by OpenPartner/)).toHaveLength(1);
     // Zeta is shown verified, so their own list keeps only Northwind.
     const past = (await screen.findByRole('heading', { name: 'Past collaborations' })).parentElement!;

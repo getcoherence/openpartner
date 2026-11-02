@@ -8,16 +8,18 @@ import { ExternalLink } from 'lucide-react';
 import { formatDate, moneyByCurrency } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { PlatformMark } from '../../lib/PlatformMark.js';
-import { Tag } from '../../lib/BookingReport.js';
+import { SocialStatsLine, Tag, type SocialStats } from '../../lib/BookingReport.js';
 import { PLATFORM_LABELS } from './storefront-shared.js';
 
 export interface CaseStudyPost {
   url: string;
-  platform: 'youtube' | 'website' | 'other';
+  platform: 'youtube' | 'website' | 'instagram' | 'tiktok' | 'other';
   label: string;
   publishedAt: string | null;
   verifiedAccount: boolean;
   youtube: { views: number | null; likes: number | null; comments: number | null } | null;
+  /** From the creator's verified Instagram or TikTok; absent on an older Network. */
+  social?: SocialStats | null;
   reported: { views: number | null; likes: number | null; comments: number | null; shares: number | null; reportedAt: string } | null;
 }
 
@@ -80,6 +82,10 @@ function PostLine({ p }: { p: CaseStudyPost }) {
           <span>{count(p.youtube.views)} views</span>
           <span>{p.youtube.likes == null ? 'Likes hidden' : `${count(p.youtube.likes)} likes`}</span>
           <span>{p.youtube.comments == null ? 'Comments hidden' : `${count(p.youtube.comments)} comments`}</span>
+        </div>
+      ) : p.social ? (
+        <div style={{ fontSize: 13, color: theme.textMuted }}>
+          <SocialStatsLine stats={p.social} />
         </div>
       ) : (
         p.reported && (
