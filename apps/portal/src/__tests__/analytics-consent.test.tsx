@@ -179,6 +179,28 @@ describe('event scrubbing', () => {
     expect(posthog.scrubRecordedRequest({ name: '/api/partners?email=a%40b.com' })).toEqual({ name: '/api/partners' });
     expect(posthog.scrubRecordedRequest(null)).toBeNull();
   });
+
+  it('captures nothing on a shared booking report', async () => {
+    const { posthog } = await boot();
+    const event = { properties: { $current_url: 'https://app.openpartner.dev/reports' } };
+    window.history.pushState({}, '', '/reports');
+    expect(posthog.dropUntrackedPages(event)).toBeNull();
+    window.history.pushState({}, '', '/creators/ada');
+    expect(posthog.dropUntrackedPages(event)).toBe(event);
+  });
+
+  it('records no replay on a page load that starts on a shared booking report', async () => {
+    const init = vi.fn();
+    (window as { posthog?: unknown }).posthog = { init, opt_out_capturing: vi.fn() };
+    writeConsent('granted');
+    window.history.pushState({}, '', '/reports');
+    try {
+      await boot();
+      expect(init.mock.calls[0]![1]).toMatchObject({ disable_session_recording: true });
+    } finally {
+      window.history.pushState({}, '', '/');
+    }
+  });
 });
 
 describe('consent banner', () => {
@@ -208,9 +230,9 @@ describe('consent banner', () => {
     expect(config).toMatchObject({
       mask_all_text: true,
       mask_all_element_attributes: true,
+      disable_session_recording: false,
       session_recording: { maskAllInputs: true, maskTextSelector: '*', recordHeaders: false, recordBody: false },
     });
-    expect(config).not.toHaveProperty('disable_session_recording');
   });
 
   it.each([

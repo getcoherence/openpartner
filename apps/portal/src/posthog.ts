@@ -97,6 +97,18 @@ export function scrubRecordedRequest(request: Props | null): Props | null {
   return request;
 }
 
+/** Pages nothing is captured on: a shared booking report (/reports) is
+ *  someone else's deal, opened by a link with a token in it. */
+const UNTRACKED_PATHS = ['/reports'];
+
+function onUntrackedPage(): boolean {
+  return typeof window !== 'undefined' && UNTRACKED_PATHS.includes(window.location.pathname);
+}
+
+export function dropUntrackedPages(event: CaptureResult | null): CaptureResult | null {
+  return onUntrackedPage() ? null : event;
+}
+
 let loaded = false;
 /** The visitor (here or in another tab) chose during this page view. */
 let chosen = false;
@@ -121,9 +133,11 @@ function loadPostHog(): void {
     // without element text or attributes, and session replays keep the
     // layout and the clicks with every text node and input masked, no
     // request headers or bodies, and URLs without their query strings.
-    // Whether replays record at all is the PostHog project's setting.
+    // Whether replays record at all is the PostHog project's setting. A
+    // page load that starts on an untracked page records no replay.
     mask_all_text: true,
     mask_all_element_attributes: true,
+    disable_session_recording: onUntrackedPage(),
     session_recording: {
       maskAllInputs: true,
       maskTextSelector: '*',
@@ -137,7 +151,7 @@ function loadPostHog(): void {
     // race: scrubSensitiveEvent redacts token / ntoken wherever they
     // appear, then scrubAnalyticsEvent drops every remaining query string
     // and fragment from URL properties (invitations, Stripe session ids).
-    before_send: [scrubSensitiveEvent, scrubAnalyticsEvent],
+    before_send: [dropUntrackedPages, scrubSensitiveEvent, scrubAnalyticsEvent],
   });
 }
 

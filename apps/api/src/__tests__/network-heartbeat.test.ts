@@ -165,6 +165,29 @@ describe.skipIf(skipIntegration)('brand name on the Network heartbeat', () => {
   });
 });
 
+describe.skipIf(skipIntegration)('router URL on the Network heartbeat', () => {
+  it("sends a self-hosted brand's router URL, null once it's removed, and nothing when hosted", async () => {
+    const { sendHeartbeat } = await import('../network-client.js');
+    const settings = (routerUrl: string | null) =>
+      ({ partnerNetworkVisible: true, routerUrl, programName: null, supportEmail: null }) as unknown as never;
+    await db(TABLES.Config).insert({ tenantId: T.id, key: 'program_settings', value: settings('https://r.example.com'), updatedAt: new Date() });
+
+    await beatNow();
+    expect(beats[0]!.body).not.toHaveProperty('routerUrl');
+
+    process.env.OPENPARTNER_TENANCY = 'single';
+    try {
+      expect(await sendHeartbeat(db, T.id)).toMatchObject({ sent: true });
+      expect(beats[1]!.body.routerUrl).toBe('https://r.example.com');
+      await db(TABLES.Config).where({ tenantId: T.id, key: 'program_settings' }).update({ value: settings(null) });
+      await sendHeartbeat(db, T.id);
+      expect(beats[2]!.body).toHaveProperty('routerUrl', null);
+    } finally {
+      process.env.OPENPARTNER_TENANCY = 'multi';
+    }
+  });
+});
+
 describe.skipIf(skipIntegration)('POST /config/program pushes a rename', () => {
   it('pushes the new name once the save has committed', async () => {
     const res = await saveProgram({ programName: '  Acme Labs  ' });
