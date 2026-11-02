@@ -1,7 +1,16 @@
 import { Hono, type Context } from 'hono';
 import { ulid } from 'ulid';
 import { createHash } from 'node:crypto';
-import { clickDestination, createDb, TABLES, type LinkRow, type TestClickRow } from '@openpartner/db';
+import {
+  clickDestination,
+  createDb,
+  forwardedClientAddress,
+  TABLES,
+  trustProxyFromEnv,
+  type LinkRow,
+  type TestClickRow,
+  type TrustProxy,
+} from '@openpartner/db';
 import { checkIpCap, checkVelocity } from './velocity.js';
 
 type Db = Awaited<ReturnType<typeof createDb>>;
@@ -42,6 +51,7 @@ function servesClicks(tenant: TenantGate | undefined): tenant is TenantGate {
 export function createRouterApp(db: Db): Hono {
   const app = new Hono();
   const cookieDomain = process.env.COOKIE_DOMAIN ?? 'localhost';
+  const trustProxy = trustProxyFromEnv(process.env.TRUST_PROXY);
 
   app.get('/health', (c) => c.json({ ok: true, service: 'router' }));
 
@@ -130,7 +140,7 @@ export function createRouterApp(db: Db): Hono {
     if (!program) return c.text('Program not found', 410);
     if (program.blockedAt) return c.text('Link unavailable', 410);
 
-    if (process.env.NODE_ENV !== 'test' && checkIpCap(clientIpHash(c))) {
+    if (process.env.NODE_ENV !== 'test' && checkIpCap(clientIpHash(c, trustProxy))) {
       c.header('Retry-After', '60');
       return c.text('Rate limited', 429);
     }
@@ -198,7 +208,7 @@ export function createRouterApp(db: Db): Hono {
     const clickId = ulid();
     const destination = clickDestination(destinationUrl, clickId);
 
-    const ipHash = clientIpHash(c);
+    const ipHash = clientIpHash(c, trustProxy);
 
     // Hard per-IP cap — refuse before we hit the DB. Unlike velocity this
     // rejects outright; a real user clicking 300 links in a minute doesn't
@@ -266,12 +276,16 @@ export function createRouterApp(db: Db): Hono {
  * The visitor's IP, hashed. Prefer proxy headers when they're present (we
  * run behind Caddy / DO's edge), but fall back to the node socket so an
  * attacker who reaches the router directly and omits headers doesn't land
- * on ipHash=null and bypass the cap.
+ * on ipHash=null and bypass the cap. With TRUST_PROXY set, it's the API's
+ * req.ip rule instead (packages/db/src/trusted-proxy.ts): walk in from the
+ * socket, so a forged left-most X-Forwarded-For entry is never the answer.
  */
-function clientIpHash(c: Context): string | null {
+function clientIpHash(c: Context, trust: TrustProxy | null): string | null {
   const socketIp =
     (c.env as { incoming?: { socket?: { remoteAddress?: string | null } } }).incoming?.socket?.remoteAddress ?? '';
-  return hashIp(c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? c.req.header('x-real-ip') ?? socketIp);
+  const forwardedFor = c.req.header('x-forwarded-for');
+  if (trust) return hashIp(forwardedClientAddress(socketIp, forwardedFor, trust));
+  return hashIp(forwardedFor?.split(',')[0]?.trim() ?? c.req.header('x-real-ip') ?? socketIp);
 }
 
 function hashIp(ip: string): string | null {

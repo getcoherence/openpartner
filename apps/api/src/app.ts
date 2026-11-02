@@ -8,6 +8,7 @@ import pinoHttp from 'pino-http';
 import type { DestinationStream } from 'pino';
 import rateLimit from 'express-rate-limit';
 import { ulid } from 'ulid';
+import { trustProxyFromEnv } from '@openpartner/db';
 
 import { stripeWebhookRouter } from './routes/stripe-webhook.js';
 import { stripeAppWebhookRouter } from './routes/stripe-app-webhook.js';
@@ -86,9 +87,12 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
 
   // Trust the first proxy hop so req.ip is the client IP, not the load
   // balancer. DO App Platform and Caddy both terminate TLS and forward
-  // with X-Forwarded-For. One hop is correct — trusting more would let a
-  // client spoof their IP by setting X-Forwarded-For themselves.
-  app.set('trust proxy', 1);
+  // with X-Forwarded-For. Trusting a second hop blindly would let a client
+  // spoof their IP by setting X-Forwarded-For themselves, so
+  // TRUST_PROXY=cloudflare (hosted: Cloudflare sits in front of App
+  // Platform's ingress) trusts it only when it's a Cloudflare address
+  // (packages/db/src/trusted-proxy.ts).
+  app.set('trust proxy', trustProxyFromEnv(process.env.TRUST_PROXY) ?? 1);
 
   app.use(helmet());
   // CORS: credentials: true so the portal can send the op_session cookie
