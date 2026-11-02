@@ -576,6 +576,20 @@ Clicks, partners, conversions, attributed revenue and commission by status for e
     },
   });
 
+  r.operation({
+    method: 'get',
+    path: '/partners/:id/links/:linkId/results',
+    tag: 'Links',
+    operationId: 'getLinkResults',
+    summary: "One link's clicks and the conversions credited to them",
+    description:
+      "Clicks on the link in the click window, and the events credited through them up to `conversionUntil` (default: `clickUntil` plus the program's attribution window). Leads and sales count distinct events; revenue is each sale's value times the link's share of its credit, per currency, with refunds reported separately. `linkId` may be the link's id or its `linkKey`. The OpenPartner Network reads it for booking reports.",
+    access: { kind: 'partnerOrAdmin', scope: 'partners:read' },
+    query: links.linkResultsQuerySchema,
+    responses: { 200: { description: 'Results.', schema: S.LinkResults } },
+    errors: { 400: ['invalid_query'], 404: ['partner_not_found', 'link_not_found'] },
+  });
+
   // ------------------------------------------------------------- Attribution
   r.operation({
     method: 'post',
@@ -679,10 +693,14 @@ Send \`userId\` when you have your own id for the user: attribution then follows
 
 **Outcome.** Every \`200\` carries \`outcome\` (and sometimes \`reason\`), which says what the conversion came to: \`attributed\`, \`no_matching_rule\` (credited, but no commission rule takes this \`type\`, which usually means a typo'd stage name) or \`not_attributed\` (e.g. \`outside_window\`). The conversion is recorded in every case, so don't retry on these. Fix the cause and send the next conversion.
 
-A click flagged by velocity limits or a revoked partner earns nothing: \`422 click_flagged\`.`,
+A click flagged by velocity limits or a revoked partner earns nothing: \`422 click_flagged\`.
+
+**Test clicks.** The click id of a test sent from Admin → Tracking health → Send a test click answers \`200\` \`{ "ok": true, "test": true }\`: the test is marked linked to a customer, and nothing is recorded.`,
     access: { kind: 'admin', scope: 'events:write' },
     body: conversions.conversionSchema.openapi('RecordConversionRequest'),
-    responses: { 200: { description: 'Recorded (or replayed).', schema: S.ConversionResult } },
+    responses: {
+      200: { description: 'Recorded (or replayed), or a test click linked.', schema: z.union([S.ConversionResult, S.ConversionTestResult]) },
+    },
     errors: { 404: ['click_not_found'], 409: ['external_event_id_conflict', 'recorded_from_stripe'], 422: ['click_flagged'] },
   });
 
@@ -735,10 +753,11 @@ The token is checked before anything else, so a caller without one learns nothin
     textErrors: true,
     responses: {
       200: {
-        description: 'Recorded (or replayed): `ok` and the outcome, or a 1×1 GIF with `pixel=1`.',
+        description:
+          'Recorded (or replayed): `ok` and the outcome, or a 1×1 GIF with `pixel=1`. A test click from Admin → Tracking health is linked and nothing is recorded: `ok test_click`.',
         content: {
           'text/plain': {
-            schema: z.enum(conversions.POSTBACK_BODIES).openapi({ example: 'ok attributed' }),
+            schema: z.enum([...conversions.POSTBACK_BODIES, conversions.TEST_POSTBACK_BODY]).openapi({ example: 'ok attributed' }),
           },
           'image/gif': { schema: z.string().openapi({ format: 'binary' }) },
         },

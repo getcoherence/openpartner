@@ -75,6 +75,7 @@ import { AdminNetworkCreators } from './pages/admin/NetworkCreators.js';
 import { NetworkCreatorStorefrontPage } from './pages/admin/NetworkCreatorStorefront.js';
 import { IndexedCreatorPage } from './pages/admin/NetworkIndexedCreators.js';
 import { AdminNetworkBookings } from './pages/admin/NetworkBookings.js';
+import { AdminNetworkBookingReport } from './pages/admin/NetworkBookingReport.js';
 import { AdminNetworkClaim, AdminNetworkMessages, AdminNetworkThread, useBrandUnreadMessages } from './pages/admin/NetworkMessages.js';
 import { UnreadDot } from './pages/creator/conversation-shared.js';
 import { AdminNetworkBilling } from './pages/admin/NetworkBilling.js';
@@ -113,6 +114,7 @@ import { CreatorMagicLandingPage } from './pages/creator/CreatorMagicLanding.js'
 import { CreatorResetPasswordPage } from './pages/creator/CreatorResetPassword.js';
 import { CreatorShell } from './pages/creator/CreatorShell.js';
 import { CreatorPublicProfilePage } from './pages/creator/CreatorPublicProfile.js';
+import { PublicReportPage } from './pages/PublicReport.js';
 import { BookingConfirmPage } from './pages/creator/BookingConfirm.js';
 import { CreatorIndexClaimPage } from './pages/creator/CreatorIndexClaim.js';
 import { clearAttachmentCache } from './pages/creator/conversation-media.js';
@@ -233,6 +235,8 @@ function AppRoutes() {
             <Route path="/creator/*" element={<CreatorShell />} />
             {/* Public creator profiles — no auth, browsable from anywhere. */}
             <Route path="/creators/:handle" element={<CreatorPublicProfilePage />} />
+            {/* A shared booking report; the token is in the URL fragment. */}
+            <Route path="/reports" element={<PublicReportPage />} />
             {/* A brand confirming a booking request sent from a creator's storefront. */}
             <Route path="/booking/confirm" element={<BookingConfirmPage />} />
             {/* A creator's in-app storefront in whichever workspace the brand
@@ -419,6 +423,7 @@ function Shell() {
                   <Route path="admin/network/creators/:handle" element={<NetworkCreatorStorefrontPage />} />
                   <Route path="admin/network/indexed-creators/:id" element={<IndexedCreatorPage />} />
                   <Route path="admin/network/bookings" element={<AdminNetworkBookings />} />
+                  <Route path="admin/network/bookings/:id/report" element={<AdminNetworkBookingReport />} />
                   <Route path="admin/network/messages" element={<AdminNetworkMessages />} />
                   <Route path="admin/network/messages/:id" element={<AdminNetworkThread />} />
                   <Route path="admin/network/claim" element={<AdminNetworkClaim />} />

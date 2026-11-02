@@ -685,8 +685,9 @@ its own event log began. Its first alert run emails what fails then, once.
 
 `TestClick` holds an admin's test clicks
 ([tracking-health.md](tracking-health.md#send-a-test-click)): when each test
-link was opened, and when the brand's site reported it landing and linked it
-to a signup. A test click is never a `Click`, so it isn't partner traffic
+link was opened, when the brand's site reported it landing, and when and how
+(`linkedVia`: identify, checkout or conversion) it was linked to a customer.
+A test click is never a `Click`, so it isn't partner traffic
 and nothing in the export derives from it. Rows are deleted 90 days after
 they were made.
 

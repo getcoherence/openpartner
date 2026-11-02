@@ -775,6 +775,35 @@ export const networkProxy = {
   claimBooking: (db: Knex, tenantId: string, body: unknown) =>
     callNetwork<{ booking: unknown; conversationId: string }>(db, tenantId, 'POST', '/vendors/me/bookings/claim', body),
 
+  /** A delivered booking's report, what the creator may share from it, and
+   *  the brand's share links (Network docs/campaign-reports.md). */
+  bookingReport: (db: Knex, tenantId: string, id: string) =>
+    callNetwork<{ report: unknown }>(db, tenantId, 'GET', `/vendors/me/bookings/${encodeURIComponent(id)}/report`),
+  refreshBookingReport: (db: Knex, tenantId: string, id: string) =>
+    callNetwork<{ report: unknown }>(db, tenantId, 'POST', `/vendors/me/bookings/${encodeURIComponent(id)}/report/refresh`, {}),
+  setBookingReportSharing: (db: Knex, tenantId: string, id: string, body: unknown) =>
+    callNetwork<{ creatorShare: string | null; effective: string }>(
+      db,
+      tenantId,
+      'PATCH',
+      `/vendors/me/bookings/${encodeURIComponent(id)}/report-sharing`,
+      body,
+    ),
+  listBookingReportShares: (db: Knex, tenantId: string, id: string) =>
+    callNetwork<{ shares: unknown[] }>(db, tenantId, 'GET', `/vendors/me/bookings/${encodeURIComponent(id)}/report/shares`),
+  createBookingReportShare: (db: Knex, tenantId: string, id: string, body: unknown) =>
+    callNetwork<{ share: unknown; url: string }>(db, tenantId, 'POST', `/vendors/me/bookings/${encodeURIComponent(id)}/report/shares`, body),
+  revokeBookingReportShare: (db: Knex, tenantId: string, id: string, shareId: string) =>
+    callNetwork<{ shares: unknown[] }>(
+      db,
+      tenantId,
+      'POST',
+      `/vendors/me/bookings/${encodeURIComponent(id)}/report/shares/${encodeURIComponent(shareId)}/revoke`,
+      {},
+    ),
+  setReportSharingDefault: (db: Knex, tenantId: string, body: unknown) =>
+    callNetwork<{ defaultCreatorShare: string }>(db, tenantId, 'PATCH', '/vendors/me/report-sharing', body),
+
   /** Conversations with creators (§8.1). */
   listConversations: (db: Knex, tenantId: string) =>
     callNetwork<{ conversations: unknown[]; unreadTotal: number }>(db, tenantId, 'GET', '/vendors/me/conversations'),
@@ -2161,6 +2190,22 @@ export async function sendHeartbeat(db: Knex, tenantId: string): Promise<Heartbe
     console.warn('[network-client] booking fee rate read failed; skipping it', err);
   }
 
+  // A self-hosted router can run on its own origin (Settings → Router URL),
+  // which the Network can't derive from instanceUrl. Sent so the share
+  // URLs it hands creators point there; null clears one the brand removed.
+  // Hosted brands use the platform's router and send nothing. Best-effort,
+  // like the logo.
+  const selfHosted = getTenancyMode() === 'single';
+  let routerUrl: string | null | undefined;
+  if (selfHosted) {
+    try {
+      const row = (await db(TABLES.Config).where({ tenantId, key: 'program_settings' }).first('value')) as { value: unknown } | undefined;
+      routerUrl = ((row?.value ?? {}) as { routerUrl?: string | null }).routerUrl ?? null;
+    } catch (err) {
+      console.warn('[network-client] router URL read failed; skipping it', err);
+    }
+  }
+
   const url = `${m.networkUrl.replace(/\/$/, '')}/vendors/me/heartbeat`;
   try {
     const res = await fetch(url, {
@@ -2176,6 +2221,7 @@ export async function sendHeartbeat(db: Knex, tenantId: string): Promise<Heartbe
         logoUrl,
         ...(displayName ? { displayName } : {}),
         ...(bookingFeeBps != null ? { bookingFeeBps } : {}),
+        ...(routerUrl !== undefined ? { routerUrl } : {}),
       }),
       signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),
     });

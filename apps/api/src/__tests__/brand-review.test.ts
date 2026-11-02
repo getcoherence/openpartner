@@ -585,6 +585,25 @@ describe.skipIf(skipIntegration)('tracking gate (tracking-verification.ts)', () 
     expect(pushed('vnd_ok')).toBe('approved');
   });
 
+  it('says why partners wait, for the setup checks (partnerJoinsWaitOn)', async () => {
+    const { partnerJoinsWaitOn } = await import('../tracking-verification.js');
+    const { slug } = await signup();
+    const t = (await tenantBySlug(slug))!;
+    expect(await partnerJoinsWaitOn(db, db, t.id)).toBe('review');
+
+    // Approved without verified tracking and no partner yet: the portal
+    // keeps Partners locked, before the gate's date too.
+    await db(TABLES.Tenant).where({ id: t.id }).update({ approvalStatus: 'approved' });
+    expect(await partnerJoinsWaitOn(db, db, t.id)).toBe('tracking');
+    // With a partner already, only the gate holds new ones back.
+    await db(TABLES.Partner).insert({ id: ulid(), tenantId: t.id, email: `seed-${rnd()}@example.test`, name: 'Seed' });
+    expect(await partnerJoinsWaitOn(db, db, t.id)).toBeNull();
+    await pastGate();
+    expect(await partnerJoinsWaitOn(db, db, t.id)).toBe('tracking');
+    await db(TABLES.Tenant).where({ id: t.id }).update({ trackingTestPassedAt: new Date() });
+    expect(await partnerJoinsWaitOn(db, db, t.id)).toBeNull();
+  });
+
   it('sets the date, counts who it touches, and sends the notice once', async () => {
     const cookie = await makeOperator('admin');
     const { slug } = await signup();

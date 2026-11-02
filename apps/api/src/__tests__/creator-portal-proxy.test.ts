@@ -421,6 +421,32 @@ describe('creator-api proxy: storefront', () => {
     expect((await request(app).get('/creator-api/creators/me/payments')).status).toBe(200); // exact paths forward any method; the Network answers
     expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /creators/me/payments']);
   });
+
+  it('forwards booking reports, their share links and reported numbers, never cached', async () => {
+    const cookie = 'op_network_creator_session=abc';
+    const steps: Array<[string, string]> = [
+      ['GET', '/creators/me/bookings/bkr_1/report'],
+      ['GET', '/creators/me/bookings/bkr_1/report/shares'],
+      ['POST', '/creators/me/bookings/bkr_1/report/shares'],
+      ['POST', '/creators/me/bookings/bkr_1/report/shares/brs_1/revoke'],
+      ['PUT', '/creators/me/bookings/bkr_1/reported-stats'],
+    ];
+    for (const [method, path] of steps) {
+      const r = request(app)[method.toLowerCase() as 'get' | 'put' | 'post'](`/creator-api${path}`).set('Cookie', cookie);
+      const res = method === 'GET' ? await r : await r.send({});
+      expect(res.status, `${method} ${path}`).toBe(200);
+      if (/\/report(\/|$)/.test(path)) expect(res.headers['cache-control'], path).toBe('no-store');
+    }
+    // The public page posts the token from its URL fragment, in the body.
+    const view = await request(app).post('/creator-api/reports/view').send({ token: 'oprp_x' });
+    expect(view.status).toBe(200);
+    expect(view.headers['cache-control']).toBe('no-store');
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([...steps.map(([m, p]) => `${m} ${p}`), 'POST /reports/view']);
+    // Nothing else under a booking opens up.
+    expect((await request(app).get('/creator-api/creators/me/bookings/bkr_1/report/shares/brs_1')).status).toBe(404);
+    expect((await request(app).put('/creator-api/creators/me/bookings/bkr_1/report')).status).toBe(404);
+    expect((await request(app).get('/creator-api/reports/oprp_x')).status).toBe(404);
+  });
 });
 
 describe('creator-api proxy: passwords', () => {

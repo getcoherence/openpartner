@@ -286,6 +286,34 @@ export const Link = z
 
 export const LinkSaved = Link.extend({ warnings: SaveWarnings.optional() }).openapi('LinkSaved');
 
+const perCurrency = z.record(z.string(), z.number());
+
+export const LinkResults = z
+  .object({
+    reportingVersion: z.number().int().openapi({ description: 'Bumped when the shape or meaning of this answer changes.' }),
+    linkId: id,
+    partnerId: id,
+    programId: id,
+    attributionWindowDays: z.number().int(),
+    clickSince: ts,
+    clickUntil: ts,
+    conversionUntil: ts.openapi({ description: 'Conversions after this time are left out.' }),
+    clicks: z.number().int().openapi({ description: 'Clicks on the link in the click window, fraud-flagged ones left out.' }),
+    bySource: z
+      .array(z.object({ host: z.string(), clicks: z.number().int() }))
+      .openapi({ description: 'Top 5 referring hostnames, `www.` dropped.' }),
+    leads: z.number().int().openapi({ description: 'Distinct `signup` and `trial_started` events credited to the link.' }),
+    sales: z.number().int().openapi({ description: 'Distinct events with a value above 0 credited to the link.' }),
+    refundedSales: z.number().int().openapi({ description: 'Of those, sales a refund left nothing of.' }),
+    revenueByCurrency: perCurrency.openapi({
+      description:
+        "Each sale's value times the link's share of its credit under the event's live (first-computed) model, before refunds. Never summed across currencies.",
+    }),
+    refundedByCurrency: perCurrency.openapi({ description: 'The refunded part of that revenue, at the same share.' }),
+    daily: z.array(z.object({ date: z.string(), clicks: z.number().int(), leads: z.number().int(), sales: z.number().int() })),
+  })
+  .openapi('LinkResults');
+
 // ---------- Attribution ----------
 
 export const IdentifyResult = z
@@ -383,6 +411,16 @@ export const ConversionResult = z
     }),
   })
   .openapi('ConversionResult');
+
+export const ConversionTestResult = z
+  .object({
+    ok: z.literal(true),
+    test: z.literal(true).openapi({
+      description:
+        "`clickId` is an admin's test click (Admin → Tracking health → Send a test click). The test is marked linked to a customer; nothing is recorded or attributed.",
+    }),
+  })
+  .openapi('ConversionTestResult');
 
 export const RefundCommission = z
   .object({

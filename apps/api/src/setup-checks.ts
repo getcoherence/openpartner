@@ -15,7 +15,9 @@
  *
  * Per active program (campaign-lifecycle.ts), at most MAX_PROGRAMS:
  *   partners     someone can share it: a partner with a link or a code.
- *                A program younger than a week is still waiting for them.
+ *                A program younger than a week is still waiting for them,
+ *                and so is one whose brand can't take partners yet (in
+ *                review, or tracking not verified: partnerJoinsWaitOn).
  *   destination  the destination answers 2xx after its redirects and the
  *                click survives them: `?cref=` on the final URL, the click
  *                id wherever `{click_id}` put it, or in a cookie set on the
@@ -69,11 +71,13 @@ import {
 } from '@openpartner/db';
 import { campaignStatus } from './campaign-lifecycle.js';
 import { customerRewardBackfillRunning, customerRewardDelivery, rewardCodeCounts } from './customer-rewards.js';
+import { db as platformDb } from './db.js';
 import { OutboundBlockedError, safeFetch, type SafeFetchResult } from './outbound-guard.js';
 import { activeConnectionForTenant, isHostedMode } from './stripe-app.js';
 import { brandStripeAccess, type ReconcileUnavailable } from './stripe-reconciliation.js';
 import { getMode, stripe as platformStripe } from './stripe.js';
 import { getTenancyMode } from './tenancy.js';
+import { partnerJoinsWaitOn } from './tracking-verification.js';
 import { parseUserAgent } from './ua-parse.js';
 
 export const SETUP_THRESHOLDS = {
@@ -217,11 +221,12 @@ export async function computeSetupChecks(
   const linking = await linkingCheck(db, tenantId, now);
   const stripeCheck = await stripeEventsCheck(db, tenantId, now, refresh);
   const codes = await codesCheck(db, tenantId, now);
+  const joinsWait = await partnerJoinsWaitOn(db, platformDb, tenantId, now);
   const destination = await probes;
 
   const checks: SetupCheck[] = [];
   for (const p of programs) {
-    checks.push(partnersCheck(p, sharing.get(p.id), now));
+    checks.push(partnersCheck(p, sharing.get(p.id), now, joinsWait));
     const probe = destination.get(p.destinationUrl);
     checks.push(destinationCheck(p, probe ?? null));
     if (!isStripeCheckout(p.destinationUrl)) {
@@ -344,7 +349,12 @@ async function partnerSharing(db: Knex, tenantId: string, programs: ActiveProgra
   return out;
 }
 
-function partnersCheck(p: ActiveProgram, s: Sharing | undefined, now: Date): SetupCheck {
+function partnersCheck(
+  p: ActiveProgram,
+  s: Sharing | undefined,
+  now: Date,
+  joinsWait: 'review' | 'tracking' | null,
+): SetupCheck {
   const sharing = s ?? { enrolled: 0, withLinks: 0, withCodes: 0, sharers: 0 };
   if (sharing.sharers > 0) {
     const how = [
@@ -356,6 +366,19 @@ function partnersCheck(p: ActiveProgram, s: Sharing | undefined, now: Date): Set
     return check('partners', p, 'pass', `${plural(sharing.sharers, 'partner')} can share it (${how}).`, null, sharing);
   }
   const young = now.getTime() - new Date(p.createdAt).getTime() < SETUP_THRESHOLDS.partners.graceDays * DAY;
+  if (sharing.enrolled === 0 && joinsWait) {
+    // Inviting partners isn't open to the brand yet (tracking-verification.ts).
+    return check(
+      'partners',
+      p,
+      'waiting',
+      joinsWait === 'review'
+        ? 'No partners yet: they can join once your brand is approved.'
+        : 'No partners yet: they can join once your tracking is verified. Send a test click to verify it.',
+      null,
+      sharing,
+    );
+  }
   if (sharing.enrolled === 0) {
     return check(
       'partners',
