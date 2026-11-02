@@ -1498,6 +1498,50 @@ describe('claim page', () => {
     expect(claimCalls()[1]!.body).toEqual({ token: 'tok_123' });
   });
 
+  it('fills the bio with their own words, and claims with it as they leave it', async () => {
+    const bio = 'B2B sales coach. I help founders book their first 100 meetings.';
+    respond = (url) =>
+      url.endsWith('/claim/preview')
+        ? { status: 200, body: { ...PREVIEW, creator: { ...PREVIEW.creator, bio } } }
+        : url.endsWith('/creators/whoami')
+          ? { status: 200, body: { creator: null } }
+          : { status: 200, body: { ok: true, creatorId: 'crt_1', created: true, conversationIds: ['cnv_1'] } };
+    page();
+    const field = (await screen.findByLabelText('Bio')) as HTMLTextAreaElement;
+    expect(field.value).toBe(bio);
+    fireEvent.change(field, { target: { value: `${bio} New videos weekly.` } });
+    choosePassword('correct horse battery');
+    fireEvent.click(screen.getByText('Claim my profile and read'));
+    expect(await screen.findByText('thread page')).toBeTruthy();
+    expect(claimCalls()[1]!.body).toEqual({ token: 'tok_123', password: 'correct horse battery', bio: `${bio} New videos weekly.` });
+  });
+
+  it('offers no bio to an account that has one, and fills an empty one', async () => {
+    const bio = 'B2B sales coach. I help founders book their first 100 meetings.';
+    let existing: string | null = 'Mine, as I wrote it.';
+    respond = (url) =>
+      url.endsWith('/claim/preview')
+        ? { status: 200, body: { ...PREVIEW, creator: { ...PREVIEW.creator, bio } } }
+        : url.endsWith('/creators/whoami')
+          ? { status: 200, body: { creator: { email: 'jo@elsewhere.co', bio: existing } } }
+          : { status: 200, body: { ok: true, creatorId: 'crt_1', created: false, conversationIds: ['cnv_1'] } };
+    const first = page();
+    expect(await screen.findByText('Signed in as jo@elsewhere.co')).toBeTruthy();
+    expect(screen.queryByLabelText('Bio')).toBeNull();
+    fireEvent.click(screen.getByText('Claim my profile and read'));
+    expect(await screen.findByText('thread page')).toBeTruthy();
+    expect(claimCalls()[1]!.body).toEqual({ token: 'tok_123' });
+    first.unmount();
+
+    existing = null;
+    page();
+    const field = (await screen.findByLabelText('Bio')) as HTMLTextAreaElement;
+    // Cleared: they'll write their own.
+    fireEvent.change(field, { target: { value: '' } });
+    fireEvent.click(screen.getByText('Claim my profile and read'));
+    await waitFor(() => expect(claimCalls().filter((c) => c.url.endsWith('/claim')).at(-1)!.body).toEqual({ token: 'tok_123', bio: '' }));
+  });
+
   it('offers no form until it knows whether they are signed in', async () => {
     let whoamiFails = true;
     respond = (url) =>

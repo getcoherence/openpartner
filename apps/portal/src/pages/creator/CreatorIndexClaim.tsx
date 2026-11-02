@@ -44,6 +44,8 @@ interface ClaimPreview {
   creator: {
     name: string | null;
     headline: string | null;
+    /** Their own words from their profiles or storefront, for the bio field. */
+    bio?: string | null;
     avatarUrl: string | null;
     email: string | null;
     emailFoundOn: string | null;
@@ -77,8 +79,11 @@ interface ClaimResult {
 }
 
 interface Whoami {
-  creator: { email: string } | null;
+  creator: { email: string; bio?: string | null } | null;
 }
+
+/** The longest bio a profile takes. */
+const BIO_MAX = 2000;
 
 const PLATFORM_LABEL: Record<string, string> = { linkedin: 'LinkedIn', twitter: 'X', youtube: 'YouTube', substack: 'Substack' };
 
@@ -141,9 +146,11 @@ export function CreatorIndexClaimPage() {
   });
   const [password, setPassword] = useState('');
   const [tried, setTried] = useState(false);
+  // Null until they edit it: the listing's bio until then.
+  const [bio, setBio] = useState<string | null>(null);
 
   const claim = useMutation({
-    mutationFn: (body: { token: string; password?: string }) => creatorApi<ClaimResult>('/creator-index/claim', { method: 'POST', body }),
+    mutationFn: (body: { token: string; password?: string; bio?: string }) => creatorApi<ClaimResult>('/creator-index/claim', { method: 'POST', body }),
     onSuccess: (r) => {
       const first = r.conversationIds[0];
       // No brand was waiting: their new account, with its setup steps.
@@ -193,11 +200,16 @@ export function CreatorIndexClaimPage() {
   // no address the claim asks them to sign in instead.
   const needsPassword = !signedInAs && !!p.creator.email;
   const tooShort = needsPassword && password.length < MIN_PASSWORD_LENGTH;
+  // Their own words start the profile, kept, edited or cleared here; not
+  // offered to an account that has a bio already.
+  const suggestedBio = p.creator.bio?.trim() || null;
+  const offerBio = !!suggestedBio && (needsPassword || (!!signedInAs && !whoami.data?.creator?.bio?.trim()));
+  const bioValue = bio ?? suggestedBio ?? '';
   const submit = (e: FormEvent) => {
     e.preventDefault();
     setTried(true);
     if (tooShort) return;
-    claim.mutate(needsPassword ? { token, password } : { token });
+    claim.mutate({ token, ...(needsPassword ? { password } : {}), ...(offerBio ? { bio: bioValue } : {}) });
   };
   const shown = p.creator.shownToBrands ?? true;
   const first = firstNameOf(p.creator.name);
@@ -303,6 +315,31 @@ export function CreatorIndexClaimPage() {
                   ) : signedInAs ? (
                     <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 14 }}>Signed in as {signedInAs}</div>
                   ) : null}
+                  {offerBio && (
+                    <label style={{ display: 'grid', gap: 4, marginBottom: 18 }}>
+                      <span style={{ fontSize: 12, color: theme.textMuted }}>Bio</span>
+                      <textarea
+                        name="bio"
+                        value={bioValue}
+                        onChange={(e) => setBio(e.target.value)}
+                        rows={4}
+                        maxLength={BIO_MAX}
+                        style={{
+                          width: '100%',
+                          padding: '10px 12px',
+                          fontSize: 14,
+                          lineHeight: 1.5,
+                          fontFamily: 'inherit',
+                          background: theme.surface2,
+                          border: `1px solid ${theme.border}`,
+                          borderRadius: theme.radiusSm,
+                          color: theme.text,
+                          boxSizing: 'border-box',
+                          resize: 'vertical',
+                        }}
+                      />
+                    </label>
+                  )}
                   <Button
                     type="submit"
                     disabled={claim.isPending}
