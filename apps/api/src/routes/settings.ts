@@ -1156,11 +1156,57 @@ settingsRouter.post('/admin/network/bookings/:id/checkout', requireAuth, require
   }),
 );
 
-for (const action of ['cancel', 'approve', 'recheck', 'sync'] as const) {
+for (const action of ['cancel', 'recheck', 'sync'] as const) {
   settingsRouter.post(`/admin/network/bookings/:id/${action}`, requireAuth, requireAdmin, async (req, res) =>
     proxy(req, res, (db, tenantId) => networkProxy.bookingAction(db, tenantId, req.params.id!, action)),
   );
 }
+
+/** Approving takes what the creator may share from the booking (the
+ *  approval dialog's choice; omitted keeps the brand's default). */
+settingsRouter.post('/admin/network/bookings/:id/approve', requireAuth, requireAdmin, async (req, res) => {
+  const b = bodyOf(req);
+  return proxy(req, res, (db, tenantId) =>
+    networkProxy.bookingAction(db, tenantId, req.params.id!, 'approve', 'creatorShare' in b ? { creatorShare: b.creatorShare } : {}),
+  );
+});
+
+// A delivered booking's report (the Network's docs/campaign-reports.md).
+settingsRouter.get('/admin/network/bookings/:id/report', requireAuth, requireAdmin, async (req, res) =>
+  proxy(req, res, (db, tenantId) => networkProxy.bookingReport(db, tenantId, req.params.id!)),
+);
+
+settingsRouter.post('/admin/network/bookings/:id/report/refresh', requireAuth, requireAdmin, async (req, res) =>
+  proxy(req, res, (db, tenantId) => networkProxy.refreshBookingReport(db, tenantId, req.params.id!)),
+);
+
+settingsRouter.patch('/admin/network/bookings/:id/report-sharing', requireAuth, requireAdmin, async (req, res) =>
+  proxy(req, res, (db, tenantId) =>
+    networkProxy.setBookingReportSharing(db, tenantId, req.params.id!, { creatorShare: bodyOf(req).creatorShare }),
+  ),
+);
+
+settingsRouter.get('/admin/network/bookings/:id/report/shares', requireAuth, requireAdmin, async (req, res) =>
+  proxy(req, res, (db, tenantId) => networkProxy.listBookingReportShares(db, tenantId, req.params.id!)),
+);
+
+settingsRouter.post('/admin/network/bookings/:id/report/shares', requireAuth, requireAdmin, async (req, res) => {
+  const b = bodyOf(req);
+  const fields = Object.fromEntries((['includeResults', 'includeCost', 'includeReported'] as const).filter((k) => k in b).map((k) => [k, b[k]]));
+  return proxy(req, res, (db, tenantId) => networkProxy.createBookingReportShare(db, tenantId, req.params.id!, fields), 201);
+});
+
+settingsRouter.post('/admin/network/bookings/:id/report/shares/:shareId/revoke', requireAuth, requireAdmin, async (req, res) =>
+  proxy(req, res, (db, tenantId) => networkProxy.revokeBookingReportShare(db, tenantId, req.params.id!, req.params.shareId!)),
+);
+
+/** What creators may share from the brand's bookings unless one says
+ *  otherwise. Read back through GET /admin/network/me. */
+settingsRouter.patch('/admin/network/report-sharing', requireAuth, requireAdmin, async (req, res) =>
+  proxy(req, res, (db, tenantId) =>
+    networkProxy.setReportSharingDefault(db, tenantId, { defaultCreatorShare: bodyOf(req).defaultCreatorShare }),
+  ),
+);
 
 settingsRouter.post('/admin/network/bookings/:id/track', requireAuth, requireAdmin, async (req, res) =>
   proxy(req, res, (db, tenantId) => networkProxy.bookingAction(db, tenantId, req.params.id!, 'track', { offeringId: bodyOf(req).offeringId })),

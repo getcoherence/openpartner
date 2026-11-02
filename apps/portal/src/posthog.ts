@@ -88,6 +88,15 @@ export function scrubAnalyticsEvent(event: CaptureResult | null): CaptureResult 
   return event;
 }
 
+/** Pages nothing is captured on: a shared booking report (/reports) is
+ *  someone else's deal, opened by a link with a token in it. */
+const UNTRACKED_PATHS = ['/reports'];
+
+export function dropUntrackedPages(event: CaptureResult | null): CaptureResult | null {
+  if (typeof window !== 'undefined' && UNTRACKED_PATHS.includes(window.location.pathname)) return null;
+  return event;
+}
+
 let loaded = false;
 
 function loadPostHog(): void {
@@ -115,7 +124,7 @@ function loadPostHog(): void {
     // race: scrubSensitiveEvent redacts token / ntoken wherever they
     // appear, then scrubAnalyticsEvent drops every remaining query string
     // and fragment from URL properties (invitations, Stripe session ids).
-    before_send: [scrubSensitiveEvent, scrubAnalyticsEvent],
+    before_send: [dropUntrackedPages, scrubSensitiveEvent, scrubAnalyticsEvent],
   });
 }
 

@@ -88,6 +88,32 @@ export interface CreatorBooking {
   paymentProcessing?: boolean;
   refundedMinor: number;
   disputedAt: string | null;
+  /** The booking's own link, to put in the post; its report from delivery
+   *  (the Network's docs/campaign-reports.md). Older Networks leave these out. */
+  trackedUrl?: string | null;
+  hasReport?: boolean;
+}
+
+/** "Use this link in your post": the booking's own link, so its report
+ *  counts what this post drives. */
+export function TrackedLinkLine({ url }: { url: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, flexWrap: 'wrap', fontSize: 13 }}>
+      <span style={{ color: theme.textMuted }}>Use this link in your post</span>
+      <code style={{ background: theme.surface2, padding: '4px 8px', borderRadius: theme.radiusSm, wordBreak: 'break-all' }}>{url}</code>
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={() => {
+          void navigator.clipboard?.writeText(url);
+          setCopied(true);
+        }}
+      >
+        {copied ? 'Copied' : 'Copy'}
+      </Button>
+    </div>
+  );
 }
 
 interface CreatorThread {
@@ -503,6 +529,7 @@ function CreatorBookingCard({
         {b.disputedAt && <> The brand disputed the payment with their card issuer; you&rsquo;ll find it in your Stripe Dashboard.</>}
       </div>
 
+      {b.trackedUrl && ['awaiting_payment', 'paid'].includes(b.status) && <TrackedLinkLine url={b.trackedUrl} />}
       {b.status === 'paid' && (
         <div style={{ marginTop: 10 }}>
           <Label>Links to the published work (one per line, up to 5)</Label>
@@ -538,6 +565,11 @@ function CreatorBookingCard({
           >
             Refund
           </Button>
+        )}
+        {b.hasReport && (
+          <Link to={`/creator/bookings/${encodeURIComponent(b.id)}/report`} style={{ textDecoration: 'none', marginLeft: 'auto' }}>
+            <Button variant="secondary">Report</Button>
+          </Link>
         )}
       </div>
     </div>

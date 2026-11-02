@@ -5,7 +5,8 @@ import { useNavigate } from 'react-router';
 import { api, ApiError } from '../../api.js';
 import { useTenantBase } from '../../tenant-base.js';
 import { alpha, theme } from '../../theme.js';
-import { Button, Card, ErrorBanner } from '../../ui.js';
+import { Button, Card, ErrorBanner, Select } from '../../ui.js';
+import { SHARE_LABELS, type CreatorShare } from '../../lib/BookingReport.js';
 
 export interface NetworkMembership {
   enabled: boolean;
@@ -29,6 +30,9 @@ export interface NetworkSelf {
   /** OpenPartner's review of this vendor. Only 'approved' vendors are
    *  discoverable on the marketplace. Absent on an older Network. */
   reviewStatus?: 'pending' | 'approved' | 'rejected';
+  /** What creators may share from the brand's booking reports by default.
+   *  Absent on a Network from before booking reports. */
+  defaultCreatorShare?: CreatorShare;
 }
 
 interface ConsentSummary {
@@ -92,6 +96,8 @@ export function NetworkSettingsSection() {
             membership={membership}
             onChange={() => qc.invalidateQueries({ queryKey: ['network-membership'] })}
           />
+          <Divider />
+          <ReportSharingDefault />
           {membership.tier !== 'hosted' && (
             <>
               <Divider />
@@ -106,6 +112,47 @@ export function NetworkSettingsSection() {
 
 function Divider() {
   return <div style={{ borderTop: `1px solid ${theme.borderSubtle}` }} />;
+}
+
+/**
+ * What creators may share from a booking's report unless the booking says
+ * otherwise (the Network's docs/campaign-reports.md §5). Each booking's
+ * approval asks again; a booking completed on its own keeps this.
+ */
+function ReportSharingDefault() {
+  const qc = useQueryClient();
+  const { data: self } = useQuery({
+    queryKey: ['network-self'],
+    queryFn: () => api<NetworkSelf>('/admin/network/me'),
+    retry: 1,
+  });
+  const save = useMutation({
+    mutationFn: (defaultCreatorShare: CreatorShare) =>
+      api('/admin/network/report-sharing', { method: 'PATCH', body: { defaultCreatorShare } }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['network-self'] }),
+  });
+  // An older Network has no booking reports.
+  if (!self || self.defaultCreatorShare === undefined) return null;
+  return (
+    <div style={{ fontSize: 13, lineHeight: 1.6 }}>
+      <SubHeading>Booking reports</SubHeading>
+      <ErrorBanner error={save.error} />
+      <label style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        Creators may share
+        <Select
+          value={self.defaultCreatorShare}
+          onChange={(e) => save.mutate(e.target.value as CreatorShare)}
+          disabled={save.isPending}
+        >
+          {(Object.keys(SHARE_LABELS) as CreatorShare[]).map((k) => (
+            <option key={k} value={k}>
+              {SHARE_LABELS[k]}
+            </option>
+          ))}
+        </Select>
+      </label>
+    </div>
+  );
 }
 
 function SubHeading({ children }: { children: string }) {
