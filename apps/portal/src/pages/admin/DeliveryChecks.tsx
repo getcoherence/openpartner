@@ -80,6 +80,9 @@ function errorText(error: string): string {
   if (error === 'video_not_found') return 'Video not found or not public';
   // YouTube's data goes when the creator asks to delete their account.
   if (error === 'creator_deleting') return 'The creator is deleting their account';
+  // So does a video's, once it goes 28 days without being read again
+  // (YouTube allows 30).
+  if (error === 'youtube_expired') return 'YouTube data expired';
   if (error.startsWith('http_')) return `Page returned ${error.slice(5)}`;
   if (error.startsWith('blocked:')) return 'Page can’t be fetched safely';
   if (error.startsWith('youtube_api_error')) return 'YouTube didn’t answer';
