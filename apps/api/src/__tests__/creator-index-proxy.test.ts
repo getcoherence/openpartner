@@ -336,7 +336,7 @@ describe.skipIf(skipIntegration)('creator index: ops console', () => {
     expect((await request(app).put('/platform-admin/creator-index/settings').set('Cookie', cookie).send({ ...SETTINGS, extra: 1 })).status).toBe(400);
 
     // Where to search, and whether to keep only creators who take partnerships.
-    const sources = { storefronts: true, sponsorPages: false, people: true };
+    const sources = { storefronts: true, sponsorPages: false, mediaKits: true, people: true };
     const withSources = await request(app)
       .put('/platform-admin/creator-index/settings')
       .set('Cookie', cookie)

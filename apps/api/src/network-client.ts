@@ -1492,7 +1492,7 @@ export interface CreatorIndexSettings {
   seedQueries: string[];
   /** Where each seed query is searched. Optional so an older Network's
    *  answer still reads. */
-  discoverySources?: { storefronts: boolean; sponsorPages: boolean; people: boolean; creatorDatabase?: boolean };
+  discoverySources?: { storefronts: boolean; sponsorPages: boolean; mediaKits?: boolean; people: boolean; creatorDatabase?: boolean };
   /** Creators the creator database source takes per Discover run. */
   creatorDatabasePerRun?: number;
   /** Keep only creators who already take partnerships. */

@@ -1940,7 +1940,7 @@ const creatorIndexSettingsSchema = z
     hiddenRegions: z.array(z.string().trim().toUpperCase().regex(/^[A-Z]{2}-[A-Z0-9]{1,3}$/)).max(100),
     seedQueries: z.array(z.string().trim().min(3).max(200)).max(50),
     discoverySources: z
-      .object({ storefronts: z.boolean(), sponsorPages: z.boolean(), people: z.boolean(), creatorDatabase: z.boolean().optional() })
+      .object({ storefronts: z.boolean(), sponsorPages: z.boolean(), mediaKits: z.boolean().optional(), people: z.boolean(), creatorDatabase: z.boolean().optional() })
       .strict()
       .optional(),
     // Creators the creator database source takes per Discover run.
