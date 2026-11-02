@@ -27,6 +27,7 @@ import {
 import { attributeEvent, resolveCommissionRule, ruleTakesEventType, type AttributeResult } from './attribution.js';
 import { ingestCurrency, rowCurrency } from './currency.js';
 import { recordedFromStripe } from './stripe-app.js';
+import { recordTestLink } from './test-clicks.js';
 import { noteTrackingIssue } from './tracking-issues.js';
 
 /**
@@ -150,6 +151,7 @@ export interface ClickConversionInput {
 export type ClickConversionResult =
   | { ok: true; replayed: false; eventId: string; userId: string; attribution: AttributeResult }
   | { ok: true; replayed: true; eventId: string; userId: string; attribution: ReplayedAttribution }
+  | { ok: true; test: true }
   | { ok: false; status: 404; error: 'click_not_found' }
   | { ok: false; status: 422; error: 'click_flagged'; fraudFlag: string }
   | { ok: false; status: 409; error: 'external_event_id_conflict'; eventId: string }
@@ -174,6 +176,9 @@ export type ClickConversionResult =
  * the brand's Stripe account is connected, or a Checkout Session id on a
  * single-tenant self-host whose /webhooks/stripe is set up
  * (recorded_from_stripe): that payment is recorded from Stripe itself.
+ *
+ * An admin's test click (test-clicks.ts) is never a Click: the call links
+ * the test and records nothing ({ test: true }).
  */
 export async function recordClickConversion(
   db: Knex,
@@ -184,6 +189,7 @@ export async function recordClickConversion(
   // the privileged role when DATABASE_URL_APP is unset (see auth.ts).
   const click = await db<ClickRow>(TABLES.Click).where({ id: input.clickId, tenantId }).first();
   if (!click) {
+    if (await recordTestLink(db, tenantId, input.clickId, 'conversion')) return { ok: true, test: true };
     // A 404 the sender's logs swallow, so it's counted for Admin → Tracking
     // health too.
     await noteTrackingIssue(db, tenantId, 'conversion_unknown_click', input.clickId);

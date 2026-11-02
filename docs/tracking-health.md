@@ -29,7 +29,7 @@ in the order a click travels, and then for the whole account:
 
 | Check | Passes when |
 |---|---|
-| Partners can share it | a partner has a link or a code for the program. A program less than a week old is still waiting for its first. |
+| Partners can share it | a partner has a link or a code for the program. A program less than a week old is still waiting for its first, and so is one whose account can't take partners yet: on OpenPartner Cloud, while it's in review or its tracking isn't [verified](#verified-tracking). |
 | Destination keeps the click | the program's destination answers (2xx) after its redirects, and the click is still there at the end: `?cref=` on the final address, the click id wherever your `{click_id}` put it, or in a cookie your server set on the way that the final page receives. A Stripe Payment Link isn't fetched (each visit opens a Checkout Session); it passes when it carries `client_reference_id={click_id}`. |
 | Clicks reach the script | the program's partner clicks reach a page running the OpenPartner script. Fails when none ever has (in the last 90 days, or over the last year if fewer than 10 clicks came in the last 90), or when none has since a date after which that many misses would happen by chance less than once in a thousand at the program's own landing rate. Clicks that are linked to a customer anyway pass: your server reads the click another way. Not run for a Stripe Payment Link, where nothing lands. |
 | Clicks are linked to customers | the partner clicks that reached your site are linked to a customer (`identify()`, a Stripe checkout, a conversion call). Fails when 100 or more reached it in the last 90 days and none was linked, or when the links stopped (the same one-in-a-thousand rule). Clicks less than a week old aren't judged: a signup can come days after the visit. |
@@ -65,13 +65,20 @@ link, and follows that click as it travels:
 | Step | Done when |
 |---|---|
 | Link opened | the router sent the click to the program's destination, with its click id where a partner's click would carry it (`?cref=`, or your `{click_id}`), and set the same cookie. |
-| Reached the script | the OpenPartner script on the page reported the click landing (`POST /attribution/landing`). Also done when the click was linked without a landing report: your server reads the click another way. |
-| Linked to a signup | your site linked the click to a signup or login (`identify()` or `POST /attribution/identify`). Sign up or log in in the tab the link opened; a private window helps if you're already signed in there. |
+| Reached the script | the OpenPartner script on the page reported the click landing (`POST /attribution/landing`). Also done when the click was linked without a landing report: your server reads the click another way. *Not needed* when the program sends partners straight to a Stripe-hosted checkout, where no page of yours runs the script. |
+| Linked to a customer | the click was linked to a customer, any of the ways a partner's click is: your site's `identify()` (or `POST /attribution/identify`) at signup or login, a Stripe checkout carrying it in `client_reference_id`, or a conversion call (`POST /attribution/conversions`, `GET /postback`) sending it. Sign up, log in or check out in the tab the link opened; a private window helps if you're already signed in there. |
 
 The first step that didn't happen says what to fix, in the same words as
 the checks above: after a minute without a landing report, and three
-minutes after the landing without a signup. A step that arrives late still
-turns done. The page asks every two seconds until the test passes or
+minutes after the landing without a link to a customer (ten after the click
+when the link goes straight to Stripe's checkout, where the tester pays
+first). A step that arrives late still turns done.
+
+A link that goes straight to Stripe's checkout can only be linked by the
+checkout, so the test is a real purchase: Stripe has to be connected, the
+destination has to carry `client_reference_id={click_id}`, and the tester
+completes the checkout, with a discount code of the brand's own or a refund
+afterwards. The page asks every two seconds until the test passes or
 expires. Until it's opened, the link can be opened again from the page or
 copied, to try a phone or another browser.
 
@@ -90,22 +97,22 @@ attribution or payouts, not in any click count, funnel or partner's numbers,
 not in fraud review, and not in an export. No partner is involved, so a
 program can be tested before its first partner joins. Your site's landing
 report and identify call for it answer `test: true`; the signup is not
-stitched to anything, and the user id isn't kept. If the tester goes on to
-buy, the test click credits nobody: the sale is credited only as it would be
-without it (a partner's code entered at checkout, or a customer already
-linked to a partner), so test with a code of your own, not a partner's. A
-checkout or conversion call carrying the test click id isn't counted under
-**Dropped by OpenPartner**.
+stitched to anything, and the user id isn't kept. A conversion call naming
+it records nothing and answers `{ "ok": true, "test": true }` (the postback
+`ok test_click`). If the tester buys, the test click credits nobody: the
+sale is recorded and credited only as it would be without it (a partner's
+code entered at checkout, or a customer already linked to a partner), so
+test with a code of your own, not a partner's. A checkout or conversion
+call carrying the test click id isn't counted under **Dropped by
+OpenPartner**.
 
 Only an admin can make one (`POST /admin/tracking-health/test-click`
 `{ "programId": … }`, then `GET /admin/tracking-health/test-click/<id>`).
 The test link is `/r/_test/<token>` under your share-link address: the token
 is random, kept only as a hash, and works once, so nobody can mark a click of
 their own as a test. It must be opened within 30 minutes. The landing and the
-signup count for 24 hours after the click. An account can make 20 a day. A
-program that sends partners straight to a Stripe-hosted checkout gets no
-button: nothing lands there, and the destination check covers it. An
-account still waiting for approval can send one, though its partner links
+link to a customer count for 24 hours after the click. An account can make
+20 a day. An account still waiting for approval can send one, though its partner links
 record no clicks yet: that is how it shows its tracking works before it's
 approved. An account being deleted can't. Tests are deleted 90 days after
 they were made (the `test-click-purge` job, 06:50 UTC); until then, the test
@@ -115,7 +122,7 @@ signup there isn't counted as an unknown click.
 ### Verified tracking
 
 An account's tracking is **verified** once one of its clicks has been linked
-to a customer: a test click that reached **Linked to a signup**, or a
+to a customer: a test click that reached **Linked to a customer**, or a
 partner's click linked to a customer by `identify()`, a Stripe checkout, a
 conversion call or a coupon redemption. An event that no click led to
 doesn't count, and neither does the script being seen on a page. The first

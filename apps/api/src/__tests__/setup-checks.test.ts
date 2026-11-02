@@ -40,6 +40,8 @@ import { DEFAULT_TENANT_ID, TABLES } from '@openpartner/db';
 import { encryptSecret } from '../crypto.js';
 
 const stub = vi.hoisted(() => ({
+  /** What partnerJoinsWaitOn returns (null: partners can join). */
+  joinsWait: null as 'review' | 'tracking' | null,
   delivery: 'stripe' as 'stripe' | 'brand' | 'unconfigured',
   /** What brandStripeAccess returns. */
   access: { ok: false, reason: 'not_connected' } as unknown,
@@ -68,6 +70,11 @@ vi.mock('../stripe-reconciliation.js', async (importOriginal) => ({
 vi.mock('../customer-rewards.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../customer-rewards.js')>()),
   customerRewardDelivery: vi.fn(async () => stub.delivery),
+}));
+// Hosted-only (tracking-verification.ts), and this file runs single-tenant.
+vi.mock('../tracking-verification.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../tracking-verification.js')>()),
+  partnerJoinsWaitOn: vi.fn(async () => stub.joinsWait),
 }));
 
 const { db } = await import('../db.js');
@@ -299,6 +306,22 @@ describe.skipIf(skipIntegration)('partners', () => {
       status: 'fail',
       summary: '1 partner is in this program, but none has a link or a code to share.',
     });
+  });
+
+  it('waits, with no fix, while the brand can’t take partners yet', async () => {
+    const old = await program({ name: 'Old' });
+    try {
+      stub.joinsWait = 'review';
+      expect(find(await run(), 'partners', old)).toMatchObject({
+        status: 'waiting',
+        summary: 'No partners yet: they can join once your brand is approved.',
+        fix: null,
+      });
+      stub.joinsWait = 'tracking';
+      expect(find(await run(), 'partners', old)?.summary).toMatch(/once your tracking is verified/);
+    } finally {
+      stub.joinsWait = null;
+    }
   });
 
   it('leaves out ended and blocked programs', async () => {

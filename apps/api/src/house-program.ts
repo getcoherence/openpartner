@@ -145,6 +145,8 @@ export async function recordHouseSignup(input: {
         console.warn('[house-program] signup not recorded', { brandTenantId: input.brandTenantId, error: result.error });
         return { status: 'skipped', reason: 'not_recorded' } as const;
       }
+      // Only for a test click, and clickId is a Click found above.
+      if ('test' in result) return { status: 'skipped', reason: 'no_click' } as const;
       return { status: result.replayed ? 'replayed' : 'recorded', eventId: result.eventId, clickId } as const;
     });
   } catch (err) {

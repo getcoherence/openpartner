@@ -205,7 +205,11 @@ beforeAll(async () => {
 afterAll(async () => {
   // The last test's Identity → Click → Link chain would otherwise block a
   // later file's narrower Click / Partner wipe on its FKs.
-  if (!skipIntegration) for (const t of TABLES_TO_CLEAN) await db(t).del();
+  if (!skipIntegration) {
+    for (const t of TABLES_TO_CLEAN) await db(t).del();
+    // A test click passed through checkout below verifies the brand.
+    await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ trackingTestPassedAt: null });
+  }
   await db.destroy();
 });
 
@@ -271,6 +275,47 @@ describe.skipIf(skipIntegration)('stripe webhook — merchant billing flow', () 
     // Dropped, but counted for Admin → Tracking health.
     const issue = await db(TABLES.TrackingIssue).where({ kind: 'stripe_unknown_click' }).first();
     expect(issue).toMatchObject({ count: 1, sampleRef: bogusCref });
+  });
+
+  it("links an admin's test click a checkout carried, and stitches nothing to it", async () => {
+    const { programId } = await seedClick();
+    const testId = ulid();
+    const testClickId = ulid();
+    await db(TABLES.TestClick).insert({
+      id: testId,
+      tenantId: DEFAULT_TENANT_ID,
+      programId,
+      tokenHash: `checkout-test-${testId}`,
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + 30 * 60_000),
+      clickId: testClickId,
+      clickedAt: new Date(),
+    });
+    const customerId = `cus_${ulid()}`;
+
+    const res = await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'checkout.session.completed',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: `cs_${ulid()}`,
+          mode: 'subscription',
+          client_reference_id: testClickId,
+          customer: customerId,
+          subscription: `sub_${ulid()}`,
+        },
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const test = await db(TABLES.TestClick).where({ id: testId }).first();
+    expect(test.linkedVia).toBe('checkout');
+    expect(test.identifiedAt).toBeInstanceOf(Date);
+    const tenant = await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).first('trackingTestPassedAt');
+    expect(tenant.trackingTestPassedAt).toBeInstanceOf(Date);
+    expect(await db(TABLES.Identity).where({ userId: customerId }).first()).toBeFalsy();
+    expect(await db(TABLES.TrackingIssue).first()).toBeUndefined();
   });
 
   it("counts a client_reference_id that isn't a click id at all as the brand's own reference", async () => {
