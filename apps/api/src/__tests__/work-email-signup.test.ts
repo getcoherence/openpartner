@@ -137,6 +137,20 @@ describe('isFreeMailAddress', () => {
       expect(isFreeMailAddress(e), e).toBe(false);
     }
   });
+
+  it('answers at once, and rightly, for long runs of dots or @s (it reads public form input)', () => {
+    const started = performance.now();
+    // Within an address's length: trailing dots still name the same domain.
+    expect(isFreeMailAddress(`ada@gmail.com${'.'.repeat(200)}`)).toBe(true);
+    expect(isFreeMailAddress(`ada@${'.'.repeat(240)}x`)).toBe(false);
+    expect(isFreeMailAddress(`${'@'.repeat(240)}gmail.com`)).toBe(true);
+    expect(isFreeMailAddress('@'.repeat(254))).toBe(false);
+    // Longer than any address can be: not one, whatever it ends with.
+    expect(isFreeMailAddress(`ada@gmail.com${'.'.repeat(1_000_000)}`)).toBe(false);
+    expect(isFreeMailAddress(`ada@${'.'.repeat(1_000_000)}x`)).toBe(false);
+    expect(isFreeMailAddress(`${'@'.repeat(1_000_000)}gmail.com`)).toBe(false);
+    expect(performance.now() - started).toBeLessThan(100);
+  });
 });
 
 describe('the default', () => {

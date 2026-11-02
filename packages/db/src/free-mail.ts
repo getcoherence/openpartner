@@ -33,9 +33,18 @@ export const FREE_MAIL_DOMAINS: ReadonlySet<string> = new Set([
   'optusnet.com.au', 'xtra.co.nz',
 ]);
 
-/** The address is at a free mail provider. */
+/** No address is longer (RFC 5321 path limit); anything longer isn't one. */
+const MAX_ADDRESS_LENGTH = 254;
+
+/** The address is at a free mail provider. Linear in the input, with no
+ *  regular expression: it runs on whatever a public signup form sends. */
 export function isFreeMailAddress(email: string): boolean {
+  if (email.length > MAX_ADDRESS_LENGTH) return false;
   const at = email.lastIndexOf('@');
   if (at < 0) return false;
-  return FREE_MAIL_DOMAINS.has(email.slice(at + 1).trim().toLowerCase().replace(/\.+$/, ''));
+  const domain = email.slice(at + 1).trim().toLowerCase();
+  // A trailing dot (the DNS root) names the same domain.
+  let end = domain.length;
+  while (end > 0 && domain[end - 1] === '.') end -= 1;
+  return FREE_MAIL_DOMAINS.has(domain.slice(0, end));
 }
