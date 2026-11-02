@@ -89,6 +89,10 @@ services:
       # if running a single-tenant fork on App Platform.
       - key: OPENPARTNER_TENANCY
         value: multi
+      # App Platform puts Cloudflare in front of its ingress, so req.ip
+      # needs that one Cloudflare hop trusted too (.env.example).
+      - key: TRUST_PROXY
+        value: cloudflare
       - key: POSTMARK_MESSAGE_STREAM
         value: outbound
       # Enables the in-process scheduler (usage reporting + payouts).
@@ -191,6 +195,9 @@ services:
         value: production
       - key: ROUTER_PORT
         value: '4701'
+      # Same as the api: the click's IP is the visitor behind Cloudflare.
+      - key: TRUST_PROXY
+        value: cloudflare
       - key: DATABASE_URL
         type: SECRET
         scope: RUN_TIME

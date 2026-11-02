@@ -55,6 +55,13 @@ export { COUNTRY_CODES, OCCUPIED_REGION_COUNTRY, isCountryCode } from './countri
 export type { CountryCode } from './countries.js';
 export { NEXT_PATH_MAX_LENGTH, safeNextPath, safePortalPath } from './next-path.js';
 export { TENANT_TABLES, RESTRICTED_GRANTS, grantAppRole } from './app-role-grants.js';
+export {
+  CLOUDFLARE_IP_RANGES,
+  forwardedClientAddress,
+  isCloudflareAddress,
+  trustProxyFromEnv,
+} from './trusted-proxy.js';
+export type { TrustProxy } from './trusted-proxy.js';
 
 export interface DbConfig {
   connectionString: string;
