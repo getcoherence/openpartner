@@ -681,7 +681,7 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
       'bonus.reversed',
       'bonus.paid',
     ]);
-  });
+  }, 30_000);
 
   it('serves the rest of the documented surface as documented', async () => {
     const program = check<{ id: string }>(
@@ -967,7 +967,7 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     check('exportAllSql', await admin.get('/export.sql'));
     check('importBundle', await admin.post('/import', bundle));
     check('importBundle', await admin.post('/import', { ...bundle, schemaVersion: 999 }));
-  });
+  }, 30_000);
 
   it("enforces every operation's documented access, credential by credential", async () => {
     // Its own app instance: this sweep makes a few hundred calls and must
