@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { alpha, softText, theme } from '../../theme.js';
-import { AuthFrame, SignupTabs } from '../auth/Shared.js';
+import { AuthFrame, ReviewNotice, SignupTabs } from '../auth/Shared.js';
 import { CountryField, countryErrorMessage } from '../../lib/CountryField.js';
 import { useIsMobile } from '../../lib/useMediaQuery.js';
 import {
@@ -169,8 +169,8 @@ export function CreatorSignupPage() {
         </div>
         <div style={{ marginTop: 14, fontSize: 13, color: theme.textMuted, lineHeight: 1.55 }}>
           <strong style={{ color: theme.text }}>Next, so brands can find you:</strong> add a handle, a profile photo,
-          a short bio (40+ characters), at least one category, and one social platform. Brands only see complete
-          profiles when they search for creators.
+          a short bio (40+ characters), at least one category, and one social platform. Brands only see complete,
+          approved profiles when they search for creators.
         </div>
       </AuthFrame>
     );
@@ -179,6 +179,7 @@ export function CreatorSignupPage() {
   return (
     <AuthFrame title="Sign up as a creator" subtitle="Browse and apply to partner programs across the OpenPartner Network.">
       <SignupTabs active="creator" />
+      <ReviewNotice>New profiles are reviewed before brands can see them or you can apply to programs.</ReviewNotice>
       {!googleEmail && providers.googleStartUrl && (
         <>
           <GoogleButton href={googleStartHref(providers.googleStartUrl, 'creator')}>Sign up with Google</GoogleButton>

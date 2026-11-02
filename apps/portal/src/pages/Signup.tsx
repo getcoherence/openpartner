@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router';
 import { isFreeMailAddress } from '@openpartner/db';
 import { ApiError } from '../api.js';
 import { alpha, softText, theme } from '../theme.js';
-import { AuthFrame, SignupTabs } from './auth/Shared.js';
+import { AuthFrame, ReviewNotice, SignupTabs } from './auth/Shared.js';
 import { CountryField, countryErrorMessage } from '../lib/CountryField.js';
 import {
   GoogleButton,
@@ -139,6 +139,7 @@ export function SignupPage() {
           </div>
         </div>
       )}
+      <ReviewNotice>New brands are reviewed before going live. You can set up your programs in the meantime.</ReviewNotice>
       {providers.googleStartUrl && (
         <>
           {/* Google signs the person in first; with no brand yet,
