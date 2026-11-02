@@ -74,7 +74,13 @@ export interface BookingReport {
     returnOnSpend: number | null;
   } | null;
   price?: { amount: number; currency: string };
-  sharing?: { creatorShare: CreatorShare | null; effective: CreatorShare; brandDefault: CreatorShare };
+  sharing?: {
+    creatorShare: CreatorShare | null;
+    effective: CreatorShare;
+    brandDefault: CreatorShare;
+    /** Shown as verified work on the creator's storefront; absent on an older Network. */
+    onCreatorStorefront?: boolean;
+  };
   linkState?: 'none' | 'pending' | 'ready' | 'failed';
   trackedUrls?: string[];
 }

@@ -447,6 +447,14 @@ describe('creator-api proxy: storefront', () => {
     expect((await request(app).put('/creator-api/creators/me/bookings/bkr_1/report')).status).toBe(404);
     expect((await request(app).get('/creator-api/reports/oprp_x')).status).toBe(404);
   });
+
+  it('forwards the verified work the creator shows on their storefront', async () => {
+    const cookie = 'op_network_creator_session=abc';
+    expect((await request(app).get('/creator-api/creators/me/case-studies').set('Cookie', cookie)).status).toBe(200);
+    expect((await request(app).put('/creator-api/creators/me/case-studies').set('Cookie', cookie).send({ bookingIds: ['bkr_1'] })).status).toBe(200);
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /creators/me/case-studies', 'PUT /creators/me/case-studies']);
+    expect((await request(app).put('/creator-api/creators/me/case-studies/bkr_1')).status).toBe(404);
+  });
 });
 
 describe('creator-api proxy: passwords', () => {

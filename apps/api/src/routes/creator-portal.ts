@@ -121,6 +121,10 @@ const ALLOWED_EXACT = new Set([
   '/creators/me/packages',
   '/creators/me/packages/order',
   '/creators/me/bookings',
+  // Completed bookings shown on the storefront as verified work (GET the
+  // choices, PUT the ones shown in order; the Network's
+  // docs/campaign-reports.md §10).
+  '/creators/me/case-studies',
   // Import a storefront from Passionfroot: read and plan, then apply the
   // chosen items (the Network's docs/creator-storefront.md §7.3).
   '/creators/me/storefront/import/preview',

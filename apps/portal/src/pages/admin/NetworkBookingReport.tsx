@@ -86,7 +86,13 @@ export function AdminNetworkBookingReport() {
                     ))}
                   </Select>
                 </label>
-                {r.sharing.effective === 'none' && <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>Their links stop working</div>}
+                {r.sharing.effective === 'none' ? (
+                  <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>Their links stop working</div>
+                ) : (
+                  r.sharing.onCreatorStorefront && (
+                    <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>On their storefront as verified work</div>
+                  )
+                )}
               </Card>
             )}
           </div>
