@@ -1,7 +1,7 @@
 import { useEffect, useRef, type CSSProperties } from 'react';
 import { theme } from '../theme.js';
 import { Button } from '../ui.js';
-import { analyticsEnabled, chooseAnalyticsConsent } from '../posthog.js';
+import { analyticsEnabled, analyticsOnByDefault, chooseAnalyticsConsent } from '../posthog.js';
 import { browserSignalsOptOut, openConsentSettings, useConsentBannerOpen } from './consent.js';
 import { useIsMobile } from './useMediaQuery.js';
 
@@ -14,8 +14,9 @@ export const COOKIE_POLICY_URL = 'https://openpartner.dev/cookies';
  *
  * Decline and Accept are the same button at the same size: refusing must
  * be as easy as agreeing. Nothing renders without VITE_POSTHOG_KEY, so
- * self-hosted builds never see it. It opens on a first visit (unless the
- * browser sends GPC / Do Not Track) and again from any CookieSettingsButton.
+ * self-hosted builds never see it. It opens on a first visit from where
+ * consent comes first (unless the browser sends GPC / Do Not Track) and
+ * from any CookieSettingsButton, which elsewhere is where Decline lives.
  */
 export function ConsentBanner() {
   const open = useConsentBannerOpen();
@@ -62,7 +63,9 @@ export function ConsentBanner() {
       }}
     >
       <p style={{ margin: 0 }}>
-        Can we use analytics cookies to see how this site is used? Nothing loads unless you accept.{' '}
+        {analyticsOnByDefault()
+          ? 'Analytics cookies and session replays are on, to see how this site is used.'
+          : 'Can we use analytics cookies and session replays to see how this site is used? Nothing loads unless you accept.'}{' '}
         <a href={COOKIE_POLICY_URL} target="_blank" rel="noreferrer" style={{ color: theme.accentText }}>
           Cookie policy
         </a>
