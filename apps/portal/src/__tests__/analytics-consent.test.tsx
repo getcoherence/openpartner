@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 /**
- * PostHog runs only with the visitor's opt-in. The choice is stored under
- * localStorage "op_consent_v1" as { choice, at } for 12 months; GPC / Do
- * Not Track count as Decline; without 'granted' every load clears ph_* /
- * __ph_* cookies and storage; a build without VITE_POSTHOG_KEY shows no
- * banner at all.
+ * PostHog runs with the visitor's opt-in where consent comes first (GET
+ * /api/consent-region says opt_in, fails or times out), and until they
+ * decline everywhere else. The choice is stored under localStorage
+ * "op_consent_v2" as { choice, at } for 12 months, and a v1 Decline still
+ * counts; GPC / Do Not Track count as Decline; whenever PostHog isn't
+ * running, every load clears ph_* / __ph_* cookies and storage; a build
+ * without VITE_POSTHOG_KEY shows no banner at all.
  *
  * jsdom doesn't execute injected <script> text, so "PostHog loaded" here
  * means the snippet tag was added to <head> and init() reached a stubbed
@@ -15,6 +17,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import {
   CONSENT_MAX_AGE_MS,
   CONSENT_STORAGE_KEY,
+  PREVIOUS_CONSENT_KEYS,
   clearAnalyticsStorage,
   cookieDomains,
   readConsent,
@@ -36,15 +39,24 @@ function clearCookies() {
   for (const name of cookieNames()) document.cookie = `${name}=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/`;
 }
 
-/** A fresh posthog.ts (its import runs the startup check) + banner, with a key set. */
-async function boot({ key = 'phc_test' }: { key?: string | null } = {}) {
+/** GET /api/consent-region answering with `rule`. */
+const regionFetch = (rule: string) => vi.fn(async () => ({ ok: true, json: async () => ({ rule, country: 'XX' }) }));
+
+/**
+ * A fresh posthog.ts (its import runs the startup check) + banner, with a
+ * key set. The region lookup answers opt_in unless `fetch` says otherwise.
+ */
+async function boot({ key = 'phc_test', fetch = regionFetch('opt_in') }: { key?: string | null; fetch?: unknown } = {}) {
   vi.resetModules();
   if (key) vi.stubEnv('VITE_POSTHOG_KEY', key);
   else vi.stubEnv('VITE_POSTHOG_KEY', '');
+  vi.stubGlobal('fetch', fetch);
   const posthog = await import('../posthog.js');
   const ui = await import('../lib/ConsentBanner.js');
   return { posthog, ...ui };
 }
+
+const banner = () => screen.queryByRole('region', { name: 'Cookie consent' });
 
 beforeEach(() => {
   window.localStorage.clear();
@@ -57,8 +69,10 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   delete (navigator as Nav).globalPrivacyControl;
   delete (navigator as { doNotTrack?: unknown }).doNotTrack;
 });
@@ -70,6 +84,20 @@ describe('consent store', () => {
     expect(JSON.parse(window.localStorage.getItem(CONSENT_STORAGE_KEY)!)).toEqual({ choice: 'granted', at: 1_000 });
     expect(readConsent(1_000 + CONSENT_MAX_AGE_MS - 1)).toBe('granted');
     expect(readConsent(1_000 + CONSENT_MAX_AGE_MS)).toBeNull();
+  });
+
+  it('keeps a Decline stored under an older key and asks again after an older Accept', () => {
+    const [v1] = PREVIOUS_CONSENT_KEYS;
+    window.localStorage.setItem(v1!, JSON.stringify({ choice: 'denied', at: Date.now() }));
+    expect(readConsent()).toBe('denied');
+    window.localStorage.setItem(v1!, JSON.stringify({ choice: 'granted', at: Date.now() }));
+    expect(readConsent()).toBeNull();
+    // An expired older Decline is no choice, and the current key wins.
+    window.localStorage.setItem(v1!, JSON.stringify({ choice: 'denied', at: Date.now() - CONSENT_MAX_AGE_MS }));
+    expect(readConsent()).toBeNull();
+    window.localStorage.setItem(v1!, JSON.stringify({ choice: 'denied', at: Date.now() }));
+    writeConsent('granted');
+    expect(readConsent()).toBe('granted');
   });
 
   it('treats malformed or unreadable storage as no choice', () => {
@@ -143,6 +171,15 @@ describe('event scrubbing', () => {
     expect(posthog.scrubAnalyticsEvent(null)).toBeNull();
   });
 
+  it('drops query strings from the request and page URLs a replay keeps', async () => {
+    const { posthog } = await boot();
+    expect(
+      posthog.scrubRecordedRequest({ name: 'https://app.openpartner.dev/t/acme/auth/magic?token=secret#x', isInitial: true }),
+    ).toEqual({ name: 'https://app.openpartner.dev/t/acme/auth/magic', isInitial: true });
+    expect(posthog.scrubRecordedRequest({ name: '/api/partners?email=a%40b.com' })).toEqual({ name: '/api/partners' });
+    expect(posthog.scrubRecordedRequest(null)).toBeNull();
+  });
+
   it('captures nothing on a shared booking report', async () => {
     const { posthog } = await boot();
     const event = { properties: { $current_url: 'https://app.openpartner.dev/reports' } };
@@ -151,41 +188,135 @@ describe('event scrubbing', () => {
     window.history.pushState({}, '', '/creators/ada');
     expect(posthog.dropUntrackedPages(event)).toBe(event);
   });
+
+  it('records no replay on a page load that starts on a shared booking report', async () => {
+    const init = vi.fn();
+    (window as { posthog?: unknown }).posthog = { init, opt_out_capturing: vi.fn() };
+    writeConsent('granted');
+    window.history.pushState({}, '', '/reports');
+    try {
+      await boot();
+      expect(init.mock.calls[0]![1]).toMatchObject({ disable_session_recording: true });
+    } finally {
+      window.history.pushState({}, '', '/');
+    }
+  });
 });
 
 describe('consent banner', () => {
-  it('asks first and loads nothing until Accept', async () => {
+  it('asks first where the region needs consent and loads nothing until Accept', async () => {
     const init = vi.fn();
     (window as { posthog?: unknown }).posthog = { init, opt_out_capturing: vi.fn() };
-    const { ConsentBanner } = await boot();
+    const fetch = regionFetch('opt_in');
+    const { ConsentBanner } = await boot({ fetch });
     render(<ConsentBanner />);
 
-    expect(screen.getByRole('region', { name: 'Cookie consent' })).toBeTruthy();
+    expect(await screen.findByRole('region', { name: 'Cookie consent' })).toBeTruthy();
+    expect(fetch).toHaveBeenCalledWith('/api/consent-region', expect.objectContaining({ credentials: 'omit' }));
     // Every page shows it, a creator's first visit and white-label portals
     // too: it names neither a page nor us.
-    expect(screen.getByText(/to see how this site is used/)).toBeTruthy();
+    expect(screen.getByText(/Can we use analytics cookies and session replays to see how this site is used/)).toBeTruthy();
     expect(snippetTags()).toHaveLength(0);
     expect(init).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: 'Accept' }));
 
     expect(readConsent()).toBe('granted');
-    expect(screen.queryByRole('region', { name: 'Cookie consent' })).toBeNull();
+    expect(banner()).toBeNull();
     expect(snippetTags()).toHaveLength(1);
     expect(init).toHaveBeenCalledTimes(1);
     expect(init.mock.calls[0]![0]).toBe('phc_test');
-    expect(init.mock.calls[0]![1]).toMatchObject({
+    const config = init.mock.calls[0]![1] as Record<string, unknown>;
+    expect(config).toMatchObject({
       mask_all_text: true,
       mask_all_element_attributes: true,
-      disable_session_recording: true,
+      disable_session_recording: false,
+      session_recording: { maskAllInputs: true, maskTextSelector: '*', recordHeaders: false, recordBody: false },
     });
+  });
+
+  it.each([
+    ['an error status', vi.fn(async () => ({ ok: false, json: async () => ({ rule: 'opt_out' }) }))],
+    ['a network failure', vi.fn(async () => Promise.reject(new TypeError('Failed to fetch')))],
+    ['a malformed body', vi.fn(async () => ({ ok: true, json: async () => Promise.reject(new SyntaxError('bad')) }))],
+  ])('%s from the region lookup asks first', async (_name, fetch) => {
+    document.cookie = 'ph_phc_test_posthog=%7B%7D;path=/';
+    const { ConsentBanner } = await boot({ fetch });
+    render(<ConsentBanner />);
+    expect(await screen.findByRole('region', { name: 'Cookie consent' })).toBeTruthy();
+    expect(snippetTags()).toHaveLength(0);
+    expect(cookieNames()).toEqual([]);
+  });
+
+  it('a region lookup with no answer in 1.5 s asks first', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const fetch = vi.fn(
+      (_url: string, init: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(new Error('aborted')))),
+    );
+    const { ConsentBanner } = await boot({ fetch });
+    render(<ConsentBanner />);
+    await act(() => vi.advanceTimersByTimeAsync(1_499));
+    expect(banner()).toBeNull();
+    await act(() => vi.advanceTimersByTimeAsync(1));
+    expect(banner()).toBeTruthy();
+    expect(snippetTags()).toHaveLength(0);
+  });
+
+  it('elsewhere loads with no banner, keeps its cookie, and Cookie settings says it is on', async () => {
+    document.cookie = 'ph_phc_test_posthog=%7B%7D;path=/';
+    const init = vi.fn();
+    (window as { posthog?: unknown }).posthog = { init, opt_out_capturing: vi.fn() };
+    const { posthog, ConsentBanner, CookieSettingsButton } = await boot({ fetch: regionFetch('opt_out') });
+    render(
+      <>
+        <CookieSettingsButton />
+        <ConsentBanner />
+      </>,
+    );
+
+    await vi.waitFor(() => expect(snippetTags()).toHaveLength(1));
+    expect(init).toHaveBeenCalledTimes(1);
+    expect(banner()).toBeNull();
+    expect(readConsent()).toBeNull();
+    // Same visitor across page loads: the cookie isn't wiped on startup.
+    expect(cookieNames()).toEqual(['ph_phc_test_posthog']);
+    expect(posthog.analyticsOnByDefault()).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cookie settings' }));
+    expect(screen.getByText(/Analytics cookies and session replays are on/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Accept' }));
+    expect(readConsent()).toBe('granted');
+    expect(posthog.analyticsOnByDefault()).toBe(false);
+    expect(init).toHaveBeenCalledTimes(1);
+  });
+
+  it('a choice made while the region lookup runs wins', async () => {
+    let answer!: (value: unknown) => void;
+    const fetch = vi.fn(() => new Promise((resolve) => (answer = resolve)));
+    const { ConsentBanner, CookieSettingsButton } = await boot({ fetch });
+    render(
+      <>
+        <CookieSettingsButton />
+        <ConsentBanner />
+      </>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Cookie settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Decline' }));
+
+    await act(async () => answer({ ok: true, json: async () => ({ rule: 'opt_out' }) }));
+
+    expect(readConsent()).toBe('denied');
+    expect(snippetTags()).toHaveLength(0);
+    expect(banner()).toBeNull();
   });
 
   it('Decline stores the choice, loads nothing and clears what was there', async () => {
     document.cookie = 'ph_phc_test_posthog=%7B%7D;path=/';
     const { ConsentBanner } = await boot();
-    window.localStorage.setItem('ph_phc_test_posthog', '{}');
     render(<ConsentBanner />);
+    await screen.findByRole('region', { name: 'Cookie consent' });
+    window.localStorage.setItem('ph_phc_test_posthog', '{}');
 
     fireEvent.click(screen.getByRole('button', { name: 'Decline' }));
 
@@ -198,46 +329,55 @@ describe('consent banner', () => {
 
   it('a stored grant loads PostHog on startup without asking', async () => {
     writeConsent('granted');
-    const { ConsentBanner } = await boot();
+    const fetch = regionFetch('opt_in');
+    const { ConsentBanner } = await boot({ fetch });
     render(<ConsentBanner />);
-    expect(screen.queryByRole('region', { name: 'Cookie consent' })).toBeNull();
+    expect(banner()).toBeNull();
     expect(snippetTags()).toHaveLength(1);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('a stored decline clears leftovers on every load and stays quiet', async () => {
-    writeConsent('denied');
+  it.each([
+    ['now', () => writeConsent('denied')],
+    ['before session replay (v1)', () => window.localStorage.setItem('op_consent_v1', JSON.stringify({ choice: 'denied', at: Date.now() }))],
+  ])('a decline stored %s clears leftovers on every load and stays quiet, wherever the visitor is', async (_when, store) => {
+    store();
     document.cookie = 'ph_phc_test_posthog=%7B%7D;path=/';
-    const { ConsentBanner } = await boot();
+    const fetch = regionFetch('opt_out');
+    const { ConsentBanner } = await boot({ fetch });
     render(<ConsentBanner />);
-    expect(screen.queryByRole('region', { name: 'Cookie consent' })).toBeNull();
+    expect(banner()).toBeNull();
     expect(snippetTags()).toHaveLength(0);
     expect(cookieNames()).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it('an expired choice asks again', async () => {
     writeConsent('granted', Date.now() - CONSENT_MAX_AGE_MS - 1);
     const { ConsentBanner } = await boot();
     render(<ConsentBanner />);
-    expect(screen.getByRole('region', { name: 'Cookie consent' })).toBeTruthy();
+    expect(await screen.findByRole('region', { name: 'Cookie consent' })).toBeTruthy();
     expect(snippetTags()).toHaveLength(0);
   });
 
   it.each([
     ['Global Privacy Control', () => ((navigator as Nav).globalPrivacyControl = true)],
     ['Do Not Track', () => Object.defineProperty(navigator, 'doNotTrack', { value: '1', configurable: true })],
-  ])('%s counts as declining: no banner, nothing loads, leftovers cleared', async (_name, signal) => {
+  ])('%s counts as declining wherever the visitor is: no banner, nothing loads, leftovers cleared', async (_name, signal) => {
     signal();
     document.cookie = 'ph_phc_test_posthog=%7B%7D;path=/';
-    const { ConsentBanner, CookieSettingsButton } = await boot();
+    const fetch = regionFetch('opt_out');
+    const { ConsentBanner, CookieSettingsButton } = await boot({ fetch });
     render(
       <>
         <CookieSettingsButton />
         <ConsentBanner />
       </>,
     );
-    expect(screen.queryByRole('region', { name: 'Cookie consent' })).toBeNull();
+    expect(banner()).toBeNull();
     expect(snippetTags()).toHaveLength(0);
     expect(cookieNames()).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
 
     // Still reachable on purpose, with the signal explained.
     fireEvent.click(screen.getByRole('button', { name: 'Cookie settings' }));

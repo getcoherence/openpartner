@@ -4,16 +4,21 @@
  *
  * Same contract as the marketing site's ConsentBanner.astro (separate
  * origin, so the choice is asked for again here):
- *  - The choice sits in localStorage under `op_consent_v1` as
+ *  - The choice sits in localStorage under `op_consent_v2` as
  *    `{ choice, at }`. That's strictly necessary storage, so it needs no
  *    consent of its own. It expires after 12 months and the visitor is
- *    asked again. Bump the key's version when a new script is added.
+ *    asked again. Bump the key's version when a new script is added
+ *    (v2: session replay). A Decline stored under an older key still
+ *    stands; an older Accept is asked for again.
+ *  - With no choice yet, the visitor's country decides (posthog.ts): the
+ *    EU, EEA, UK and Switzerland, and anyone whose country isn't known,
+ *    are asked first; everywhere else analytics run until they decline.
  *  - A Global Privacy Control or Do Not Track signal counts as declining:
  *    nothing loads and the banner doesn't show (the visitor can still
  *    accept from "Cookie settings").
- *  - Without a 'granted' choice, every page load clears PostHog's cookies
- *    and storage: PostHog re-saves its cookie while the page unloads, so
- *    clearing only at the moment of Decline isn't enough.
+ *  - Whenever analytics aren't running, every page load clears PostHog's
+ *    cookies and storage: PostHog re-saves its cookie while the page
+ *    unloads, so clearing only at the moment of Decline isn't enough.
  *
  * Every storage access is guarded: private windows, blocked site data and
  * jsdom must degrade to "no choice yet", never throw.
@@ -22,13 +27,21 @@ import { useSyncExternalStore } from 'react';
 
 export type ConsentChoice = 'granted' | 'denied';
 
-export const CONSENT_STORAGE_KEY = 'op_consent_v1';
+export const CONSENT_STORAGE_KEY = 'op_consent_v2';
+/** Earlier versions' keys: only a Decline stored under one is still read. */
+export const PREVIOUS_CONSENT_KEYS: readonly string[] = ['op_consent_v1'];
 export const CONSENT_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1000;
 
 /** The stored choice; missing, expired, malformed or unreadable → null. */
 export function readConsent(now: number = Date.now()): ConsentChoice | null {
+  const choice = readStoredChoice(CONSENT_STORAGE_KEY, now);
+  if (choice) return choice;
+  return PREVIOUS_CONSENT_KEYS.some((key) => readStoredChoice(key, now) === 'denied') ? 'denied' : null;
+}
+
+function readStoredChoice(key: string, now: number): ConsentChoice | null {
   try {
-    const saved = JSON.parse(window.localStorage.getItem(CONSENT_STORAGE_KEY) ?? 'null') as {
+    const saved = JSON.parse(window.localStorage.getItem(key) ?? 'null') as {
       choice?: unknown;
       at?: unknown;
     } | null;
