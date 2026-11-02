@@ -121,14 +121,14 @@ An email that's already a partner answers \`409 email_taken\`. The one exception
 
 **OpenPartner Network:** this call shares nothing with the OpenPartner Network. A partner's name and email reach it only if the partner opts in themselves, while the tenant offers the Network (\`autoEnroll\` on, \`GET /config/network\`): they're asked on the join page, once on first portal sign-in, and in a portal setting. \`metadata\` is never sent. To keep customer-referral partners from being asked, turn offering off: \`POST /config/network {"autoEnroll": false}\`.
 
-On OpenPartner Cloud the brand needs an active plan (\`402 plan_required\`) and an approved account (\`403 brand_pending_review\`).`,
+On OpenPartner Cloud the brand needs an active plan (\`402 plan_required\`), an approved account (\`403 brand_pending_review\`) and, once the platform requires it, verified tracking: a test click that reached \`identify\`, or a partner click linked to a customer (\`403 tracking_not_verified\`).`,
     access: { kind: 'admin', scope: ['partners:write', 'partners:create'] },
     body: partners.createSchema.openapi('CreatePartnerRequest'),
     responses: { 201: { description: 'Created.', schema: S.PartnerCreated } },
     errors: {
       400: ['unknown_campaign_ids', 'invite_requires_portal_access', 'recruiter_not_found', 'recruiter_revoked'],
       402: ['plan_required'],
-      403: ['brand_pending_review'],
+      403: ['brand_pending_review', 'tracking_not_verified'],
       409: ['email_taken', 'partner_revoked'],
       422: ['country_not_supported', 'occupied_region_confirmation_required'],
     },
@@ -245,7 +245,11 @@ Rows whose email already exists are reported as \`skipped_email_taken\` with the
         }),
       },
     },
-    errors: { 400: ['empty_body', 'invalid_csv', 'no_rows'], 402: ['trial_expired'], 403: ['brand_pending_review'] },
+    errors: {
+      400: ['empty_body', 'invalid_csv', 'no_rows'],
+      402: ['trial_expired'],
+      403: ['brand_pending_review', 'tracking_not_verified'],
+    },
   });
 
   r.operation({
@@ -484,11 +488,11 @@ Clicks, partners, conversions, attributed revenue and commission by status for e
     operationId: 'createProgram',
     summary: 'Create a program',
     description:
-      "A program is one set of terms: commission rule, attribution window and model, destination URL.\n\n`shareOnNetwork` defaults to **true** when the tenant is on the OpenPartner Network, which lists the program on the public marketplace and makes `marketplaceDescription` required. Pass `shareOnNetwork: false` for a private program such as customer referral.\n\n`holdbackDays` above 0 means commissions are **approved automatically** that many days after they accrue (by the scheduled jobs), and then paid by the next payout run. 0 or omitted means every commission waits for `POST /commissions/{id}/approve`.\n\n`attributionWindowDays` decides which click wins a customer's first conversion of each event type. With `renewalsStayWithPartner` (default true), repeats of that event type, such as monthly `invoice_paid` renewals, keep the same partners and weights for as long as the customer pays, even when another partner's link is clicked later. Past the window, only sub-rules with `recurring: true` pay on them, up to `recurringMonths`.\n\n**Destination and the click id.** The router appends `?cref=<click id>` to `destinationUrl`. To put the id in a parameter of your own instead, write the `{click_id}` macro where it goes, exactly like that (`%7Bclick_id%7D` works too). It may go in the path, query or fragment, not the host. Any other brace text, such as `{{click_id}}`, `{ click_id }`, `{CLICK_ID}` or `{subid}`, is refused with `400`, because the router would send it through as text. A Stripe Payment Link (`buy.stripe.com`) reads the referral only from `client_reference_id`: without `?client_reference_id={click_id}` the program still saves, with a `warnings` entry.",
+      "A program is one set of terms: commission rule, attribution window and model, destination URL.\n\n`shareOnNetwork` defaults to **true** when the tenant is on the OpenPartner Network, which lists the program on the public marketplace and makes `marketplaceDescription` required. Pass `shareOnNetwork: false` for a private program such as customer referral.\n\n`holdbackDays` above 0 means commissions are **approved automatically** that many days after they accrue (by the scheduled jobs), and then paid by the next payout run. 0 or omitted means every commission waits for `POST /commissions/{id}/approve`.\n\n`attributionWindowDays` decides which click wins a customer's first conversion of each event type. With `renewalsStayWithPartner` (default true), repeats of that event type, such as monthly `invoice_paid` renewals, keep the same partners and weights for as long as the customer pays, even when another partner's link is clicked later. Past the window, only sub-rules with `recurring: true` pay on them, up to `recurringMonths`.\n\n**Destination and the click id.** The router appends `?cref=<click id>` to `destinationUrl`. To put the id in a parameter of your own instead, write the `{click_id}` macro where it goes, exactly like that (`%7Bclick_id%7D` works too). It may go in the path, query or fragment, not the host. Any other brace text, such as `{{click_id}}`, `{ click_id }`, `{CLICK_ID}` or `{subid}`, is refused with `400`, because the router would send it through as text. A Stripe Payment Link (`buy.stripe.com`) reads the referral only from `client_reference_id`: without `?client_reference_id={click_id}` the program still saves, with a `warnings` entry.\n\n`grantToAllPartners: true` grants the new program to every current partner. On OpenPartner Cloud, once the platform requires it, that needs verified tracking (`403 tracking_not_verified`).",
     access: { kind: 'admin' },
     body: programs.createSchema.openapi('CreateProgramRequest'),
     responses: { 201: { description: 'Created. `warnings` flags a destination that will probably lose referrals.', schema: S.ProgramSaved } },
-    errors: { 402: ['trial_expired'] },
+    errors: { 402: ['trial_expired'], 403: ['tracking_not_verified'] },
   });
 
   r.operation({
@@ -527,7 +531,7 @@ Clicks, partners, conversions, attributed revenue and commission by status for e
     access: { kind: 'admin' },
     body: assignments.addSchema.openapi('GrantProgramsRequest'),
     responses: { 201: { description: 'The program ids granted.', schema: z.object({ added: z.array(z.string()) }) } },
-    errors: { 404: ['partner_not_found', 'no_valid_campaigns'] },
+    errors: { 403: ['brand_pending_review', 'tracking_not_verified'], 404: ['partner_not_found', 'no_valid_campaigns'] },
   });
 
   r.operation({

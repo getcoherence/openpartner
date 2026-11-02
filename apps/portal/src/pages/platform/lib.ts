@@ -35,6 +35,9 @@ export interface PlatformBrand {
   /** Local setup checklist (program / listing / tracking / partners). */
   setupComplete: boolean;
   setupMissing: string[];
+  /** A test click reached identify, or a partner click is linked to a
+   *  customer. Approving without it takes "Approve anyway". */
+  trackingVerified: boolean;
   setupRemindersSent: number;
   lastSetupReminderAt: string | null;
   /** Latest marketplace policy warning sent to this brand, if any. */

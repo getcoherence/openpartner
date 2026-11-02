@@ -471,18 +471,30 @@ export function bountyAwardedEmail(opts: {
 // Brand review (approval gate) — brand-facing + platform-ops-facing.
 // ---------------------------------------------------------------------------
 
-/** Brand admin: your brand cleared review and is live. */
+/** Brand admin: your brand cleared review and is live. `trackingPending`:
+ *  approved before its tracking was verified, while the tracking gate holds
+ *  partners back (tracking-verification.ts). */
 export function brandApprovedEmail(
   adminName: string,
   brandName: string,
   enterUrl: string,
+  trackingPending = false,
 ): EmailTemplate {
-  const subject = `${brandName} is approved — you're live`;
+  const subject = trackingPending ? `${brandName} is approved` : `${brandName} is approved — you're live`;
   const text = [
     `Hi ${adminName},`,
     ``,
-    `Good news — ${brandName} has been approved on OpenPartner. Your`,
-    `partner links now redirect, and you can invite partners and go live.`,
+    ...(trackingPending
+      ? [
+          `Good news — ${brandName} has been approved on OpenPartner. Your`,
+          `partner links now redirect. Partners can join once your tracking is`,
+          `verified: install the tracking script, then send a test click from`,
+          `Tracking health.`,
+        ]
+      : [
+          `Good news — ${brandName} has been approved on OpenPartner. Your`,
+          `partner links now redirect, and you can invite partners and go live.`,
+        ]),
     ``,
     `Jump back into your dashboard:`,
     ``,
@@ -1047,6 +1059,50 @@ export function brandSetupReminderEmail(opts: {
       text,
       opts.dashboardUrl,
       'Finish setup',
+      `You're receiving this because you manage ${escapeHtml(opts.brandName)} on OpenPartner. <a href="${escapeHtml(opts.unsubscribeUrl)}" style="color:#6b7280">Stop setup reminders</a>.`,
+    ),
+  };
+}
+
+/**
+ * Brand admin: advance notice of the tracking gate (tracking-gate-notice.ts).
+ * From `enforceFrom`, until its tracking is verified, new partners can't
+ * join the brand and its marketplace listings are hidden.
+ */
+export function trackingRequiredNoticeEmail(opts: {
+  adminName: string | null;
+  brandName: string;
+  enforceFrom: Date;
+  /** The brand has a program on the marketplace. */
+  listed: boolean;
+  trackingHealthUrl: string;
+  unsubscribeUrl: string;
+}): EmailTemplate {
+  const day = opts.enforceFrom.toISOString().slice(0, 10);
+  const subject = `${opts.brandName}: verify your tracking before ${day}`;
+  const text = [
+    `Hi ${opts.adminName?.trim() || 'there'},`,
+    ``,
+    `From ${day}, partners can only join brands whose tracking is verified, so every partner who sends you a customer gets credited for it.`,
+    ``,
+    `${opts.brandName} isn't verified yet. Until it is, from ${day}:`,
+    ``,
+    `  - New partners can't join your programs. Partners you already have keep their links and earnings.`,
+    ...(opts.listed ? [`  - Your programs are hidden from the OpenPartner marketplace.`] : []),
+    ``,
+    `To verify, install the tracking script on your site, then send a test click from Tracking health. It takes a few minutes:`,
+    ``,
+    opts.trackingHealthUrl,
+    ``,
+    `Questions? Just reply to this email.`,
+  ].join('\n');
+  return {
+    subject,
+    text: `${text}\n\n--\nYou're receiving this because you manage ${opts.brandName} on OpenPartner. Stop setup reminders: ${opts.unsubscribeUrl}`,
+    html: wrapWithFooter(
+      text,
+      opts.trackingHealthUrl,
+      'Send a test click',
       `You're receiving this because you manage ${escapeHtml(opts.brandName)} on OpenPartner. <a href="${escapeHtml(opts.unsubscribeUrl)}" style="color:#6b7280">Stop setup reminders</a>.`,
     ),
   };

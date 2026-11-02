@@ -29,6 +29,7 @@ import { holdSignupPassword, passwordSchema } from '../passwords.js';
 import { getMailer } from '../mailer.js';
 import { adminInviteEmail, buildMagicLinkUrl } from '../email-templates.js';
 import { RESERVED_SLUGS, getTenancyMode } from '../tenancy.js';
+import { networkReviewFor } from '../tracking-verification.js';
 import { newTrialEnd } from '../billing-plan.js';
 import { findBlockingEntry, notifyOpsNewBrand } from '../brand-review.js';
 import { screenTenantInBackground } from '../sanctions-screening.js';
@@ -348,7 +349,8 @@ export async function autoEnrollBrandOnNetwork(opts: {
       tier: 'hosted',
       portalCallbackUrl: `${opts.protoHost}/t/${opts.slug}/admin/network/complete`,
       adminAuthToken: networkAdminKey,
-      reviewStatus: opts.approvalStatus,
+      // An auto-approved brand the tracking gate holds back reads 'pending'.
+      reviewStatus: await networkReviewFor(db, db, opts.tenantId, opts.approvalStatus),
     });
     if (signupResult.status === 'active') {
       await saveNetworkMembership(db, opts.tenantId, {

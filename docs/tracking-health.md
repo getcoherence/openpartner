@@ -104,12 +104,50 @@ is random, kept only as a hash, and works once, so nobody can mark a click of
 their own as a test. It must be opened within 30 minutes. The landing and the
 signup count for 24 hours after the click. An account can make 20 a day. A
 program that sends partners straight to a Stripe-hosted checkout gets no
-button: nothing lands there, and the destination check covers it. While an
-account is waiting for approval its links record no clicks, so a test can't
-be sent either. Tests are deleted 90 days after they were made (the
-`test-click-purge` job, 06:50 UTC); until then, the test click id stored in
-the tester's browser is still recognised, so a later signup there isn't
-counted as an unknown click.
+button: nothing lands there, and the destination check covers it. An
+account still waiting for approval can send one, though its partner links
+record no clicks yet: that is how it shows its tracking works before it's
+approved. An account being deleted can't. Tests are deleted 90 days after
+they were made (the `test-click-purge` job, 06:50 UTC); until then, the test
+click id stored in the tester's browser is still recognised, so a later
+signup there isn't counted as an unknown click.
+
+### Verified tracking
+
+An account's tracking is **verified** once one of its clicks has been linked
+to a customer: a test click that reached **Linked to a signup**, or a
+partner's click linked to a customer by `identify()`, a Stripe checkout, a
+conversion call or a coupon redemption. An event that no click led to
+doesn't count, and neither does the script being seen on a page. The first
+passed test click is kept on the account (`Tenant.trackingTestPassedAt`), so
+verification outlives the test's own 90 days
+(`apps/api/src/tracking-verification.ts`).
+
+On OpenPartner Cloud, partners only join verified accounts:
+
+- Operators approve an account once it's verified. Approving one that isn't
+  takes an explicit **Approve anyway**: its links go live, and partners still
+  wait.
+- From a date the operator sets (`PlatformSetting` `trackingGate`), an
+  approved account that isn't verified takes no new partners. Every way a
+  partner joins answers `403 tracking_not_verified`: adding one, the CSV
+  import, granting a partner another program (or a new program to every
+  partner), the partner signup form, approving a Network application,
+  inviting a creator, tracking a booking, and publishing a marketplace
+  offering. Partners it already has keep their links and earnings.
+- From the same date, the Network shows it as still in review, which hides
+  its marketplace listings and closes creator outreach (discovery, messages,
+  bookings) until it verifies. The `network-review-reconcile` job (every 15
+  minutes) carries a change either way. The ops console sends affected
+  accounts a one-time notice with the date first.
+- The portal greys out the pages that need partners (Partners, Links,
+  Commissions, Payouts, Review queue, Fraud review, Customer journey and the
+  Network's creator pages) while an account has no partner yet and isn't
+  both approved and verified (`GET /admin/setup-lock`). An account that
+  already has partners keeps every page.
+
+The checklist on the dashboard and the setup reminders count the tracking
+step as done on the same rule.
 
 ## Flags
 

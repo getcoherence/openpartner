@@ -27,6 +27,7 @@ import {
   opsBrandDecisionEmail,
   opsBrandNeedsReviewEmail,
 } from './email-templates.js';
+import { isTrackingVerified, networkReviewStatus, trackingGateEnforced, type ReviewStatus } from './tracking-verification.js';
 
 export interface OpsActor {
   id: string;
@@ -170,12 +171,12 @@ async function primaryAdmin(db: Knex, tenantId: string): Promise<AdminRow | null
   return row ?? null;
 }
 
-async function notifyBrandApproved(db: Knex, tenant: TenantRow): Promise<void> {
+async function notifyBrandApproved(db: Knex, tenant: TenantRow, trackingPending: boolean): Promise<void> {
   const admin = await primaryAdmin(db, tenant.id);
   if (!admin) return;
   // Respect a white-label custom domain if the brand already has one.
   const enterUrl = `${getPortalBaseUrl({ slug: tenant.slug, customDomain: tenant.customDomain })}/`;
-  const tmpl = brandApprovedEmail(admin.name, tenant.displayName, enterUrl);
+  const tmpl = brandApprovedEmail(admin.name, tenant.displayName, enterUrl, trackingPending);
   try {
     await getMailer().send({ db, tenantId: tenant.id }, {
       to: admin.email,
@@ -225,6 +226,8 @@ export async function approveBrand(
   opts: { reinstate?: boolean } = {},
 ): Promise<void> {
   const now = new Date();
+  const verified = await isTrackingVerified(db, tenant.id);
+  const enforced = await trackingGateEnforced(db, now);
   await db<TenantRow>(TABLES.Tenant).where({ id: tenant.id }).update({
     approvalStatus: 'approved',
     approvalReason: null,
@@ -240,18 +243,19 @@ export async function approveBrand(
     action: opts.reinstate ? 'brand.reinstate' : 'brand.approve',
     targetType: 'tenant',
     targetId: tenant.id,
-    detail: { slug: tenant.slug, priorApprovalStatus: tenant.approvalStatus },
+    detail: { slug: tenant.slug, priorApprovalStatus: tenant.approvalStatus, trackingVerified: verified },
   });
   // List the brand on the marketplace — the Network keeps every offering of
-  // a vendor whose review isn't 'approved' out of discovery — and undo the
+  // a vendor whose review isn't 'approved' out of discovery, and the
+  // tracking gate keeps an unverified brand there — and undo the
   // Network-side suspension a prior rejection applied. A failed push is
   // retried by the network-review-reconcile job.
-  await setBrandReviewOnNetwork(db, tenant.id, 'approved');
+  await setBrandReviewOnNetwork(db, tenant.id, networkReviewStatus('approved', verified, enforced));
   if (tenant.approvalStatus === 'rejected') {
     await reactivateBrandOnNetwork(db, tenant.id);
   }
 
-  await notifyBrandApproved(db, { ...tenant, status: 'active', approvalStatus: 'approved' });
+  await notifyBrandApproved(db, { ...tenant, status: 'active', approvalStatus: 'approved' }, enforced && !verified);
   await notifyOpsDecision(db, {
     brandName: tenant.displayName,
     slug: tenant.slug,
@@ -402,7 +406,7 @@ async function suspendBrandOnNetwork(db: Knex, tenantId: string, reason: string)
 async function setBrandReviewOnNetwork(
   db: Knex,
   tenantId: string,
-  status: 'approved' | 'rejected',
+  status: ReviewStatus,
   reason?: string | null,
 ): Promise<void> {
   const v = await networkVendorOf(db, tenantId);

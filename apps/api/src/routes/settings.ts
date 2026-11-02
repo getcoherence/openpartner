@@ -30,6 +30,8 @@ import {
   type MailTransportKind,
 } from '../mail-settings.js';
 import { getMailer } from '../mailer.js';
+import { db as platformDb } from '../db.js';
+import { networkReviewFor, TRACKING_NOT_VERIFIED_DETAIL } from '../tracking-verification.js';
 import {
   completeNetworkConnect,
   getNetworkMembership,
@@ -795,7 +797,7 @@ settingsRouter.post('/config/network/auto-enroll', requireAuth, requireAdmin, as
       tier: 'hosted',
       portalCallbackUrl: inferredCallback,
       adminAuthToken: adminToken,
-      reviewStatus: tenantRow.approvalStatus,
+      reviewStatus: await networkReviewFor(db, platformDb, tenantId, tenantRow.approvalStatus),
     });
   } catch (err) {
     return res.status(502).json({ error: 'network_signup_failed', detail: err instanceof Error ? err.message : String(err) });
@@ -870,11 +872,30 @@ async function proxy(req: Request, res: Response, fn: (db: Knex, tenantId: strin
     res.status(successStatus).json(out);
   } catch (err) {
     if (err instanceof NetworkProxyError) {
+      if (await heldByTrackingGate(db, tenantId, err)) {
+        res.status(403).json({ error: 'tracking_not_verified', detail: TRACKING_NOT_VERIFIED_DETAIL });
+        return;
+      }
       res.status(err.status).json({ error: 'network_call_failed', detail: err.message });
       return;
     }
     throw err;
   }
+}
+
+/**
+ * The Network answers vendor_pending_review for an approved brand only
+ * because the tracking gate holds it back (tracking-verification.ts
+ * networkReviewStatus), so the portal shouldn't tell it it's in review.
+ */
+async function heldByTrackingGate(db: Knex, tenantId: string, err: NetworkProxyError): Promise<boolean> {
+  try {
+    if ((JSON.parse(err.message) as { error?: unknown }).error !== 'vendor_pending_review') return false;
+  } catch {
+    return false;
+  }
+  const tenant = await db(TABLES.Tenant).where({ id: tenantId }).first('approvalStatus');
+  return tenant?.approvalStatus === 'approved';
 }
 
 settingsRouter.get('/admin/network/me', requireAuth, requireAdmin, async (req, res) =>
@@ -1001,6 +1022,9 @@ async function proxyIndex(req: Request, res: Response, fn: (db: Knex, tenantId: 
     res.status(successStatus).json(out);
   } catch (err) {
     if (!(err instanceof NetworkProxyError)) throw err;
+    if (await heldByTrackingGate(db, tenantId, err)) {
+      return res.status(403).json({ error: 'tracking_not_verified', detail: TRACKING_NOT_VERIFIED_DETAIL });
+    }
     let code = 'network_call_failed';
     try {
       const parsed = JSON.parse(err.message) as { error?: unknown };

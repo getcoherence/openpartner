@@ -5,8 +5,48 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { isGoLiveRoute } from '../middleware/approval-gate.js';
+import { isGoLiveRoute, isPartnerJoinRoute } from '../middleware/approval-gate.js';
 import { emailDomain, normalizeEmail } from '../brand-review.js';
+import { networkReviewStatus } from '../tracking-verification.js';
+
+describe('isPartnerJoinRoute', () => {
+  it('covers every way a partner joins the brand or another of its programs', () => {
+    expect(isPartnerJoinRoute('POST', '/partners')).toBe(true);
+    expect(isPartnerJoinRoute('POST', '/partner-signup')).toBe(true);
+    expect(isPartnerJoinRoute('POST', '/import/partners-csv')).toBe(true);
+    expect(isPartnerJoinRoute('POST', '/partners/p_1/programs')).toBe(true);
+    expect(isPartnerJoinRoute('POST', '/admin/network/offerings')).toBe(true);
+    expect(isPartnerJoinRoute('POST', '/admin/network/offerings/off_1/invite-creator')).toBe(true);
+    expect(isPartnerJoinRoute('POST', '/admin/network/requests/req_1/approve')).toBe(true);
+    expect(isPartnerJoinRoute('POST', '/admin/network/creator-invites')).toBe(true);
+    expect(isPartnerJoinRoute('POST', '/admin/network/bookings/bkr_1/track')).toBe(true);
+    expect(isPartnerJoinRoute('POST', '/Partners/')).toBe(true);
+    // A new program granted to every existing partner; a plain one is setup.
+    expect(isPartnerJoinRoute('POST', '/programs', { grantToAllPartners: true })).toBe(true);
+    expect(isPartnerJoinRoute('POST', '/programs', { name: 'Main' })).toBe(false);
+    expect(isGoLiveRoute('POST', '/programs', { grantToAllPartners: true })).toBe(false);
+  });
+
+  it('leaves what doesn’t add a partner alone', () => {
+    expect(isPartnerJoinRoute('GET', '/partners')).toBe(false);
+    expect(isPartnerJoinRoute('POST', '/partners/p_1/coupons')).toBe(false);
+    expect(isPartnerJoinRoute('POST', '/partners/p_1/signin-link')).toBe(false);
+    expect(isPartnerJoinRoute('POST', '/bonuses')).toBe(false);
+    expect(isPartnerJoinRoute('POST', '/admin/network/requests/req_1/reject')).toBe(false);
+    expect(isPartnerJoinRoute('POST', '/admin/tracking-health/test-click')).toBe(false);
+    expect(isPartnerJoinRoute('POST', '/attribution/identify')).toBe(false);
+  });
+});
+
+describe('networkReviewStatus', () => {
+  it('holds an approved brand back only while the gate is in force and it isn’t verified', () => {
+    expect(networkReviewStatus('approved', false, true)).toBe('pending');
+    expect(networkReviewStatus('approved', true, true)).toBe('approved');
+    expect(networkReviewStatus('approved', false, false)).toBe('approved');
+    expect(networkReviewStatus('pending', true, true)).toBe('pending');
+    expect(networkReviewStatus('rejected', true, false)).toBe('rejected');
+  });
+});
 
 describe('isGoLiveRoute', () => {
   it('gates the go-live write actions', () => {

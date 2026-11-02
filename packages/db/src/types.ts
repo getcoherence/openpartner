@@ -49,6 +49,9 @@ export interface TenantRow {
    *  gate large coupon mints behind a "you've actually wired up the
    *  /coupons/redeem integration" check. Null = never verified. */
   couponIntegrationVerifiedAt: Date | null;
+  /** When the brand first passed a test click through to identify
+   *  (apps/api/src/tracking-verification.ts). Null = never. */
+  trackingTestPassedAt: Date | null;
   /** Public URL for the tenant's brand logo, set via the upload endpoint.
    *  Null when the brand hasn't uploaded one — UI falls back to text. */
   logoUrl: string | null;
@@ -675,7 +678,8 @@ export interface PlatformSettingRow {
 export interface BrandNotificationRow {
   id: string;
   tenantId: string;
-  kind: 'setup_incomplete';
+  /** 'tracking_required': the tracking gate's one-time notice (step 1). */
+  kind: 'setup_incomplete' | 'tracking_required';
   step: number;
   recipientEmail: string;
   sentByEmail: string | null;

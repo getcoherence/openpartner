@@ -50,7 +50,7 @@ import {
   type MessageAttachment,
 } from '../creator/conversation-shared.js';
 import { ClaimError, fetchClaimPreview } from '../creator/BookingConfirm.js';
-import { BookCreatorDialog, networkErrorCode } from './BookCreatorDialog.js';
+import { BookCreatorDialog, networkErrorCode, TRACKING_NOT_VERIFIED_TEXT } from './BookCreatorDialog.js';
 import { DeliveryChecksPanel, type DeliveryChecks } from './DeliveryChecks.js';
 
 interface CreatorFace {
@@ -139,6 +139,7 @@ const ACTION_ERRORS: Record<string, string> = {
   rate_limited: 'You’re sending messages very quickly. Wait a little and try again.',
   brand_pending_review: 'Your brand is still being reviewed. You can do this once it’s approved.',
   vendor_pending_review: 'Your brand is still being reviewed. You can do this once it’s approved.',
+  tracking_not_verified: TRACKING_NOT_VERIFIED_TEXT,
 };
 
 function errorText(err: unknown): unknown {
@@ -624,6 +625,7 @@ const CLAIM_ERRORS: Record<string, string> = {
   creator_unavailable: 'This creator isn’t taking bookings right now.',
   vendor_rejected: 'Your brand can’t book creators.',
   vendor_pending_review: 'Your brand is still being reviewed. Until it’s approved, it can talk to one creator only.',
+  tracking_not_verified: TRACKING_NOT_VERIFIED_TEXT,
   conversation_blocked: 'This creator isn’t taking requests from your brand.',
   too_many_open_bookings: 'You already have the maximum of 3 open bookings with this creator.',
   rate_limited: 'Your brand has started a lot of conversations today. Try again tomorrow.',
@@ -727,6 +729,7 @@ export function MessageCreatorDialog({ creator, onClose }: { creator: { id: stri
   const text: Record<string, string> = {
     brand_pending_review: 'Your brand is still being reviewed. You can message creators once it’s approved.',
     vendor_pending_review: 'Your brand is still being reviewed. You can message creators once it’s approved.',
+    tracking_not_verified: TRACKING_NOT_VERIFIED_TEXT,
     bookings_closed: `${creator.name} isn’t taking bookings or messages right now.`,
     conversation_blocked: `${creator.name} isn’t taking messages from your brand.`,
     rate_limited: 'You’ve started a lot of conversations today. Try again tomorrow.',

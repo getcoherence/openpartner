@@ -162,7 +162,11 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (!skipIntegration) await cleanup();
+  if (!skipIntegration) {
+    await cleanup();
+    // The passed test verified the tenant's tracking (tracking-verification.ts).
+    await db(TABLES.Tenant).where({ id: T }).update({ trackingTestPassedAt: null });
+  }
   await db.destroy();
 });
 

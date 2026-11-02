@@ -27,7 +27,7 @@
  * apps/api/src/tracking-flags.ts): a browser or a partner that changed
  * against its own recent past, which one window can't show.
  */
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router';
 import { ApiError, api } from '../../api.js';
@@ -875,8 +875,7 @@ function SetupChecksSection() {
 }
 
 const TEST_CLICK_ERRORS: Record<string, string> = {
-  links_paused:
-    'Your partner links don’t record clicks right now (the account is waiting for approval, or is being deleted), so a test click can’t either.',
+  links_paused: 'Your partner links don’t record clicks right now (the account is being deleted), so a test click can’t either.',
   program_not_active: 'This program isn’t running, so its links record no clicks.',
   stripe_checkout_destination:
     'This program sends partners straight to a Stripe checkout, where nothing lands to test. The destination check covers it.',
@@ -923,6 +922,14 @@ function TestClickPanel({ test, onClose }: { test: { id: string; url: string }; 
     refetchInterval: (q) => (q.state.data && q.state.data.state !== 'waiting' ? false : 2_000),
   });
   const t = query.data;
+  // A pass verifies the brand's tracking: unlock the menu and the setup step.
+  const qc = useQueryClient();
+  const passed = t?.state === 'passed';
+  useEffect(() => {
+    if (!passed) return;
+    void qc.invalidateQueries({ queryKey: ['admin-setup-lock'] });
+    void qc.invalidateQueries({ queryKey: ['admin-onboarding-status'] });
+  }, [passed, qc]);
   const opened = t?.steps[0]?.status === 'done';
   const landed = t?.steps.find((s) => s.id === 'landing')?.status === 'done';
   const headline = !t

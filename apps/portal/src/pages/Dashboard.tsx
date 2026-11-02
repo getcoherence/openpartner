@@ -819,9 +819,9 @@ function BrandOnboarding() {
       : [
           {
             done: data.trackingInstalled,
-            label: 'Connect conversion tracking',
-            hint: 'Install the OpenPartner SDK (identify signups) or connect Stripe so partner referrals are credited.',
-            href: `${tenantBase}/admin/integrations`,
+            label: 'Verify conversion tracking',
+            hint: 'Install the tracking script, then send a test click. Partners can join once it reaches your signup.',
+            href: `${tenantBase}/admin/tracking-health`,
           },
         ]),
     {
