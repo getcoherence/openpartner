@@ -1,7 +1,8 @@
 /**
  * How the creator's storefront reads on their public page, inside the
  * editor (/creator/storefront) and the setup flow: a compact profile
- * header, the storefront section in preview mode, and past collaborations.
+ * header, the storefront section in preview mode, verified work and past
+ * collaborations.
  * Rendered from what's on screen, unsaved edits included.
  */
 import { useEffect, useRef, type ReactNode } from 'react';
@@ -11,6 +12,7 @@ import type { NetworkProfile } from '../../lib/NetworkProfileEditor.js';
 import { publicStorefrontUrl } from '../../lib/public-site.js';
 import { ListingBanner } from './ListingBanner.js';
 import { StorefrontSection } from './StorefrontSection.js';
+import { CaseStudyList, verifiedBrandNames, type CaseStudy } from './CaseStudies.js';
 import type { StorefrontChannel, StorefrontPackage } from './storefront-shared.js';
 
 /**
@@ -60,6 +62,7 @@ export function StorefrontPreview({
   channels,
   bookingsOpen,
   pastBrands,
+  caseStudies = [],
 }: {
   profile: NetworkProfile | undefined;
   /** Published packages, in order. */
@@ -68,10 +71,13 @@ export function StorefrontPreview({
   bookingsOpen: boolean;
   /** Overrides the saved list while it's being edited. */
   pastBrands?: string[];
+  /** The verified work shown, in order (the editor's current choice). */
+  caseStudies?: CaseStudy[];
 }) {
   const name = profile?.name || 'Your name';
   const handle = profile?.handle ?? null;
-  const brands = pastBrands ?? profile?.pastBrands ?? [];
+  const verified = verifiedBrandNames(caseStudies);
+  const brands = (pastBrands ?? profile?.pastBrands ?? []).filter((b) => !verified.has(b.trim().toLowerCase()));
   const publicPath = handle ? publicStorefrontUrl(handle) : null;
 
   return (
@@ -143,6 +149,12 @@ export function StorefrontPreview({
           </div>
         </div>
         <StorefrontSection creatorName={name} packages={packages} channels={channels} preview />
+        {caseStudies.length > 0 && (
+          <div style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: theme.radiusMd, padding: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>Verified work</div>
+            <CaseStudyList items={caseStudies} />
+          </div>
+        )}
         {brands.length > 0 && (
           <div style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: theme.radiusMd, padding: 14 }}>
             <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>Past collaborations</div>

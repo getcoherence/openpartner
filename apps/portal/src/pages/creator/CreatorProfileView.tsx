@@ -1,7 +1,8 @@
 /**
  * A creator's profile as brands see it: cover + avatar, bio, their
  * storefront (channels and packages, while bookings are open) or their
- * channels, audience, sample work and past collaborations. From the
+ * channels, verified work, audience, sample work and past collaborations.
+ * From the
  * Network's public GET /creators/by-handle/:handle, through the
  * openpartner proxy (anonymous for that route).
  *
@@ -20,6 +21,7 @@ import { PlatformMark, type CoverSource } from '../../lib/PlatformMark.js';
 import { SectionCard, SectionGap } from '../../lib/Surface.js';
 import { creatorApi } from './creator-api.js';
 import { ListingBanner } from './ListingBanner.js';
+import { CaseStudyList, verifiedBrandNames, type CaseStudy } from './CaseStudies.js';
 import { PLATFORM_LABELS, type StorefrontChannel, type StorefrontPackage } from './storefront-shared.js';
 
 export interface PublicProfile {
@@ -44,6 +46,9 @@ export interface PublicProfile {
    *  older Network. Packages only come back while bookings are open. */
   bookingsOpen?: boolean;
   packages?: StorefrontPackage[];
+  /** Finished bookings the creator shows (the Network's
+   *  docs/campaign-reports.md §10); absent on an older Network. */
+  caseStudies?: CaseStudy[];
 }
 
 export function useCreatorProfile(handle: string | undefined) {
@@ -61,6 +66,10 @@ export function CreatorProfileView({ data, storefront }: { data: PublicProfile; 
   const totalReach = data.platforms.reduce((sum, p) => sum + (p.followerCount ?? 0), 0);
   const allSynced = data.platforms.length > 0 && data.platforms.every((p) => p.followerCount == null || p.followerCountSynced);
   const audienceSize = audienceSizeLabel(data.audienceSize);
+  const caseStudies = data.caseStudies ?? [];
+  // A brand shown verified above isn't repeated in their own list.
+  const verified = verifiedBrandNames(caseStudies);
+  const pastBrands = data.pastBrands.filter((b) => !verified.has(b.trim().toLowerCase()));
 
   return (
     <>
@@ -154,6 +163,16 @@ export function CreatorProfileView({ data, storefront }: { data: PublicProfile; 
         </>
       )}
 
+      {caseStudies.length > 0 && (
+        <>
+          <SectionGap />
+          <SectionCard>
+            <h3 style={{ marginTop: 0, marginBottom: 12, fontSize: 15, fontWeight: 500 }}>Verified work</h3>
+            <CaseStudyList items={caseStudies} />
+          </SectionCard>
+        </>
+      )}
+
       {(data.audienceLocations.length > 0 || data.audienceAgeRange || audienceSize) && (
         <>
           <SectionGap />
@@ -188,13 +207,13 @@ export function CreatorProfileView({ data, storefront }: { data: PublicProfile; 
         </>
       )}
 
-      {data.pastBrands.length > 0 && (
+      {pastBrands.length > 0 && (
         <>
           <SectionGap />
           <SectionCard>
             <h3 style={{ marginTop: 0, marginBottom: 12, fontSize: 15, fontWeight: 500 }}>Past collaborations</h3>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {data.pastBrands.map((b) => (
+              {pastBrands.map((b) => (
                 <span key={b} style={{ background: theme.surface2, color: theme.text, fontSize: 13, padding: '4px 10px', borderRadius: 12, border: `1px solid ${theme.borderSubtle}` }}>
                   {b}
                 </span>

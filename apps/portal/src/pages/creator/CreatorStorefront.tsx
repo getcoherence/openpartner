@@ -1,7 +1,8 @@
 /**
  * /creator/storefront — the creator's storefront editor. Turn bookings on,
- * pitch each channel, and add priced packages under it (from templates or
- * from scratch), with a live preview of the public section beside the form.
+ * pitch each channel, add priced packages under it (from templates or
+ * from scratch) and pick finished bookings to show as verified work, with a
+ * live preview of the public section beside the form.
  * Packages show on the public profile (/creators/:handle) while bookings
  * are on; brands request them from there and the requests land in
  * /creator/bookings. First-timers get the guided setup at
@@ -11,7 +12,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowDown, ArrowUp, Download, ExternalLink, Plus, Sparkles } from 'lucide-react';
-import { Button, Card, ErrorBanner, Input, Label, Page, Select, StatusPill, Textarea } from '../../ui.js';
+import { Button, Card, ErrorBanner, Input, Label, Page, Select, StatusPill, Textarea, formatDate } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { useMediaQuery } from '../../lib/useMediaQuery.js';
 import { MARKETPLACE_CREATORS_URL, publicStorefrontUrl } from '../../lib/public-site.js';
@@ -35,6 +36,7 @@ import {
   type StorefrontPackage,
 } from './storefront-shared.js';
 import { PaymentsCard, creatorErrorCode, usePayments, type PaymentsView } from './CreatorPayments.js';
+import type { CaseStudy } from './CaseStudies.js';
 
 export interface Storefront {
   bookingsOpen: boolean;
@@ -58,6 +60,26 @@ export const STOREFRONT_KEY = ['creator-storefront'];
 export const PROFILE_KEY = ['creator-my-profile'];
 /** GET /creators/me/platforms, shared with the profile page's Platforms card. */
 export const PLATFORMS_KEY = ['creator-my-platforms'];
+/** GET /creators/me/case-studies: completed bookings to show as verified work. */
+export const CASE_STUDIES_KEY = ['creator-case-studies'];
+
+/** One completed booking in the verified-work picker (the Network's
+ *  docs/campaign-reports.md §10). */
+export interface CaseStudyChoice {
+  bookingId: string;
+  title: string;
+  brand: { name: string; logoUrl: string | null } | null;
+  completedAt: string | null;
+  /** Its place on the storefront, 1 first; null when not shown. */
+  rank: number | null;
+  /** The brand lets the creator share it. */
+  shareable: boolean;
+  caseStudy: CaseStudy | null;
+}
+export interface CaseStudyChoices {
+  max: number;
+  bookings: CaseStudyChoice[];
+}
 
 /** A package as its form holds it, before it's saved. */
 export type PackageDraft = Omit<OwnPackage, 'id' | 'position'>;
@@ -112,6 +134,18 @@ export function CreatorStorefrontPage() {
     mutationFn: (ids: string[]) => creatorApi('/creators/me/packages/order', { method: 'POST', body: { ids } }),
     onSuccess: () => qc.invalidateQueries({ queryKey: STOREFRONT_KEY }),
   });
+  const work = useQuery({
+    queryKey: CASE_STUDIES_KEY,
+    queryFn: () => creatorApi<CaseStudyChoices>('/creators/me/case-studies'),
+    retry: false,
+  });
+  const shownWork = useMemo(
+    () =>
+      (work.data?.bookings ?? [])
+        .filter((b) => b.rank != null && b.caseStudy)
+        .sort((a, b) => a.rank! - b.rank!),
+    [work.data],
+  );
 
   const data = sf.data;
   const packages = useMemo(() => data?.packages ?? [], [data]);
@@ -239,10 +273,18 @@ export function CreatorStorefrontPage() {
           That&rsquo;s the maximum of {data.maxPackages} packages. Delete one to add another.
         </p>
       )}
+      {/* An older Network has no verified work. */}
+      {work.data && <VerifiedWorkCard choices={work.data} shown={shownWork} />}
     </div>
   );
   const preview = data && (
-    <StorefrontPreview profile={profile.data} packages={previewPackages} channels={previewChannels} bookingsOpen={data.bookingsOpen} />
+    <StorefrontPreview
+      profile={profile.data}
+      packages={previewPackages}
+      channels={previewChannels}
+      bookingsOpen={data.bookingsOpen}
+      caseStudies={shownWork.map((b) => b.caseStudy!)}
+    />
   );
 
   return (
@@ -371,6 +413,82 @@ function BookingsCard({
             </a>
           </div>
         )
+      )}
+    </Card>
+  );
+}
+
+/**
+ * Finished bookings to show on the storefront as verified work, up to the
+ * Network's maximum and in order. Each change saves the whole list. A
+ * booking the brand keeps private can't be picked.
+ */
+function VerifiedWorkCard({ choices, shown }: { choices: CaseStudyChoices; shown: CaseStudyChoice[] }) {
+  const qc = useQueryClient();
+  const save = useMutation({
+    mutationFn: (bookingIds: string[]) =>
+      creatorApi<CaseStudyChoices>('/creators/me/case-studies', { method: 'PUT', body: { bookingIds } }),
+    onSuccess: (next) => qc.setQueryData(CASE_STUDIES_KEY, next),
+    // A brand may have changed its sharing since the list loaded.
+    onError: () => qc.invalidateQueries({ queryKey: CASE_STUDIES_KEY }),
+  });
+  const ids = shown.map((b) => b.bookingId);
+  const full = ids.length >= choices.max;
+  const move = (i: number, delta: -1 | 1) => {
+    const next = [...ids];
+    [next[i], next[i + delta]] = [next[i + delta]!, next[i]!];
+    save.mutate(next);
+  };
+  const rest = choices.bookings.filter((b) => b.rank == null);
+
+  return (
+    <Card>
+      <div style={{ fontSize: 15, fontWeight: 500 }}>Verified work</div>
+      <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 4 }}>
+        {choices.bookings.length === 0
+          ? 'Completed bookings show up here to add to your storefront.'
+          : `Show up to ${choices.max} completed bookings, with what each brand lets you share.`}
+      </div>
+      <ErrorBanner
+        error={creatorErrorCode(save.error) === 'not_shareable' ? 'That brand no longer lets you share this booking.' : save.error}
+      />
+      {choices.bookings.length > 0 && (
+        <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
+          {[...shown, ...rest].map((b) => {
+            const i = ids.indexOf(b.bookingId);
+            return (
+              <div
+                key={b.bookingId}
+                style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', border: `1px solid ${theme.border}`, borderRadius: theme.radiusSm, padding: '10px 12px', background: theme.surface }}
+              >
+                <div style={{ flex: 1, minWidth: 180 }}>
+                  <div style={{ fontSize: 14, fontWeight: 500 }}>{b.brand?.name ?? 'A brand'}</div>
+                  <div style={{ fontSize: 12.5, color: theme.textMuted }}>
+                    {b.title}
+                    {b.completedAt && <> · {formatDate(b.completedAt)}</>}
+                  </div>
+                </div>
+                {i >= 0 ? (
+                  <>
+                    <Button size="sm" variant="ghost" onClick={() => move(i, -1)} disabled={i === 0 || save.isPending} icon={<ArrowUp size={14} />}>Up</Button>
+                    <Button size="sm" variant="ghost" onClick={() => move(i, 1)} disabled={i === ids.length - 1 || save.isPending} icon={<ArrowDown size={14} />}>Down</Button>
+                    <Button size="sm" variant="secondary" onClick={() => save.mutate(ids.filter((id) => id !== b.bookingId))} disabled={save.isPending}>
+                      Hide
+                    </Button>
+                  </>
+                ) : b.shareable ? (
+                  <Button size="sm" variant="secondary" onClick={() => save.mutate([...ids, b.bookingId])} disabled={full || save.isPending}>
+                    Show
+                  </Button>
+                ) : (
+                  <span title="The brand keeps this booking private" style={{ fontSize: 12.5, color: theme.textMuted }}>
+                    Private
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
       )}
     </Card>
   );

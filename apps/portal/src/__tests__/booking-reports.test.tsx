@@ -211,6 +211,16 @@ describe("the brand's report", () => {
     expect(screen.getByText('0.45×')).toBeTruthy();
   });
 
+  it("says when the booking is on the creator's storefront", async () => {
+    routes['GET /api/t/acme/admin/network/bookings/bkr_1/report'] = () => [
+      200,
+      { report: { ...REPORT, sharing: { creatorShare: 'posts', effective: 'posts', brandDefault: 'none', onCreatorStorefront: true } } },
+    ];
+    routes['GET /api/t/acme/admin/network/bookings/bkr_1/report/shares'] = () => [200, { shares: [] }];
+    renderAt('/t/acme/admin/network/bookings/bkr_1/report', <Route path="/t/:slug/admin/network/bookings/:id/report" element={<AdminNetworkBookingReport />} />);
+    expect(await screen.findByText('On their storefront as verified work')).toBeTruthy();
+  });
+
   it('changes what the creator may share, and shows a new link once', async () => {
     open();
     const select = await screen.findByDisplayValue('Your default (No)');
