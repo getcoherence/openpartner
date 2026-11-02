@@ -38,6 +38,29 @@ export function useAuthProviders(): AuthProviders {
   return q.data ?? { google: false, googleStartUrl: null };
 }
 
+/** Shown wherever a free mail address is refused as a brand's (the API's
+ *  work_email_required). */
+export const WORK_EMAIL_NEEDED = 'Use your work email to sign up as a brand.';
+
+/** React Query key of GET /signup/settings, for the ops switch to refresh. */
+export const SIGNUP_SETTINGS_KEY = ['signup-settings'] as const;
+
+/** Whether this deployment refuses new brands on free mail addresses
+ *  (GET /signup/settings); the forms check an address with
+ *  isFreeMailAddress from @openpartner/db. */
+export function useWorkEmailRequired(): boolean {
+  const q = useQuery({
+    queryKey: SIGNUP_SETTINGS_KEY,
+    queryFn: async (): Promise<{ workEmailRequired: boolean }> => {
+      const r = await fetch('/api/signup/settings', { credentials: 'include' });
+      if (!r.ok) throw new Error(`${r.status}`);
+      return (await r.json()) as { workEmailRequired: boolean };
+    },
+    staleTime: 60_000,
+  });
+  return q.data?.workEmailRequired ?? false;
+}
+
 export function googleStartHref(
   startUrl: string,
   flow: 'account' | 'account_add' | 'ops' | 'portal' | 'creator',

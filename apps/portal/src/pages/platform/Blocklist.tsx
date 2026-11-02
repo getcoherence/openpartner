@@ -3,12 +3,22 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Trash2 } from 'lucide-react';
 import { theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../../ui.js';
-import { papi, friendlyPlatformError, type BlocklistEntry, type PlatformOperator } from './lib.js';
+import { SIGNUP_SETTINGS_KEY } from '../auth/PasswordAuth.js';
+import { Pill } from './components.js';
+import {
+  papi,
+  friendlyPlatformError,
+  type BlocklistEntry,
+  type BrandSignupSettings,
+  type PlatformOperator,
+} from './lib.js';
 
 /**
  * Sign-up blocklist. Emails or whole domains that are barred from creating a
  * brand (populated here or as a side effect of rejecting a brand with a ban
- * checkbox). Admin operators can add/remove; read-only operators view only.
+ * checkbox), and the switch that refuses free mail addresses (Gmail and the
+ * like) as a new brand's. Admin operators can change them; read-only
+ * operators view only.
  */
 export function BlocklistPage({ operator }: { operator: PlatformOperator }) {
   const canWrite = operator.role === 'admin';
@@ -75,6 +85,8 @@ export function BlocklistPage({ operator }: { operator: PlatformOperator }) {
     <Page title="Blocklist" subtitle="Emails and domains barred from creating a brand.">
       <ErrorBanner error={remove.error ? friendlyPlatformError(remove.error) : list.error} />
 
+      <WorkEmailCard canWrite={canWrite} />
+
       {canWrite && (
         <Card style={{ marginBottom: 16 }}>
           <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Add a block</div>
@@ -117,5 +129,49 @@ export function BlocklistPage({ operator }: { operator: PlatformOperator }) {
         <Table columns={['Value', 'Type', 'Reason', 'Added by', 'When', '']} rows={rows} empty="Nothing blocked yet." />
       )}
     </Page>
+  );
+}
+
+function WorkEmailCard({ canWrite }: { canWrite: boolean }) {
+  const qc = useQueryClient();
+  const state = useQuery({
+    queryKey: ['platform-brand-signup'],
+    queryFn: () => papi<{ settings: BrandSignupSettings }>('/platform-admin/brand-signup'),
+  });
+  const save = useMutation({
+    mutationFn: (workEmailRequired: boolean) =>
+      papi<{ settings: BrandSignupSettings }>('/platform-admin/brand-signup', { method: 'PUT', body: { workEmailRequired } }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['platform-brand-signup'] });
+      void qc.invalidateQueries({ queryKey: SIGNUP_SETTINGS_KEY });
+    },
+  });
+  const on = state.data?.settings?.workEmailRequired;
+
+  return (
+    <Card style={{ marginBottom: 16 }}>
+      <ErrorBanner error={save.error ? friendlyPlatformError(save.error) : state.error} />
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 14, fontWeight: 600 }}>Work email required</span>
+            {on !== undefined && (
+              <Pill
+                label={on ? 'on' : 'off'}
+                tone={on ? { bg: theme.successSoft, fg: theme.success } : { bg: theme.surface2, fg: theme.textMuted }}
+              />
+            )}
+          </div>
+          <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 6 }}>
+            New brands can’t sign up with Gmail, Outlook, iCloud or another free mail address.
+          </div>
+        </div>
+        {canWrite && on !== undefined && (
+          <Button size="sm" variant={on ? 'secondary' : 'primary'} disabled={save.isPending} onClick={() => save.mutate(!on)}>
+            {save.isPending ? 'Saving…' : on ? 'Turn off' : 'Turn on'}
+          </Button>
+        )}
+      </div>
+    </Card>
   );
 }

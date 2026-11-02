@@ -114,9 +114,11 @@ import {
 import { brandSetupFor } from '../brand-setup.js';
 import { brandReminderHistory, remindBrandNow, runBrandSetupReminders } from '../brand-setup-reminders.js';
 import {
+  getBrandSignupSettings,
   getFeeRuleSettings,
   getInvoiceBillingSettings,
   getNotificationSettings,
+  setBrandSignupSettings,
   setFeeRuleSettings,
   setInvoiceBillingSettings,
   setNotificationSettings,
@@ -1104,6 +1106,29 @@ platformAdminRouter.delete(
       detail: { type: row.type, value: row.value },
     });
     res.json({ ok: true });
+  },
+);
+
+// Work email: whether a free mail address (FREE_MAIL_DOMAINS) may create a
+// brand. On by default for the hosted platform (brandSignupDefaults).
+
+platformAdminRouter.get('/platform-admin/brand-signup', requirePlatformAdmin, async (_req, res) => {
+  res.json({ settings: await getBrandSignupSettings(db) });
+});
+
+const brandSignupSettingsSchema = z.object({ workEmailRequired: z.boolean() }).strict();
+
+platformAdminRouter.put(
+  '/platform-admin/brand-signup',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = brandSignupSettingsSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const actor = req.platformAdminActor!;
+    const settings = await setBrandSignupSettings(db, body.data, actor.email);
+    await writeAudit(db, { actor, action: 'brand_signup.settings', targetType: 'platform', detail: body.data });
+    res.json({ settings });
   },
 );
 
