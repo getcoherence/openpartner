@@ -18,12 +18,15 @@ import { Router } from 'express';
 import { z } from '../zod.js';
 import { TABLES, type ProgramRow, type PartnerRow } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
-import { tenantOf } from '../tenancy.js';
+import { getTenancyMode, tenantOf } from '../tenancy.js';
 import { getNetworkMembership, networkProxy, NetworkProxyError } from '../network-client.js';
 import { getTenantBillingState } from '../billing-plan.js';
 import { brandSetupFor } from '../brand-setup.js';
 import { getWhiteLabelState } from '../white-label.js';
 import { readOnboardingSettings, saveOnboardingSettings } from '../onboarding-settings.js';
+import { db as platformDb } from '../db.js';
+import { getTrackingGateSettings } from '../platform-settings.js';
+import { isTrackingVerified } from '../tracking-verification.js';
 
 export const onboardingRouter = Router();
 
@@ -171,6 +174,29 @@ onboardingRouter.get('/admin/onboarding-status', requireAuth, requireAdmin, asyn
     complete,
   };
   res.json(out);
+});
+
+/**
+ * Whether the portal locks the pages that only work once partners can join
+ * (Partners, Commissions, Payouts, the Network's creator pages): while the
+ * brand has no partner yet and isn't both approved and tracking-verified
+ * (tracking-verification.ts). A brand that already has partners keeps every
+ * page, whatever its state. The setup pages are never locked. Hosted only:
+ * a self-hosted install is its own operator.
+ */
+onboardingRouter.get('/admin/setup-lock', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const tenant = await db('Tenant').where({ id: tenantId }).first(['approvalStatus']);
+  const approved = (tenant?.approvalStatus ?? 'approved') === 'approved';
+  const verified = await isTrackingVerified(db, tenantId);
+  const hasPartner = !!(await db(TABLES.Partner).where({ tenantId }).first('id'));
+  const { enforceFrom } = await getTrackingGateSettings(platformDb);
+  res.json({
+    locked: getTenancyMode() === 'multi' && !hasPartner && !(approved && verified),
+    reason: !approved ? 'review' : !verified ? 'tracking' : null,
+    trackingVerified: verified,
+    trackingGateFrom: enforceFrom,
+  });
 });
 
 export const onboardingSettingsSchema = z.object({

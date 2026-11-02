@@ -1,5 +1,9 @@
 /**
- * Keep the Network's Vendor.reviewStatus in step with Tenant.approvalStatus.
+ * Keep the Network's Vendor.reviewStatus in step with Tenant.approvalStatus,
+ * and with the tracking gate: an approved brand whose tracking isn't
+ * verified reads 'pending' while the gate is in force
+ * (tracking-verification.ts networkReviewStatus). A brand that verifies, or
+ * a gate that starts, reaches the Network on the next run.
  *
  * The Network decides marketplace visibility and only lists vendors whose
  * reviewStatus is 'approved'. openpartner pushes the decision directly on
@@ -37,6 +41,7 @@ import {
 import { opsNetworkVendorsPendingEmail } from './email-templates.js';
 import { sendOpsEmail } from './platform-ops-mail.js';
 import { getPortalBaseUrl } from './portal-url.js';
+import { networkReviewStatus, trackingGateEnforced, trackingVerifiedFor } from './tracking-verification.js';
 
 export interface ReviewReconcileResult {
   skipped?: string;
@@ -137,16 +142,26 @@ export async function reconcileNetworkReview(): Promise<ReviewReconcileResult> {
   }
   const { links, checked, unmatched } = await linkVendorsToTenants(networkUrl, vendors);
 
+  // An approved brand the tracking gate holds back reads 'pending' too.
+  const enforced = await trackingGateEnforced(db);
+  const verified = enforced
+    ? await trackingVerifiedFor(db, [...links.values()].map((l) => l.tenantId))
+    : new Set<string>();
+
   const out: ReviewReconcileResult = { ...empty, checked, unmatched };
   for (const vendor of vendors) {
     const link = links.get(vendor.id);
-    if (!link || vendor.reviewStatus === link.approvalStatus) continue;
+    if (!link) continue;
+    const want = networkReviewStatus(link.approvalStatus, verified.has(link.tenantId), enforced);
+    if (vendor.reviewStatus === want) continue;
     try {
       await adminSetVendorReview(
         networkUrl,
         vendor.id,
-        link.approvalStatus,
-        `reconciled from openpartner approval state (${link.approvalStatus})`,
+        want,
+        want === link.approvalStatus
+          ? `reconciled from openpartner approval state (${link.approvalStatus})`
+          : 'reconciled from openpartner: approved, tracking not verified',
       );
       out.pushed += 1;
     } catch (err) {

@@ -37,13 +37,23 @@
  * resolve a tenant (tenancy.ts filters status='active') and never reach
  * this middleware — this gate is really the pending-brand fence.
  *
+ * Approved isn't always enough. Once the operator's tracking gate is in
+ * force (tracking-verification.ts), an approved brand whose tracking isn't
+ * verified can't take partners: PARTNER_JOIN_ROUTES answer 403
+ * tracking_not_verified. Those are every way a partner joins the brand or
+ * another of its programs, including the Network's own POST /partners when
+ * a creator's application or tracked booking is approved, and publishing a
+ * marketplace offering.
+ *
  * Runs after tenantMiddleware (needs tenant scope) and reads the tenant's
  * own row through req.db (RLS lets a tenant read its own Tenant row).
  */
 
 import type { NextFunction, Request, Response } from 'express';
 import { TABLES, type TenantRow } from '@openpartner/db';
+import { db as platformDb } from '../db.js';
 import { tenantOf } from '../tenancy.js';
+import { isTrackingVerified, trackingGateEnforced, TRACKING_NOT_VERIFIED_DETAIL } from '../tracking-verification.js';
 
 interface GatedRoute {
   method: string;
@@ -84,6 +94,20 @@ const GO_LIVE_ROUTES: GatedRoute[] = [
   },
 ];
 
+const PARTNER_JOIN_ROUTES: GatedRoute[] = [
+  { method: 'POST', test: (p) => p === '/partners' },
+  { method: 'POST', test: (p) => p === '/partner-signup' },
+  { method: 'POST', test: (p) => p === '/import/partners-csv' },
+  { method: 'POST', test: (p) => /^\/partners\/[^/]+\/programs$/.test(p) },
+  { method: 'POST', test: (p) => p === '/admin/network/offerings' },
+  { method: 'POST', test: (p) => /^\/admin\/network\/offerings\/[^/]+\/invite-creator$/.test(p) },
+  { method: 'POST', test: (p) => /^\/admin\/network\/requests\/[^/]+\/approve$/.test(p) },
+  { method: 'POST', test: (p) => p === '/admin/network/creator-invites' },
+  { method: 'POST', test: (p) => /^\/admin\/network\/bookings\/[^/]+\/track$/.test(p) },
+  // A new program granted to every existing partner (routes/programs.ts).
+  { method: 'POST', test: (p) => p === '/programs', when: (b) => b.grantToAllPartners === true },
+];
+
 /**
  * Express matches routes case-insensitively and ignores a trailing slash
  * (no `caseSensitive` / `strict` on the app), so `POST /Partners/` reaches
@@ -104,8 +128,18 @@ export function isGoLiveRoute(method: string, path: string, body: unknown = {}):
   return GO_LIVE_ROUTES.some((g) => g.method === m && g.test(p) && (g.when ? g.when(b) : true));
 }
 
+/** Exported for tests: does this (method, path[, body]) bring a partner in? */
+export function isPartnerJoinRoute(method: string, path: string, body: unknown = {}): boolean {
+  const p = canonicalPath(path);
+  const m = method.toUpperCase();
+  const b = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
+  return PARTNER_JOIN_ROUTES.some((g) => g.method === m && g.test(p) && (g.when ? g.when(b) : true));
+}
+
 export async function approvalGate(req: Request, res: Response, next: NextFunction): Promise<void> {
-  if (!isGoLiveRoute(req.method, req.path, req.body)) return next();
+  const goLive = isGoLiveRoute(req.method, req.path, req.body);
+  const joins = isPartnerJoinRoute(req.method, req.path, req.body);
+  if (!goLive && !joins) return next();
 
   let scope: ReturnType<typeof tenantOf>;
   try {
@@ -121,13 +155,26 @@ export async function approvalGate(req: Request, res: Response, next: NextFuncti
     .first('approvalStatus');
   // Missing row shouldn't happen inside a resolved tenant scope; default to
   // open rather than trap a legitimate request on a read glitch.
-  if (tenant && tenant.approvalStatus !== 'approved') {
+  if (!tenant) return next();
+  if (tenant.approvalStatus !== 'approved') {
+    // A join that isn't also a go-live action (granting programs to partners
+    // a pending brand can't have) is left to the route.
+    if (!goLive) return next();
     res.status(403).json({
       error: 'brand_pending_review',
       detail:
         'This brand is awaiting approval. You can finish setting up your program, but partner onboarding and going live unlock once an OpenPartner operator approves your account.',
       approvalStatus: tenant.approvalStatus,
     });
+    return;
+  }
+  if (joins && (await trackingGateEnforced(platformDb)) && !(await isTrackingVerified(scope.db, scope.tenantId))) {
+    // The public signup form is the one caller that is a creator, not the brand.
+    const detail =
+      canonicalPath(req.path) === '/partner-signup'
+        ? 'This program isn’t taking new partners yet. Try again later.'
+        : TRACKING_NOT_VERIFIED_DETAIL;
+    res.status(403).json({ error: 'tracking_not_verified', detail });
     return;
   }
   next();

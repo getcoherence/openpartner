@@ -48,6 +48,23 @@ function servesClicks(tenant: TenantGate | undefined): tenant is TenantGate {
   );
 }
 
+/**
+ * Whether a brand's test links work: as {@link servesClicks}, and also while
+ * the brand is still in review, so it can prove its tracking before an
+ * operator approves it. A test click is never a Click, and its link is
+ * single-use, short-lived and capped per brand per day (the API's
+ * test-clicks.ts), so this records no attribution data and makes a poor
+ * redirector.
+ */
+function servesTestClicks(tenant: TenantGate | undefined): tenant is TenantGate {
+  return (
+    !!tenant &&
+    tenant.status === 'active' &&
+    (tenant.approvalStatus === 'approved' || tenant.approvalStatus === 'pending') &&
+    tenant.pendingDeletionAt == null
+  );
+}
+
 export function createRouterApp(db: Db): Hono {
   const app = new Hono();
   const cookieDomain = process.env.COOKIE_DOMAIN ?? 'localhost';
@@ -133,7 +150,7 @@ export function createRouterApp(db: Db): Hono {
     const tenant = (await db('Tenant').where({ id: test.tenantId }).first(TENANT_GATE_COLUMNS)) as
       | TenantGate
       | undefined;
-    if (!servesClicks(tenant)) return c.text('Tenant not found', 404);
+    if (!servesTestClicks(tenant)) return c.text('Tenant not found', 404);
     const program = (await db(TABLES.Program)
       .where({ id: test.programId, tenantId: test.tenantId })
       .first(['destinationUrl', 'blockedAt'])) as { destinationUrl: string; blockedAt: Date | null } | undefined;

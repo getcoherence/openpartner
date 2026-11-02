@@ -32,6 +32,7 @@ import { ChannelCount, ChannelCounts, PlatformMark, compactCount, formatRate, pl
 import { FlatCards, SectionCard, useFlatCards } from '../../lib/Surface.js';
 import { ListingBanner } from '../creator/ListingBanner.js';
 import { CreatorRow, PanelBar, RowFigure } from './CreatorRow.js';
+import { TRACKING_NOT_VERIFIED_TEXT } from './BookCreatorDialog.js';
 
 interface IndexedPlatform {
   platform: string;
@@ -554,6 +555,7 @@ const INVITE_ERRORS: Record<string, string> = {
   rate_limited: 'You’ve sent 20 invites today. Try again tomorrow.',
   plan_required: 'Inviting these creators comes with the Flex and Enterprise plans.',
   brand_pending_review: 'You can invite creators once your brand is approved.',
+  tracking_not_verified: TRACKING_NOT_VERIFIED_TEXT,
 };
 
 function IndexInviteDialog({ creator, onClose }: { creator: IndexedCreator; onClose: () => void }) {
