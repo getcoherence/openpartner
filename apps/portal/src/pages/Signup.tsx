@@ -49,6 +49,8 @@ export function SignupPage() {
   const [password, setPassword] = useState('');
   const providers = useAuthProviders();
   const workEmailRequired = useWorkEmailRequired();
+  // Said as it's typed; the API decides (someone already running an
+  // approved brand from that address may still sign up another).
   const freeMail = workEmailRequired && isFreeMailAddress(adminEmail.trim());
   const [country, setCountry] = useState('');
   const [outsideOccupiedRegions, setOutsideOccupiedRegions] = useState(false);
@@ -218,7 +220,7 @@ export function SignupPage() {
           <PasswordInput value={password} onChange={setPassword} autoComplete="new-password" style={inputStyle} />
         </Field>
         {err && <div style={{ color: theme.danger, fontSize: 13, marginTop: 4, marginBottom: 8 }}>{err}</div>}
-        <button type="submit" disabled={busy || freeMail} style={primaryBtnStyle(busy || freeMail)}>
+        <button type="submit" disabled={busy} style={primaryBtnStyle(busy)}>
           {busy ? 'Creating brand…' : 'Create brand account'}
         </button>
         <div style={{ marginTop: 12, fontSize: 12, color: theme.textDim, textAlign: 'center' }}>

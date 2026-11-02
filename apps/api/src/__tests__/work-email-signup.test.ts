@@ -118,7 +118,19 @@ afterAll(async () => {
 
 describe('isFreeMailAddress', () => {
   it('matches a free mail provider’s whole domain, whatever the case', () => {
-    for (const e of ['ada@gmail.com', 'Ada@GMail.COM', 'ada@googlemail.com', 'ada@outlook.com', 'ada@yahoo.co.uk', 'ada@icloud.com', 'ada@proton.me', 'ada@gmail.com.']) {
+    for (const e of [
+      'ada@gmail.com',
+      'Ada@GMail.COM',
+      'ada+brand@gmail.com',
+      'ada@googlemail.com',
+      'ada@outlook.com',
+      'ada@yahoo.co.uk',
+      'ada@icloud.com',
+      'ada@proton.me',
+      'ada@email.com',
+      'ada@tutanota.de',
+      'ada@gmail.com.',
+    ]) {
       expect(isFreeMailAddress(e), e).toBe(true);
     }
     for (const e of ['ada@example.com', 'ada@mail.example.com', 'ada@gmail.example', 'ada@notgmail.com', 'gmail.com', '']) {
@@ -187,12 +199,33 @@ describe.skipIf(skipIntegration)('new brands need a work email', () => {
     expect(added.status).toBe(201);
     expect(added.body.approvalStatus).toBe('approved');
 
-    // A brand still in review doesn't count: that address clears review first.
-    const pendingEmail = gmail('pending');
-    const pendingId = ulid();
-    await db(TABLES.Tenant).insert({ id: pendingId, slug: slug(), displayName: 'Pending', status: 'active', approvalStatus: 'pending' });
-    await db(TABLES.Admin).insert({ id: ulid(), tenantId: pendingId, email: pendingEmail, name: 'Pending', activatedAt: new Date() });
-    expect((await addBrand(await platformCookie(pendingEmail))).body).toEqual({ error: 'work_email_required' });
+    // Public signup applies the same exception.
+    expect((await signup(email)).status).toBe(201);
+
+    // Only an approved, active brand they still admin counts: not one in
+    // review, a suspended one, or one they were removed from.
+    for (const [tag, tenant, revokedAt] of [
+      ['pending', { status: 'active', approvalStatus: 'pending' }, null],
+      ['suspended', { status: 'suspended', approvalStatus: 'approved' }, null],
+      ['revoked', { status: 'active', approvalStatus: 'approved' }, new Date()],
+    ] as const) {
+      const other = gmail(tag);
+      const id = ulid();
+      await db(TABLES.Tenant).insert({ id, slug: slug(), displayName: tag, ...tenant });
+      await db(TABLES.Admin).insert({ id: ulid(), tenantId: id, email: other, name: tag, activatedAt: new Date(), revokedAt });
+      expect((await addBrand(await platformCookie(other))).body, tag).toEqual({ error: 'work_email_required' });
+      expect((await signup(other)).body, tag).toEqual({ error: 'work_email_required' });
+    }
+  });
+
+  it('a Gmail address can’t reclaim an abandoned signup’s slug either', async () => {
+    const s = slug();
+    const work = `first-${rnd()}@workbrand.test`;
+    expect((await signup(work, s)).status).toBe(201);
+    const refused = await signup(gmail('reclaim'), s);
+    expect([refused.status, refused.body]).toEqual([403, { error: 'work_email_required' }]);
+    const tenant = await db<TenantRow>(TABLES.Tenant).where({ slug: s }).first();
+    expect(await db(TABLES.Admin).where({ tenantId: tenant!.id }).pluck('email')).toEqual([work]);
   });
 
   it('ops switch it off and back on; read-only operators can’t', async () => {

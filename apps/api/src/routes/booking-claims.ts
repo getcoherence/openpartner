@@ -16,10 +16,11 @@
  *     (following the link proved the inbox, so no second email) and both
  *     sessions are set. The brand clears the same checks as any signup
  *     (reserved slugs, work email, country, blocklist, sanctions screening)
- *     and lands in operator review. A free mail address can't open one
- *     while ops require a work email: the requester signs up from a work
- *     address and claims the request into that brand. It has no plan, so it pays the Revshare booking fee
- *     (booking-fee.ts) until it picks one.
+ *     and lands in operator review. It has no plan, so it pays the Revshare
+ *     booking fee (booking-fee.ts) until it picks one.
+ *   - A free mail address while ops require a work email: no brand is
+ *     created for it. The requester signs up from a work address and opens
+ *     the link again, signed in, to claim the request into that brand.
  *   - The address already has a brand, or the visitor is signed in: they
  *     sign in the usual way (a 48-hour link never signs anyone into an
  *     existing account) and the brand's claim page (/admin/network/claim)

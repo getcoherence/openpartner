@@ -72,15 +72,23 @@ describe('brand signup', () => {
     routes['GET /signup/settings'] = () => json(200, { workEmailRequired: true });
     const page = renderAt('/signup', <SignupPage />, '/signup');
     await waitFor(() => expect(page.getByText('Work email')).toBeTruthy());
-    const submit = page.getByRole('button', { name: 'Create brand account' }) as HTMLButtonElement;
 
     fill(page, 'Ada@Gmail.com');
     expect(page.getByText(NEEDED)).toBeTruthy();
-    expect(submit.disabled).toBe(true);
 
     fireEvent.change(page.getByPlaceholderText('ada@example.com'), { target: { value: 'ada@acme.example' } });
     expect(page.queryByText(NEEDED)).toBeNull();
-    expect(submit.disabled).toBe(false);
+  });
+
+  it('leaves the decision to the API: someone already running an approved brand from Gmail signs up', async () => {
+    routes['GET /signup/settings'] = () => json(200, { workEmailRequired: true });
+    routes['POST /signup'] = () => json(201, { ok: true, tenant: { id: 't_1', slug: 'acme' }, mailDelivered: true });
+    const page = renderAt('/signup', <SignupPage />, '/signup');
+    await waitFor(() => expect(page.getByText('Work email')).toBeTruthy());
+    fill(page, 'owner@gmail.com');
+    expect(page.getByText(NEEDED)).toBeTruthy();
+    fireEvent.click(page.getByRole('button', { name: 'Create brand account' }));
+    await waitFor(() => expect(page.getByText('Confirm your email')).toBeTruthy());
   });
 
   it('shows the API’s refusal too, and asks for any email where the rule is off', async () => {

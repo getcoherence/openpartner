@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Trash2 } from 'lucide-react';
 import { theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../../ui.js';
+import { SIGNUP_SETTINGS_KEY } from '../auth/PasswordAuth.js';
 import { Pill } from './components.js';
 import {
   papi,
@@ -140,7 +141,10 @@ function WorkEmailCard({ canWrite }: { canWrite: boolean }) {
   const save = useMutation({
     mutationFn: (workEmailRequired: boolean) =>
       papi<{ settings: BrandSignupSettings }>('/platform-admin/brand-signup', { method: 'PUT', body: { workEmailRequired } }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['platform-brand-signup'] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['platform-brand-signup'] });
+      void qc.invalidateQueries({ queryKey: SIGNUP_SETTINGS_KEY });
+    },
   });
   const on = state.data?.settings?.workEmailRequired;
 

@@ -20,8 +20,12 @@ export const FREE_MAIL_DOMAINS: ReadonlySet<string> = new Set([
   // Regional variants of the same providers.
   'outlook.fr', 'outlook.de', 'outlook.es', 'outlook.it', 'hotmail.fr', 'hotmail.de', 'hotmail.es', 'hotmail.it',
   'live.fr', 'live.ca', 'live.com.au', 'yahoo.fr', 'yahoo.de', 'yahoo.es', 'yahoo.it', 'yahoo.ca', 'yahoo.com.au',
-  'yahoo.co.jp', 'yahoo.com.br', 'aim.com', 'protonmail.ch', 'tutamail.com', 'gmx.at', 'gmx.ch', 'yandex.ua', 'bk.ru',
-  'inbox.ru', 'list.ru', 'foxmail.com', 'yeah.net', 'sina.com', 'hanmail.net',
+  'yahoo.co.jp', 'yahoo.com.br', 'aim.com', 'protonmail.ch', 'tutamail.com', 'tuta.com', 'tutanota.de', 'keemail.me',
+  'gmx.at', 'gmx.ch', 'gmx.us', 'gmx.co.uk', 'gmx.fr', 'yandex.ua', 'bk.ru', 'inbox.ru', 'list.ru', 'foxmail.com',
+  'yeah.net', 'sina.com', 'hanmail.net',
+  // mail.com's other free mailbox domains.
+  'email.com', 'usa.com', 'post.com', 'consultant.com', 'engineer.com', 'myself.com', 'europe.com', 'asia.com',
+  'iname.com', 'techie.com', 'writeme.com', 'accountant.com', 'dr.com', 'cheerful.com', 'workmail.com', 'contractor.net',
   // Consumer ISPs and other free mailboxes.
   'duck.com', 'posteo.de', 'mailbox.org', 't-online.de', 'orange.fr', 'free.fr', 'laposte.net', 'sfr.fr', 'wanadoo.fr',
   'libero.it', 'virgilio.it', 'seznam.cz', 'wp.pl', 'o2.pl', 'interia.pl', 'onet.pl', 'uol.com.br', 'bol.com.br',
