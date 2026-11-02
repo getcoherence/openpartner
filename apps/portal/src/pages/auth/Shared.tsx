@@ -134,6 +134,32 @@ function AuthBrandMark({
 }
 
 /**
+ * "Approval required" note for signup pages whose new accounts wait for
+ * operator review: brands (every public signup lands pending, see
+ * routes/signup.ts) and Network creators (Creator.reviewStatus starts
+ * pending). Shown above the form so nobody first learns it after signing up.
+ */
+export function ReviewNotice({ children }: { children: ReactNode }) {
+  return (
+    <div
+      role="note"
+      style={{
+        background: theme.surface2,
+        border: `1px solid ${theme.border}`,
+        borderRadius: theme.radiusSm,
+        padding: '10px 12px',
+        marginBottom: 14,
+        fontSize: 12,
+        lineHeight: 1.5,
+        color: theme.textMuted,
+      }}
+    >
+      <strong style={{ color: theme.text, fontWeight: 600 }}>Approval required.</strong> {children}
+    </div>
+  );
+}
+
+/**
  * Tab strip for switching between brand and creator signup. Renders
  * above the form on both /signup and /creator/signup. Active tab
  * shows in the accent color; clicking the inactive tab navigates to
