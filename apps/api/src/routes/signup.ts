@@ -13,6 +13,8 @@
  *   - slug not already taken (Tenant.slug unique)
  *   - adminEmail not already in use under that slug (which is impossible
  *     since the tenant is brand new, but we check anyway for symmetry)
+ *   - adminEmail not at a free mail provider while ops require a work
+ *     email (GET /signup/settings says which)
  *
  * Mounted BEFORE tenantMiddleware in app.ts because there's no tenant
  * context yet — we use the privileged `db` for the writes.
@@ -30,7 +32,8 @@ import { getMailer } from '../mailer.js';
 import { adminInviteEmail, buildMagicLinkUrl } from '../email-templates.js';
 import { RESERVED_SLUGS, getTenancyMode } from '../tenancy.js';
 import { newTrialEnd } from '../billing-plan.js';
-import { findBlockingEntry, notifyOpsNewBrand } from '../brand-review.js';
+import { findBlockingEntry, notifyOpsNewBrand, workEmailRequiredFor } from '../brand-review.js';
+import { getBrandSignupSettings } from '../platform-settings.js';
 import { screenTenantInBackground } from '../sanctions-screening.js';
 import { recordHouseSignup, signupCrefs } from '../house-program.js';
 import {
@@ -81,6 +84,14 @@ class SignupGuardError extends Error {
   }
 }
 
+/** What the signup forms need to know before anything is sent: whether a
+ *  free mail address will be refused (the forms check it with
+ *  isFreeMailAddress as it's typed). */
+signupRouter.get('/signup/settings', async (_req, res) => {
+  const settings = await getBrandSignupSettings(db);
+  res.json({ workEmailRequired: settings.workEmailRequired });
+});
+
 signupRouter.post('/signup', signupLimit, async (req, res) => {
   if (getTenancyMode() !== 'multi') {
     return res.status(400).json({ error: 'signup_not_available_in_single_tenant' });
@@ -94,6 +105,12 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
 
   if (RESERVED_SLUGS.has(slug)) {
     return res.status(409).json({ error: 'slug_reserved' });
+  }
+
+  // A brand signs up from its own domain while ops require that
+  // (workEmailRequiredFor), so a Gmail address can't open a brand here.
+  if (await workEmailRequiredFor(db, adminEmail)) {
+    return res.status(403).json({ error: 'work_email_required' });
   }
 
   // Countries the platform doesn't serve: refused before anything is

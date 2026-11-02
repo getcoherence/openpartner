@@ -6,6 +6,8 @@
  *   - signed in as a brand admin: send it as that brand (the claim page);
  *   - signed in to OpenPartner but no workspace picked: pick one (/workspaces);
  *   - the address already has a brand: sign in, then the claim page;
+ *   - a free mail address while brands need a work email: sign up from a
+ *     work address, then open the link again (signed in, it's claimed);
  *   - otherwise: name the brand here and it's created for the address the
  *     link was sent to (routes/booking-claims.ts), signed in, with the
  *     request sent and the conversation open.
@@ -22,6 +24,7 @@ import { theme } from '../../theme.js';
 import { PUBLIC_SITE_URL, publicStorefrontUrl } from '../../lib/public-site.js';
 import { CountryField, countryErrorMessage } from '../../lib/CountryField.js';
 import { withNext } from '../../lib/signin-next.js';
+import { WORK_EMAIL_NEEDED } from '../auth/PasswordAuth.js';
 
 export interface ClaimPreview {
   creator: { id: string; name: string; handle: string | null; avatarUrl: string | null };
@@ -31,6 +34,8 @@ export interface ClaimPreview {
   brief: string;
   email: string;
   accountExists: boolean;
+  /** No brand can be created for this address (a free mail provider's). */
+  workEmailRequired?: boolean;
   suggested: { displayName: string; slug: string };
 }
 
@@ -77,6 +82,7 @@ function signupError(code: string): string {
   if (code === 'slug_reserved') return 'That workspace address is reserved. Try another.';
   if (code === 'account_exists') return 'This address already has an OpenPartner account. Sign in instead.';
   if (code === 'signup_unavailable') return 'We can’t create an account for this address.';
+  if (code === 'work_email_required') return WORK_EMAIL_NEEDED;
   if (code === 'invalid_body') return 'Check the fields and try again.';
   return LINK_ERRORS[code] ?? 'Something went wrong. Try again in a moment.';
 }
@@ -170,6 +176,13 @@ export function BookingConfirmPage() {
                       {p.email} already has an OpenPartner account. Sign in and your request goes out from your brand.
                     </div>
                     <Button onClick={() => nav(withNext('/signin', claimPath), { state: { email: p.email } })}>Sign in to send it</Button>
+                  </>
+                ) : p.workEmailRequired ? (
+                  <>
+                    <div style={{ fontSize: 14, color: theme.textMuted, marginBottom: 10 }}>
+                      {WORK_EMAIL_NEEDED} Then open this link again to send your request.
+                    </div>
+                    <Button onClick={() => nav('/signup')}>Sign up with a work email</Button>
                   </>
                 ) : (
                   <CreateBrand token={token} preview={p} />

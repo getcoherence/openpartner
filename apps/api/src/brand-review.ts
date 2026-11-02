@@ -13,12 +13,14 @@ import { ulid } from 'ulid';
 import type { Knex } from 'knex';
 import {
   TABLES,
+  isFreeMailAddress,
   type AdminRow,
   type ProgramRow,
   type SignupBlocklistRow,
   type TenantRow,
 } from '@openpartner/db';
 import { getMailer } from './mailer.js';
+import { getBrandSignupSettings } from './platform-settings.js';
 import { platformOpsEmail, sendOpsEmail } from './platform-ops-mail.js';
 import { getPortalBaseUrl } from './portal-url.js';
 import {
@@ -66,6 +68,27 @@ export async function findBlockingEntry(
       else void qb.whereRaw('1 = 0');
     });
   return rows[0] ?? null;
+}
+
+/**
+ * True when this address may not create a brand: it's at a free mail
+ * provider and ops require a work email (PlatformSetting brandSignup).
+ * Someone who already admins an approved, active brand cleared review once,
+ * so they may add another from the same address. Unlike the blocklist this
+ * refusal is specific (work_email_required): it isn't a ban.
+ */
+export async function workEmailRequiredFor(db: Knex, email: string): Promise<boolean> {
+  const normalized = normalizeEmail(email);
+  if (!isFreeMailAddress(normalized)) return false;
+  if (!(await getBrandSignupSettings(db)).workEmailRequired) return false;
+  const approved = await db(TABLES.Admin)
+    .join(TABLES.Tenant, `${TABLES.Tenant}.id`, `${TABLES.Admin}.tenantId`)
+    .whereRaw(`lower("${TABLES.Admin}"."email") = ?`, [normalized])
+    .whereNull(`${TABLES.Admin}.revokedAt`)
+    .andWhere(`${TABLES.Tenant}.approvalStatus`, 'approved')
+    .andWhere(`${TABLES.Tenant}.status`, 'active')
+    .first(`${TABLES.Tenant}.id`);
+  return !approved;
 }
 
 /** Add (or update the reason of) a blocklist entry. Idempotent on
