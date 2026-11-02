@@ -62,7 +62,7 @@ export function ConsentBanner() {
       }}
     >
       <p style={{ margin: 0 }}>
-        Can we use analytics cookies to see how the dashboard is used? Nothing loads unless you accept.{' '}
+        Can we use analytics cookies to see how this site is used? Nothing loads unless you accept.{' '}
         <a href={COOKIE_POLICY_URL} target="_blank" rel="noreferrer" style={{ color: theme.accentText }}>
           Cookie policy
         </a>
