@@ -17,7 +17,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { IndexedCreatorPage } from '../pages/admin/NetworkIndexedCreators.js';
 import { AdminNetworkCreators } from '../pages/admin/NetworkCreators.js';
-import { CreatorIndexClaimPage } from '../pages/creator/CreatorIndexClaim.js';
+import { CreatorIndexClaimPage, firstNameOf } from '../pages/creator/CreatorIndexClaim.js';
 import { CreatorIndexPage } from '../pages/platform/CreatorIndex.js';
 
 interface Recorded {
@@ -1417,6 +1417,9 @@ describe('claim page', () => {
     expiresAt: '2026-11-30T00:00:00Z',
   };
 
+  const claimCalls = () => calls.filter((c) => c.url.includes('/creator-index/'));
+  const choosePassword = (value: string) => fireEvent.change(screen.getByLabelText(/Choose a password/), { target: { value } });
+
   function page() {
     return wrap(
       <Routes>
@@ -1428,29 +1431,83 @@ describe('claim page', () => {
     );
   }
 
-  it('shows who is waiting and what we hold, and claims on a click', async () => {
+  it('shows who is waiting and what we hold, and claims with the password they choose', async () => {
     respond = (url) =>
       url.endsWith('/claim/preview')
         ? { status: 200, body: PREVIEW }
-        : { status: 200, body: { ok: true, creatorId: 'crt_1', created: true, conversationIds: ['cnv_1', 'cnv_2'] } };
+        : url.endsWith('/creators/whoami')
+          ? { status: 200, body: { creator: null } }
+          : { status: 200, body: { ok: true, creatorId: 'crt_1', created: true, conversationIds: ['cnv_1', 'cnv_2'] } };
     page();
     expect(await screen.findByText('2 brands want to work with you')).toBeTruthy();
     expect(screen.getByText(/got partnerships@jo\.co from https:\/\/jo\.co\/contact/)).toBeTruthy();
-    expect(calls.map((c) => c.url)).toEqual(['/api/creator-api/creator-index/claim/preview']);
+    expect(claimCalls().map((c) => c.url)).toEqual(['/api/creator-api/creator-index/claim/preview']);
+    // The account is the address we wrote to; it needs a password first.
+    expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('partnerships@jo.co');
+    expect((screen.getByLabelText('Email') as HTMLInputElement).readOnly).toBe(true);
+    choosePassword('short');
+    fireEvent.click(screen.getByText('Claim my profile and read'));
+    expect(claimCalls()).toHaveLength(1);
+    choosePassword('correct horse battery');
     fireEvent.click(screen.getByText('Claim my profile and read'));
     expect(await screen.findByText('thread page')).toBeTruthy();
-    expect(calls[1]).toMatchObject({ url: '/api/creator-api/creator-index/claim', method: 'POST', body: { token: 'tok_123' } });
+    expect(claimCalls()[1]).toMatchObject({
+      url: '/api/creator-api/creator-index/claim',
+      method: 'POST',
+      body: { token: 'tok_123', password: 'correct horse battery' },
+    });
+  });
+
+  it('signed in already, claims into that account with no password', async () => {
+    respond = (url) =>
+      url.endsWith('/claim/preview')
+        ? { status: 200, body: PREVIEW }
+        : url.endsWith('/creators/whoami')
+          ? { status: 200, body: { creator: { email: 'jo@elsewhere.co' } } }
+          : { status: 200, body: { ok: true, creatorId: 'crt_1', created: false, conversationIds: ['cnv_1'] } };
+    page();
+    expect(await screen.findByText('Signed in as jo@elsewhere.co')).toBeTruthy();
+    expect(screen.queryByLabelText(/Choose a password/)).toBeNull();
+    fireEvent.click(screen.getByText('Claim my profile and read'));
+    expect(await screen.findByText('thread page')).toBeTruthy();
+    expect(claimCalls()[1]!.body).toEqual({ token: 'tok_123' });
+  });
+
+  it('offers no form until it knows whether they are signed in', async () => {
+    let whoamiFails = true;
+    respond = (url) =>
+      url.endsWith('/claim/preview')
+        ? { status: 200, body: PREVIEW }
+        : url.endsWith('/creators/whoami')
+          ? whoamiFails
+            ? { status: 502, body: { error: 'network_unavailable' } }
+            : { status: 200, body: { creator: { email: 'jo@elsewhere.co' } } }
+          : { status: 200, body: { ok: true, creatorId: 'crt_1', created: false, conversationIds: ['cnv_1'] } };
+    page();
+    expect(await screen.findByText(/We couldn.t check whether you.re signed in/)).toBeTruthy();
+    expect(screen.queryByLabelText(/Choose a password/)).toBeNull();
+    expect(screen.queryByText('Claim my profile and read')).toBeNull();
+    whoamiFails = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('Signed in as jo@elsewhere.co')).toBeTruthy();
+    expect(screen.getByText('Claim my profile and read')).toBeTruthy();
   });
 
   it('sends an existing account to sign in', async () => {
     respond = (url) =>
       url.endsWith('/claim/preview')
         ? { status: 200, body: PREVIEW }
-        : { status: 409, body: { error: 'sign_in_required', email: 'partnerships@jo.co' } };
+        : url.endsWith('/creators/whoami')
+          ? { status: 200, body: { creator: null } }
+          : { status: 409, body: { error: 'sign_in_required', email: 'partnerships@jo.co' } };
     page();
-    fireEvent.click(await screen.findByText('Claim my profile and read'));
+    await screen.findByText('Claim my profile and read');
+    choosePassword('correct horse battery');
+    fireEvent.click(screen.getByText('Claim my profile and read'));
     await waitFor(() => expect(screen.getByText(/You already have an OpenPartner account at partnerships@jo\.co/)).toBeTruthy());
-    expect(screen.getByText('Sign in')).toBeTruthy();
+    // The header's, and the one beside the message.
+    expect(screen.getAllByRole('button', { name: 'Sign in' })).toHaveLength(2);
+    expect(screen.queryByText('Claim my profile and read')).toBeNull();
   });
 
   it('tells the creator why brands see them as open to partnerships, and where we read it', async () => {
@@ -1482,22 +1539,51 @@ describe('claim page', () => {
             body: {
               ...PREVIEW,
               invites: [],
-              creator: { ...PREVIEW.creator, shownToBrands: false, partnershipSignals: [{ kind: 'sponsor_page', count: null, evidence: 'https://jo.co/sponsor' }] },
+              creator: {
+                ...PREVIEW.creator,
+                shownToBrands: false,
+                partnershipSignals: [{ kind: 'sponsor_page', count: null, evidence: 'https://jo.co/sponsor' }],
+                country: 'US',
+                categories: ['sales'],
+                topics: ['outbound', 'cold email'],
+                platforms: [{ ...PREVIEW.creator.platforms[0]!, engagementRate: 2.4, engagementPosts: 10 }],
+              },
             },
           }
         : { status: 200, body: { ok: true, creatorId: 'crt_1', created: true, conversationIds: [] } };
     page();
-    expect(await screen.findByText('Claim your OpenPartner profile')).toBeTruthy();
+    expect(await screen.findByText('Jo, your creator profile is ready')).toBeTruthy();
     expect(screen.getByText(/It isn.t shown to brands until you claim it/)).toBeTruthy();
     expect(screen.getByText(/Brands don.t see this listing\. It notes that you take partnerships, from/)).toBeTruthy();
     expect(screen.queryByText(/want to work with you/)).toBeNull();
+    // Their listing as a brand would see it, marked hidden.
+    expect(screen.getByText('Hidden from brands')).toBeTruthy();
+    expect(screen.getByText('Has a sponsor page')).toBeTruthy();
+    expect(screen.getByRole('link', { name: /LinkedIn, 12,000 followers.*2\.4% engagement over 10 posts/ }).getAttribute('href')).toBe(
+      'https://www.linkedin.com/in/jorivera',
+    );
+    expect(screen.getByText('United States')).toBeTruthy();
+    expect(screen.getByText('cold email')).toBeTruthy();
+    // Who we are, on our own site.
+    expect(screen.getByRole('link', { name: 'OpenPartner' }).getAttribute('href')).toBe('https://openpartner.dev/creators');
+    expect(screen.getByRole('link', { name: /See how storefronts work/ }).getAttribute('href')).toBe('https://openpartner.dev/creators/storefronts');
+    choosePassword('correct horse battery');
     fireEvent.click(screen.getByText('Claim my profile'));
     expect(await screen.findByText('creator home')).toBeTruthy();
+  });
+
+  it('greets a person by first name, and anything else without one', () => {
+    expect(firstNameOf('Dr. Jane Doe | Growth')).toBe('Jane');
+    expect(firstNameOf('Jo Rivera')).toBe('Jo');
+    expect(firstNameOf('jordanelliscoaching')).toBeNull();
+    expect(firstNameOf('The Daily Grind')).toBeNull();
+    expect(firstNameOf(null)).toBeNull();
   });
 
   it('explains an expired link', async () => {
     respond = () => ({ status: 404, body: { error: 'invalid_or_expired' } });
     page();
     expect(await screen.findByText(/This link has expired or isn.t valid/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Join free' })).toBeTruthy();
   });
 });
