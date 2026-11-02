@@ -19,7 +19,7 @@ export type CreatorShare = 'none' | 'posts' | 'counts' | 'revenue';
 
 export interface ReportPost {
   url: string;
-  platform: 'youtube' | 'website' | 'other';
+  platform: 'youtube' | 'website' | 'instagram' | 'tiktok' | 'other';
   label: string;
   account: 'verified' | 'other_account' | 'unverified' | 'unsupported';
   reachable: boolean | null;
@@ -27,6 +27,8 @@ export interface ReportPost {
   publishedBeforeAccept: boolean | null;
   link: 'booking' | 'general' | 'both' | 'none' | 'unknown';
   youtube: { views: number | null; likes: number | null; comments: number | null } | null;
+  /** Read from the creator's verified Instagram or TikTok; absent on an older Network. */
+  social?: SocialStats | null;
   reported: { views: number | null; likes: number | null; comments: number | null; shares: number | null; reportedAt: string } | null;
   /** The brand's view only. */
   duplicate?: 'none' | 'same_brand' | 'other_brand';
@@ -85,6 +87,17 @@ export interface BookingReport {
   trackedUrls?: string[];
 }
 
+/** A post's numbers from Instagram or TikTok (the Network's
+ *  docs/campaign-reports.md §4). */
+export interface SocialStats {
+  platform: 'instagram' | 'tiktok';
+  views: number | null;
+  likes: number | null;
+  comments: number | null;
+  /** TikTok only. */
+  shares: number | null;
+}
+
 export const SHARE_LABELS: Record<CreatorShare, string> = {
   none: 'No',
   posts: 'Posts only',
@@ -104,6 +117,22 @@ export const REPORT_PRINT_CSS = `
 `;
 
 const count = (n: number | null | undefined) => (n == null ? '—' : n.toLocaleString());
+
+/** "Instagram 52,000 views 812 likes 46 comments": what its platform says. */
+export function SocialStatsLine({ stats }: { stats: SocialStats }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: theme.text, fontWeight: 600 }}>
+        <PlatformMark platform={stats.platform} size={16} />
+        {stats.platform === 'instagram' ? 'Instagram' : 'TikTok'}
+      </span>
+      {stats.views != null && <span>{count(stats.views)} views</span>}
+      {stats.likes != null && <span>{count(stats.likes)} likes</span>}
+      {stats.comments != null && <span>{count(stats.comments)} comments</span>}
+      {stats.shares != null && <span>{count(stats.shares)} shares</span>}
+    </div>
+  );
+}
 
 function Tile({ label, value, hint }: { label: string; value: ReactNode; hint?: ReactNode }) {
   return (
@@ -194,6 +223,8 @@ function PostRow({ p, editor }: { p: ReportPost; editor?: (p: ReportPost) => Rea
             <span>{p.youtube.likes == null ? 'Likes hidden' : `${count(p.youtube.likes)} likes`}</span>
             <span>{p.youtube.comments == null ? 'Comments hidden' : `${count(p.youtube.comments)} comments`}</span>
           </div>
+        ) : p.social ? (
+          <SocialStatsLine stats={p.social} />
         ) : p.reported ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <Tag>Reported by the creator · {formatDate(p.reported.reportedAt)}</Tag>

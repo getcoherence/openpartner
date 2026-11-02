@@ -37,8 +37,8 @@ function ReportedNumbers({ post, bookingId, onSaved }: { post: ReportPost; booki
       onSaved(r.report);
     },
   });
-  // Numbers from YouTube win: a post with them takes none.
-  if (post.youtube) return null;
+  // Numbers from YouTube, Instagram or TikTok win: a post with them takes none.
+  if (post.youtube || post.social) return null;
   if (!open) {
     return (
       <div className="op-report-noprint" style={{ marginTop: 6 }}>
