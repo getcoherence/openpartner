@@ -4,8 +4,7 @@
  * POST /admin/tracking-health/test-click
  *   - admins only; a single-use link whose token is stored only as a hash
  *   - refused for another brand's program, a blocked, ended or scheduled
- *     one, a Stripe-hosted checkout, a brand whose links are paused, and
- *     past the daily allowance
+ *     one, a brand whose links are paused, and past the daily allowance
  *
  * GET /admin/tracking-health/test-click/:id, through each step:
  *   - waiting for the link, then the link expiring unopened
@@ -15,6 +14,9 @@
  *     answer `test: true` and write no ClickLanding, Identity or Click
  *   - a signup without a landing passes (the click reached the site
  *     another way); a signup that never comes gets the linking fix
+ *   - a conversion call naming it links it and records nothing
+ *   - a program whose links go straight to Stripe's checkout skips the
+ *     landing, and waits for the checkout (stripe-webhook.test.ts sends one)
  *   - steps after the window aren't recorded; another brand can't read it
  *
  * TrackingIssue doesn't count a test click id as an unknown click, and the
@@ -29,7 +31,7 @@ import { DEFAULT_TENANT_ID, TABLES, type TrackingIssueKind } from '@openpartner/
 import { db } from '../db.js';
 import { createApp } from '../app.js';
 import { LINKING_FIX, SCRIPT_FIX_ADD } from '../setup-checks.js';
-import { PRIVACY_SIGNAL_FIX, TEST_CLICK, purgeTestClicks, testClickResult } from '../test-clicks.js';
+import { PRIVACY_SIGNAL_FIX, TEST_CLICK, purgeTestClicks, recordTestLink, testClickResult } from '../test-clicks.js';
 import { noteTrackingIssue } from '../tracking-issues.js';
 
 const ADMIN_KEY = 'op_test_test_clicks_0123456789abcdef0123';
@@ -77,12 +79,12 @@ async function create(programId: string) {
 }
 
 /** What the router does when the link is opened (apps/router handleTestClick). */
-async function claim(path: string, at = new Date()): Promise<string> {
+async function claim(path: string, at = new Date(), destination = (id: string) => `https://brand.example/signup?cref=${id}`): Promise<string> {
   const clickId = ulid();
   const n = await db(TABLES.TestClick)
     .where({ tokenHash: sha256(path.slice('/_test/'.length)), clickedAt: null })
     .where('expiresAt', '>', at)
-    .update({ clickId, clickedAt: at, destination: `https://brand.example/signup?cref=${clickId}` });
+    .update({ clickId, clickedAt: at, destination: destination(clickId) });
   expect(n).toBe(1);
   return clickId;
 }
@@ -152,14 +154,13 @@ describe.skipIf(skipIntegration)('POST /admin/tracking-health/test-click', () =>
     expect(await db(TABLES.TestClick).where({ tenantId: T })).toEqual([]);
   });
 
-  it('refuses another brand’s program, one that isn’t running, and a Stripe-hosted checkout', async () => {
+  it('refuses another brand’s program, and one that isn’t running', async () => {
     const cases: Array<[Promise<string>, number, string]> = [
       [Promise.resolve(ulid()), 404, 'program_not_found'],
       [program({ tenantId: OTHER_TENANT_ID }), 404, 'program_not_found'],
       [program({ blockedAt: new Date() }), 409, 'program_not_active'],
       [program({ endsAt: new Date(Date.now() - HOUR) }), 409, 'program_not_active'],
       [program({ startsAt: new Date(Date.now() + HOUR) }), 409, 'program_not_active'],
-      [program({ destinationUrl: 'https://buy.stripe.com/test_abc?client_reference_id={click_id}' }), 422, 'stripe_checkout_destination'],
     ];
     for (const [pid, status, error] of cases) {
       const res = await create(await pid);
@@ -283,6 +284,8 @@ describe.skipIf(skipIntegration)('GET /admin/tracking-health/test-click/:id', ()
     expect(done.state).toBe('passed');
     expect(statuses(done)).toEqual(['click:done', 'landing:done', 'identify:done']);
     expect(done.steps.every((s) => s.fix === null)).toBe(true);
+    expect(done.steps[2]).toMatchObject({ title: 'Linked to a customer', summary: 'Your site linked it to a signup or login.' });
+    expect((await db(TABLES.TestClick).where({ id }).first()).linkedVia).toBe('identify');
     // The pass verifies the brand's tracking (tracking-verification.ts), once.
     const tenant = await db(TABLES.Tenant).where({ id: T }).first('trackingTestPassedAt');
     expect(tenant.trackingTestPassedAt).toBeInstanceOf(Date);
@@ -299,6 +302,45 @@ describe.skipIf(skipIntegration)('GET /admin/tracking-health/test-click/:id', ()
     const r = await result(id);
     expect(r.state).toBe('passed');
     expect(r.steps[1]).toMatchObject({ status: 'done', at: null });
+  });
+
+  it('passes on a conversion call naming it, which records nothing', async () => {
+    const { id, clickId } = await started();
+    const conversion = { clickId, type: 'loan_funded', value: 100, externalEventId: `loan-${clickId}` };
+    const res = await request(app).post('/attribution/conversions').set(admin).send(conversion);
+    expect([res.status, res.body]).toEqual([200, { ok: true, test: true }]);
+    const again = await request(app).post('/attribution/conversions').set(admin).send(conversion);
+    expect([again.status, again.body]).toEqual([200, { ok: true, test: true }]);
+
+    const r = await result(id);
+    expect(r.state).toBe('passed');
+    expect(r.steps[2]).toMatchObject({ status: 'done', summary: 'A conversion call sent it.' });
+    expect((await db(TABLES.Tenant).where({ id: T }).first('trackingTestPassedAt')).trackingTestPassedAt).toBeInstanceOf(Date);
+    for (const table of [TABLES.Click, TABLES.Identity, TABLES.Event, TABLES.TrackingIssue]) {
+      expect(await db(table).where({ tenantId: T })).toEqual([]);
+    }
+  });
+
+  it('skips the landing when the link goes straight to Stripe’s checkout, and waits for the checkout', async () => {
+    const res = await create(await program({ destinationUrl: 'https://buy.stripe.com/test_abc?client_reference_id={click_id}' }));
+    expect(res.status).toBe(201);
+    const opened = new Date(Date.now() - (TEST_CLICK.identifyGraceSeconds + 5) * SECOND);
+    const clickId = await claim(res.body.path, opened, (cid) => `https://buy.stripe.com/test_abc?client_reference_id=${cid}`);
+
+    // Still inside the longer wait a checkout gets.
+    const waiting = await result(res.body.id);
+    expect(statuses(waiting)).toEqual(['click:done', 'landing:skipped', 'identify:waiting']);
+    expect(waiting.steps[2]!.summary).toContain('Complete the checkout');
+
+    const late = (await testClickResult(db, T, res.body.id, new Date(opened.getTime() + (TEST_CLICK.checkoutGraceSeconds + 5) * SECOND)))!;
+    expect(late.steps[2]).toMatchObject({ status: 'missing' });
+    expect(late.steps[2]!.fix).toContain('client_reference_id={click_id}');
+
+    // What the Stripe webhook does with a checkout carrying it.
+    expect(await recordTestLink(db, T, clickId, 'checkout')).toEqual({ first: true });
+    const done = await result(res.body.id);
+    expect(done.state).toBe('passed');
+    expect(done.steps[2]).toMatchObject({ status: 'done', summary: 'A Stripe checkout carried it.' });
   });
 
   it('gives the linking fix when no signup comes, and expires after the window', async () => {

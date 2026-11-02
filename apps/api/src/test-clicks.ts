@@ -17,15 +17,21 @@
  *                                               signup report it as usual;
  *                                               on their click-not-found
  *                                               path they find it here
+ *   Stripe checkout, conversion call            either carrying the click id
+ *                                               links it too, on the same
+ *                                               path: a brand whose site
+ *                                               never calls identify() (a
+ *                                               Payment Link, a lender's
+ *                                               postback) can still pass
  *   GET  /admin/tracking-health/test-click/:id  how far it got
  *
  * A test click is never a Click. Attribution, payouts, every click count,
  * the funnel, the fraud queue, partner views and the export all read Click,
  * so none of them can see one, and no Identity is written for the tester's
  * signup. No partner is involved either: the test needs no partner link, so
- * it works before the first partner joins. A click id it carries on to a
- * Stripe checkout or a conversion call isn't counted as dropped input
- * (tracking-issues.ts).
+ * it works before the first partner joins. A checkout that carries one is
+ * recorded as if it carried no click, and a conversion call naming one
+ * records nothing. Neither is counted as dropped input (tracking-issues.ts).
  *
  * Expiry (TEST_CLICK): the link works once, for linkTtlMinutes; landing and
  * identify count for stepWindowHours after the click; rows are deleted
@@ -38,7 +44,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { Knex } from 'knex';
 import { ulid } from 'ulid';
-import { TABLES, type ProgramRow, type TenantRow, type TestClickRow } from '@openpartner/db';
+import { TABLES, type ProgramRow, type TenantRow, type TestClickLinkedVia, type TestClickRow } from '@openpartner/db';
 import { campaignStatus } from './campaign-lifecycle.js';
 import { LINKING_FIX, SCRIPT_FIX_ADD, SCRIPT_FIX_CHECK, isStripeCheckout } from './setup-checks.js';
 import { markTrackingTestPassed } from './tracking-verification.js';
@@ -56,6 +62,8 @@ export const TEST_CLICK = {
   landingGraceSeconds: 60,
   /** Time to sign up or log in, after the landing (or the click). */
   identifyGraceSeconds: 180,
+  /** Time to pay on Stripe's page, when the link goes straight there. */
+  checkoutGraceSeconds: 600,
 } as const;
 
 /** The tester's own browser can hold the script back: with data-consent=
@@ -75,7 +83,7 @@ export type CreateTestClickResult =
   | {
       ok: false;
       status: 404 | 409 | 422 | 429;
-      error: 'program_not_found' | 'program_not_active' | 'links_paused' | 'stripe_checkout_destination' | 'too_many_test_clicks';
+      error: 'program_not_found' | 'program_not_active' | 'links_paused' | 'too_many_test_clicks';
     };
 
 export async function createTestClick(
@@ -103,10 +111,6 @@ export async function createTestClick(
     | undefined;
   if (!tenant || tenant.status !== 'active' || tenant.approvalStatus === 'rejected' || tenant.pendingDeletionAt != null) {
     return { ok: false, status: 409, error: 'links_paused' };
-  }
-  // Nothing lands on Stripe's page, and the destination check covers it.
-  if (isStripeCheckout(program.destinationUrl)) {
-    return { ok: false, status: 422, error: 'stripe_checkout_destination' };
   }
   return db.transaction(async (trx) => {
     // One at a time per brand, so concurrent requests can't all count under
@@ -140,8 +144,9 @@ export type TestClickStepId = 'click' | 'landing' | 'identify';
  *   missing  it should have happened by now (or the test expired), with
  *            what to fix. A late arrival still turns it done.
  *   pending  waits on the step before
+ *   skipped  doesn't apply: nothing lands on a Stripe-hosted checkout
  */
-export type TestClickStepStatus = 'done' | 'waiting' | 'missing' | 'pending';
+export type TestClickStepStatus = 'done' | 'waiting' | 'missing' | 'pending' | 'skipped';
 
 export interface TestClickStep {
   id: TestClickStepId;
@@ -167,8 +172,18 @@ export interface TestClickResult {
 export const TEST_CLICK_STEP_TITLES: Record<TestClickStepId, string> = {
   click: 'Link opened',
   landing: 'Reached the script',
-  identify: 'Linked to a signup',
+  identify: 'Linked to a customer',
 };
+
+const LINKED_SUMMARY: Record<TestClickLinkedVia, string> = {
+  identify: 'Your site linked it to a signup or login.',
+  checkout: 'A Stripe checkout carried it.',
+  conversion: 'A conversion call sent it.',
+};
+
+/** Why a link that goes straight to Stripe's checkout wasn't linked. */
+const CHECKOUT_LINKING_FIX =
+  'Check that Stripe is connected under Integrations and that the destination carries client_reference_id={click_id}, then complete the checkout in the tab the link opened.';
 
 /** A test click's progress, or null when the brand has none by that id. */
 export async function testClickResult(
@@ -180,8 +195,13 @@ export async function testClickResult(
   const row = (await db(`${TABLES.TestClick} as t`)
     .join(`${TABLES.Program} as p`, (j) => j.on('p.id', 't.programId').andOn('p.tenantId', 't.tenantId'))
     .where({ 't.id': id, 't.tenantId': tenantId })
-    .first('t.*', 'p.name as programName')) as (TestClickRow & { programName: string }) | undefined;
+    .first('t.*', 'p.name as programName', 'p.destinationUrl as programDestination')) as
+    | (TestClickRow & { programName: string; programDestination: string })
+    | undefined;
   if (!row) return null;
+  // Partners' links go straight to Stripe's checkout: no page of the
+  // brand's runs the script, and only the checkout can link the click.
+  const toStripe = isStripeCheckout(row.destination ?? row.programDestination);
 
   const at = (d: Date | null) => (d ? new Date(d).toISOString() : null);
   const clickedAt = row.clickedAt ? new Date(row.clickedAt) : null;
@@ -203,7 +223,9 @@ export async function testClickResult(
       : step('click', 'waiting', null, 'Waiting for the test link to be opened. It works once.');
 
   let landing: TestClickStep;
-  if (!clickedAt) {
+  if (toStripe && !row.landedAt) {
+    landing = step('landing', 'skipped', null, 'Not needed: the link goes straight to Stripe’s checkout.');
+  } else if (!clickedAt) {
     landing = step('landing', 'pending', null, 'Waits for the link to be opened.');
   } else if (row.landedAt) {
     landing = step(
@@ -215,7 +237,7 @@ export async function testClickResult(
   } else if (row.identifiedAt) {
     // As the script check has it: a click linked anyway reaches the brand
     // another way (its server reads ?cref=).
-    landing = step('landing', 'done', null, 'No landing report, but it was linked to a signup, so the click reaches you another way.');
+    landing = step('landing', 'done', null, 'No landing report, but it was linked to a customer, so the click reaches you another way.');
   } else if (!over && since(clickedAt) < TEST_CLICK.landingGraceSeconds) {
     landing = step('landing', 'waiting', null, 'Waiting for the page to report the click.');
   } else {
@@ -232,25 +254,31 @@ export async function testClickResult(
   if (!clickedAt) {
     identify = step('identify', 'pending', null, 'Waits for the link to be opened.');
   } else if (row.identifiedAt) {
-    identify = step('identify', 'done', at(row.identifiedAt), 'Your site linked it to a signup or login.');
-  } else if (!over && since(row.landedAt ?? clickedAt) < TEST_CLICK.identifyGraceSeconds) {
+    identify = step('identify', 'done', at(row.identifiedAt), LINKED_SUMMARY[row.linkedVia ?? 'identify']);
+  } else if (
+    !over &&
+    since(row.landedAt ?? clickedAt) < (toStripe ? TEST_CLICK.checkoutGraceSeconds : TEST_CLICK.identifyGraceSeconds)
+  ) {
     identify = step(
       'identify',
       'waiting',
       null,
-      'Sign up or log in on your site in the tab the link opened (a private window helps if you’re already signed in).',
+      toStripe
+        ? 'Complete the checkout in the tab the link opened. It’s a real purchase: use a discount code of your own, or refund it afterwards.'
+        : 'Sign up, log in or check out on your site in the tab the link opened (a private window helps if you’re already signed in).',
     );
   } else {
     identify = step(
       'identify',
       'missing',
       null,
-      over ? 'No signup or login was linked to it.' : 'No signup or login has been linked to it yet.',
-      LINKING_FIX,
+      over ? 'Nothing linked it to a customer.' : 'Nothing has linked it to a customer yet.',
+      toStripe ? CHECKOUT_LINKING_FIX : LINKING_FIX,
     );
   }
 
-  const passed = click.status === 'done' && landing.status === 'done' && identify.status === 'done';
+  const reached = (s: TestClickStep) => s.status === 'done' || s.status === 'skipped';
+  const passed = reached(click) && reached(landing) && reached(identify);
   return {
     id: row.id,
     program: { id: row.programId, name: row.programName },
@@ -317,16 +345,18 @@ export async function recordTestLanding(
 }
 
 /**
- * POST /attribution/identify for a test click: the first within the window
- * is kept, and nothing else is written (no Identity, no attribution). The
- * user id isn't stored. The first pass also verifies the brand's tracking
- * (tracking-verification.ts). Null when `clickId` isn't a test click of
- * the brand's.
+ * A test click linked to a customer: by POST /attribution/identify, a
+ * Stripe checkout carrying it, or a conversion call naming it. The first
+ * within the window is kept, and nothing else is written (no Identity, no
+ * Event, no attribution). The user id isn't stored. The first link also
+ * verifies the brand's tracking (tracking-verification.ts). Null when
+ * `clickId` isn't a test click of the brand's.
  */
-export async function recordTestIdentify(
+export async function recordTestLink(
   db: Knex,
   tenantId: string,
   clickId: string,
+  via: TestClickLinkedVia,
   now = new Date(),
 ): Promise<{ first: boolean } | null> {
   const test = await findTestClick(db, tenantId, clickId);
@@ -335,9 +365,19 @@ export async function recordTestIdentify(
   const n = await db(TABLES.TestClick)
     .where({ id: test.id, tenantId })
     .whereNull('identifiedAt')
-    .update({ identifiedAt: now });
+    .update({ identifiedAt: now, linkedVia: via });
   if (n > 0) await markTrackingTestPassed(db, tenantId, now);
   return { first: n > 0 };
+}
+
+/** POST /attribution/identify for a test click (recordTestLink). */
+export function recordTestIdentify(
+  db: Knex,
+  tenantId: string,
+  clickId: string,
+  now = new Date(),
+): Promise<{ first: boolean } | null> {
+  return recordTestLink(db, tenantId, clickId, 'identify', now);
 }
 
 /** Delete test clicks past retention, every tenant's (privileged pool). */

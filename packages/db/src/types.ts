@@ -942,8 +942,14 @@ export interface TestClickRow {
   landedAt: Date | null;
   /** The landing page's hostname only. */
   landingHost: string | null;
+  /** When it was first linked to a customer (the "identify" step). */
   identifiedAt: Date | null;
+  /** What linked it; null on rows linked before the column (all identify). */
+  linkedVia: TestClickLinkedVia | null;
 }
+
+/** How a test click was linked to a customer (apps/api/src/test-clicks.ts). */
+export type TestClickLinkedVia = 'identify' | 'checkout' | 'conversion';
 
 /** What a TrackingIssue counts (apps/api/src/tracking-issues.ts). */
 export type TrackingIssueKind =

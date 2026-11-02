@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 /**
- * Admin → Tracking health → Send a test click. Each program the script can
- * be tested on gets the button (not one that sends partners to Stripe's own
- * checkout, nor the account-wide checks). Pressing it opens a tab at once,
+ * Admin → Tracking health → Send a test click. Each program gets the button,
+ * one that sends partners to Stripe's own checkout too (its landing step is
+ * "not needed"), but not the account-wide checks. Pressing it opens a tab at once,
  * sends it to the single-use test link under the brand's share-link root
  * with no handle back to the portal, and follows the test until it passes:
  * the link to open or copy while unopened, the fix at the first step that
@@ -49,7 +49,7 @@ function report(state: TestClickReport['state'], steps: Array<[TestClickReport['
     destination: steps[0]![0] === 'done' ? 'https://brand.example/signup?cref=01JTESTCLICK0000000000000' : null,
     steps: steps.map(([status, fix], i) => ({
       id: ids[i]!,
-      title: ['Link opened', 'Reached the script', 'Linked to a signup'][i]!,
+      title: ['Link opened', 'Reached the script', 'Linked to a customer'][i]!,
       status,
       at: status === 'done' ? '2026-10-28T12:01:00.000Z' : null,
       summary: `${ids[i]} is ${status}`,
@@ -100,12 +100,13 @@ function renderPage() {
   );
 }
 
-async function sendButton(): Promise<HTMLButtonElement> {
+/** Spring's button, or Pay link's: the account-wide checks have none. */
+async function sendButton(which: 'spring' | 'pay' = 'spring'): Promise<HTMLButtonElement> {
   const buttons = await screen.findAllByRole('button', { name: 'Send a test click' });
-  // Only Spring: Pay link has no script check, and the account none at all.
-  expect(buttons).toHaveLength(1);
-  await waitFor(() => expect(buttons[0]!.hasAttribute('disabled')).toBe(false));
-  return buttons[0] as HTMLButtonElement;
+  expect(buttons).toHaveLength(2);
+  const button = buttons[which === 'spring' ? 0 : 1]!;
+  await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
+  return button as HTMLButtonElement;
 }
 
 describe('Send a test click', () => {
@@ -140,6 +141,14 @@ describe('Send a test click', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     expect(screen.queryByText(/^Test click passed/)).toBeNull();
   }, 15_000);
+
+  it('tests a program that sends partners straight to Stripe, where the landing isn’t needed', async () => {
+    progress = report('waiting', [['done', null], ['skipped', null], ['waiting', null]]);
+    renderPage();
+    fireEvent.click(await sendButton('pay'));
+    expect(posted).toEqual([{ programId: 'p2' }]);
+    expect(await screen.findByText('not needed', {}, { timeout: 4000 })).toBeTruthy();
+  });
 
   it('closes the tab and says why when the test is refused', async () => {
     created = { status: 409, body: { error: 'links_paused' } };
@@ -176,11 +185,12 @@ describe('Send a test click', () => {
       }) as typeof fetch;
 
       renderPage();
+      // Spring, Pay link, then the twin.
       const buttons = await screen.findAllByRole('button', { name: 'Send a test click' });
-      expect(buttons).toHaveLength(2);
+      expect(buttons).toHaveLength(3);
       await waitFor(() => expect(buttons[0]!.hasAttribute('disabled')).toBe(false));
       fireEvent.click(buttons[0]!);
-      fireEvent.click(buttons[1]!);
+      fireEvent.click(buttons[2]!);
       await waitFor(() => expect(release).toHaveLength(2));
       release.forEach((r) => r());
 

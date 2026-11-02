@@ -20,7 +20,8 @@
  * Each program there can send a test click (POST and GET
  * /admin/tracking-health/test-click, apps/api/src/test-clicks.ts): a
  * single-use link opened in a new tab, followed until the brand's site has
- * reported it landing and linked it to a signup. A test click is never a
+ * reported it landing and linked it to a customer (a signup, a Stripe
+ * checkout or a conversion call). A test click is never a
  * Click, so it's credited, paid and counted nowhere.
  *
  * Flags follow (GET /admin/tracking-health/flags,
@@ -176,7 +177,7 @@ export interface SetupChecksReport {
   }>;
 }
 
-export type TestClickStepStatus = 'done' | 'waiting' | 'missing' | 'pending';
+export type TestClickStepStatus = 'done' | 'waiting' | 'missing' | 'pending' | 'skipped';
 
 /** GET /admin/tracking-health/test-click/:id (apps/api/src/test-clicks.ts). */
 export interface TestClickReport {
@@ -739,15 +740,12 @@ function SetupChecksSection() {
 
   const r = query.data;
   // Grouped by program id, not name: two programs may share a name.
-  const groups: Array<{ key: string; name: string; programId: string | null; testable: boolean; checks: SetupChecksReport['checks'] }> = [];
+  const groups: Array<{ key: string; name: string; programId: string | null; checks: SetupChecksReport['checks'] }> = [];
   for (const c of r?.checks ?? []) {
     const key = c.program?.id ?? 'account';
     const last = groups[groups.length - 1];
     if (last && last.key === key) last.checks.push(c);
-    else groups.push({ key, name: c.program?.name ?? 'Whole account', programId: c.program?.id ?? null, testable: false, checks: [c] });
-    // A program without a script check sends partners to Stripe's own
-    // checkout, where nothing lands to test.
-    if (c.id === 'script') groups[groups.length - 1]!.testable = true;
+    else groups.push({ key, name: c.program?.name ?? 'Whole account', programId: c.program?.id ?? null, checks: [c] });
   }
   const failing = r?.checks.filter((c) => c.status === 'fail').length ?? 0;
 
@@ -804,7 +802,7 @@ function SetupChecksSection() {
                 <div style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                   {g.name}
                 </div>
-                {g.programId && g.testable && (
+                {g.programId && (
                   <span title={testRoot ? undefined : 'Set your router’s public URL in Settings first.'}>
                     <Button
                       variant="secondary"
@@ -877,8 +875,6 @@ function SetupChecksSection() {
 const TEST_CLICK_ERRORS: Record<string, string> = {
   links_paused: 'Your partner links don’t record clicks right now (the account is being deleted), so a test click can’t either.',
   program_not_active: 'This program isn’t running, so its links record no clicks.',
-  stripe_checkout_destination:
-    'This program sends partners straight to a Stripe checkout, where nothing lands to test. The destination check covers it.',
   too_many_test_clicks: 'That’s as many test clicks as one day allows. Try again tomorrow.',
 };
 
@@ -892,6 +888,7 @@ const STEP_STATUS: Record<TestClickStepStatus, { label: string; bg: string; fg: 
   waiting: { label: 'waiting', bg: theme.surface2, fg: theme.textMuted },
   missing: { label: 'not seen', bg: theme.warnSoft, fg: theme.warn },
   pending: { label: 'next', bg: theme.surface2, fg: theme.textDim },
+  skipped: { label: 'not needed', bg: theme.surface2, fg: theme.textDim },
 };
 
 const timeOf = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
@@ -908,7 +905,8 @@ function privacySignal(): string | null {
 
 /**
  * One test click, followed every two seconds until it passes or expires:
- * the link opened, the brand's script reporting it, a signup linked to it.
+ * the link opened, the brand's script reporting it (not needed when the link
+ * goes straight to Stripe's checkout), a customer linked to it.
  * The first step that didn't happen says what to fix. Until the link is
  * opened it can be opened here or copied (to try a phone, or a private
  * window); it works once.
@@ -935,7 +933,7 @@ function TestClickPanel({ test, onClose }: { test: { id: string; url: string }; 
   const headline = !t
     ? 'Test click'
     : t.state === 'passed'
-      ? 'Test click passed: a partner’s click reaches your site and is linked to the customer who signs up.'
+      ? 'Test click passed: a partner’s click reaches you and is linked to the customer.'
       : t.state === 'expired'
         ? 'Test click expired.'
         : opened

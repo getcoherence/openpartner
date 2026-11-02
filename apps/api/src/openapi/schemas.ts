@@ -384,6 +384,16 @@ export const ConversionResult = z
   })
   .openapi('ConversionResult');
 
+export const ConversionTestResult = z
+  .object({
+    ok: z.literal(true),
+    test: z.literal(true).openapi({
+      description:
+        "`clickId` is an admin's test click (Admin → Tracking health → Send a test click). The test is marked linked to a customer; nothing is recorded or attributed.",
+    }),
+  })
+  .openapi('ConversionTestResult');
+
 export const RefundCommission = z
   .object({
     commissionId: id.openapi({ description: 'The commission the conversion originally accrued.' }),

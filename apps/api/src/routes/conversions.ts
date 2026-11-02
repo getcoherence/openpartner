@@ -40,6 +40,10 @@ import { UNMATCHED_WINDOW_DAYS, unmatchedEventTypes } from '../unmatched-event-t
  * Every 2xx says what the conversion came to (conversionOutcome): a sender
  * mustn't retry a recorded conversion, but "recorded" alone hid a typo'd
  * stage name or a click past its window.
+ *
+ * An admin's test click (Admin → Tracking health → Send a test click) is
+ * linked and nothing is recorded: `{ ok: true, test: true }`, and the
+ * postback answers `ok test_click`.
  */
 export const conversionsRouter = Router();
 
@@ -75,6 +79,7 @@ conversionsRouter.post(
     const { ts, ...input } = body.data;
     const result = await recordClickConversion(db, tenantId, { ...input, ts: ts ? new Date(ts) : undefined });
     if (!result.ok) return res.status(result.status).json(errorBody(result));
+    if ('test' in result) return res.json({ ok: true, test: true });
     res.json({
       ok: true,
       ...(result.replayed ? { replayed: true } : {}),
@@ -139,6 +144,9 @@ export const POSTBACK_BODIES = [
   'ok not_attributed no_identity',
   'ok not_attributed corrective',
 ] as const;
+
+/** GET /postback's 200 for an admin's test click: nothing was recorded. */
+export const TEST_POSTBACK_BODY = 'ok test_click';
 
 function errorBody(result: Extract<ClickConversionResult, { ok: false }>) {
   switch (result.error) {
@@ -238,6 +246,7 @@ conversionsRouter.get('/postback', async (req, res) => {
   });
   if (!result.ok) return reply(res, result.status, result.error);
   if (queryParam(req, 'pixel') === '1') return res.status(200).type('image/gif').send(PIXEL);
+  if ('test' in result) return reply(res, 200, TEST_POSTBACK_BODY);
   // Still a 200 whatever it came to: the conversion is recorded, and a
   // sender retrying a miss would only replay it. The body says which.
   return reply(res, 200, postbackBody(conversionOutcome(result.attribution)));

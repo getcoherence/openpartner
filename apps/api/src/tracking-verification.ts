@@ -4,9 +4,10 @@
  * A brand's tracking is verified once one of its clicks has been linked to a
  * customer:
  *
- *   - a test click that reached identify (Tenant.trackingTestPassedAt, from
+ *   - a test click linked to a customer (Tenant.trackingTestPassedAt, from
  *     Admin → Tracking health → Send a test click, which works while the
- *     brand is still in review), or
+ *     brand is still in review), by identify(), a Stripe checkout or a
+ *     conversion call, or
  *   - a real partner click linked to a customer: any Identity row, written by
  *     identify(), a Stripe checkout, a conversion call or a coupon redemption.
  *
@@ -88,6 +89,31 @@ export async function networkReviewFor(
   if (approval !== 'approved') return approval;
   const enforced = await trackingGateEnforced(platformDb);
   return networkReviewStatus(approval, enforced ? await isTrackingVerified(db, tenantId) : true, enforced);
+}
+
+/**
+ * Why partners can't join the brand yet, or null when they can: 'review'
+ * while it awaits approval (approval-gate.ts), 'tracking' while its tracking
+ * isn't verified and either the gate is in force or the portal keeps its
+ * partner pages locked (no partner yet, as GET /admin/setup-lock has it).
+ * Hosted multi-tenant only. The setup checks wait on it rather than tell
+ * the brand to invite partners it can't. `platformDb` as for
+ * trackingGateEnforced.
+ */
+export async function partnerJoinsWaitOn(
+  db: Knex,
+  platformDb: Knex,
+  tenantId: string,
+  now = new Date(),
+): Promise<'review' | 'tracking' | null> {
+  if (getTenancyMode() !== 'multi') return null;
+  const tenant = (await db(TABLES.Tenant).where({ id: tenantId }).first('approvalStatus')) as
+    | Pick<TenantRow, 'approvalStatus'>
+    | undefined;
+  if ((tenant?.approvalStatus ?? 'approved') !== 'approved') return 'review';
+  if (await isTrackingVerified(db, tenantId)) return null;
+  if (await trackingGateEnforced(platformDb, now)) return 'tracking';
+  return (await db(TABLES.Partner).where({ tenantId }).first('id')) ? null : 'tracking';
 }
 
 /** Mark a passed test click. Set once; the first pass is kept. */

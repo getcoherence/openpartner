@@ -39,6 +39,7 @@ import { adoptInvoiceSubscription, invoiceDueTracked, refreshInvoiceDue } from '
 import { getMode } from '../stripe.js';
 import { fromStripeMinor, majorToCents, stripeMinorToCents } from '../stripe-amounts.js';
 import { getTenancyMode } from '../tenancy.js';
+import { recordTestLink } from '../test-clicks.js';
 import { looksLikeClickId, noteTrackingIssue } from '../tracking-issues.js';
 import {
   announceRefund,
@@ -1189,9 +1190,12 @@ async function mapStripeEvent(
       // doesn't have (a stale link, another program's script); anything
       // else is the brand's own id in client_reference_id, where partner
       // clicks can't ride. Brand accounts only: on OpenPartner's billing
-      // account the field is ours.
+      // account the field is ours. An admin's test click (test-clicks.ts)
+      // isn't a click either: the checkout links the test, and the sale is
+      // recorded as if nothing had carried it.
       const unlinked = async (): Promise<MappedEvent[] | null> => {
         if (source.brandAccount) {
+          if (looksLikeClickId(cref) && (await recordTestLink(trx, tenantId, cref, 'checkout'))) return withoutLink();
           await noteTrackingIssue(
             trx,
             tenantId,
