@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router';
+import { createBrowserRouter, Link, Navigate, Route, RouterProvider, Routes, useLocation, useNavigate, useRouteError } from 'react-router';
 import {
   LayoutDashboard,
   Link2,
@@ -101,6 +101,7 @@ import { GoCreatorPage } from './pages/GoLinks.js';
 import { AddBrandPage } from './pages/AddBrand.js';
 import { PartnerJoinPage } from './pages/PartnerJoin.js';
 import { BrandDocument } from './lib/BrandDocument.js';
+import { UnsavedChangesGuard } from './lib/useUnsavedChanges.js';
 import { ThemeToggle } from './lib/ThemeToggle.js';
 import { CookieSettingsButton } from './lib/ConsentBanner.js';
 import { PlatformMagicLandingPage } from './pages/auth/PlatformMagicLanding.js';
@@ -131,7 +132,26 @@ interface InstallStatus {
   reason?: 'multi_tenant';
 }
 
+/**
+ * A data router at the root, so useBlocker works (UnsavedChangesGuard asks
+ * before Back leaves unsaved edits). The routes stay descendant <Routes>.
+ */
 export function App() {
+  const [router] = useState(() =>
+    createBrowserRouter([{ path: '*', element: <AppRoutes />, errorElement: <RethrowRouteError /> }]),
+  );
+  return <RouterProvider router={router} />;
+}
+
+/**
+ * Leaves a render error uncaught, as it was under BrowserRouter: React
+ * Router's default error page would show the stack trace.
+ */
+function RethrowRouteError(): never {
+  throw useRouteError();
+}
+
+function AppRoutes() {
   // First-run gate. Three modes the probe can return:
   //   { needsSetup: true }                     — single-tenant, no admin yet
   //   { needsSetup: false }                    — single-tenant, ready
@@ -173,8 +193,9 @@ export function App() {
   const hostTenantSlug = isMultiTenant ? (hostBrand.data?.tenantSlug ?? null) : null;
 
   return (
-    <BrowserRouter>
+    <>
       <BrandDocument />
+      <UnsavedChangesGuard />
       <Routes>
         {isMultiTenant && hostTenantSlug ? (
           <>
@@ -246,7 +267,7 @@ export function App() {
           </>
         )}
       </Routes>
-    </BrowserRouter>
+    </>
   );
 }
 

@@ -2,15 +2,15 @@
 /**
  * /creator/profile is three tabs, so Save profile is the last thing on the
  * Profile tab: Password and Account (data download + deletion) have tabs of
- * their own. Unsaved profile edits ask before an in-app link, a reload or a
- * closed tab leaves them behind.
+ * their own. Unsaved profile edits ask before an in-app link, Back, a reload
+ * or a closed tab leaves them behind.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
-import { BrowserRouter, Route, Routes } from 'react-router';
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
+import { BrowserRouter, createMemoryRouter, Route, RouterProvider, Routes } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { CreatorMyProfilePage } from '../pages/creator/CreatorMyProfile.js';
-import { LEAVE_PROMPT } from '../lib/useUnsavedChanges.js';
+import { LEAVE_PROMPT, UnsavedChangesGuard } from '../lib/useUnsavedChanges.js';
 
 const PROFILE = {
   id: 'crt_1',
@@ -69,6 +69,35 @@ function renderAt(path: string) {
       </QueryClientProvider>
     </BrowserRouter>,
   );
+}
+
+/** Under a data router with the guard, as App renders it, coming from /creator/discover. */
+function renderInDataRouter() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  qc.setQueryData(['creator-my-profile'], profile);
+  const router = createMemoryRouter(
+    [
+      {
+        path: '*',
+        element: (
+          <>
+            <UnsavedChangesGuard />
+            <Routes>
+              <Route path="/creator/profile/*" element={<CreatorMyProfilePage />} />
+              <Route path="*" element={<p>Elsewhere</p>} />
+            </Routes>
+          </>
+        ),
+      },
+    ],
+    { initialEntries: ['/creator/discover', '/creator/profile'], initialIndex: 1 },
+  );
+  const page = render(
+    <QueryClientProvider client={qc}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  );
+  return { router, page };
 }
 
 function unloadPrevented(): boolean {
@@ -156,5 +185,50 @@ describe('creator profile tabs', () => {
     await page.findByRole('button', { name: 'Saved' });
     fireEvent.change(page.getByDisplayValue('Pat Lee'), { target: { value: 'Pat L.' } });
     expect(page.getByRole('button', { name: 'Save profile' })).toBeTruthy();
+  });
+});
+
+describe('creator profile under the data router', () => {
+  it('asks before Back leaves unsaved edits, and keeps them on cancel', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const { router, page } = renderInDataRouter();
+    fireEvent.change(page.getByDisplayValue('Pat'), { target: { value: 'Pat Lee' } });
+
+    await act(() => router.navigate(-1));
+    expect(confirm).toHaveBeenCalledWith(LEAVE_PROMPT);
+    expect(router.state.location.pathname).toBe('/creator/profile');
+    expect(page.getByDisplayValue('Pat Lee')).toBeTruthy();
+
+    confirm.mockReturnValue(true);
+    await act(() => router.navigate(-1));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/creator/discover'));
+    expect(page.getByText('Elsewhere')).toBeTruthy();
+  });
+
+  it('goes Back without asking when nothing is unsaved', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const { router } = renderInDataRouter();
+    await act(() => router.navigate(-1));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/creator/discover'));
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it('asks once for an in-app link', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const { router, page } = renderInDataRouter();
+    fireEvent.change(page.getByDisplayValue('Pat'), { target: { value: 'Pat Lee' } });
+
+    await act(async () => {
+      fireEvent.click(page.getByRole('link', { name: 'Password' }));
+    });
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(router.state.location.pathname).toBe('/creator/profile');
+
+    confirm.mockReturnValue(true);
+    await act(async () => {
+      fireEvent.click(page.getByRole('link', { name: 'Password' }));
+    });
+    await waitFor(() => expect(router.state.location.pathname).toBe('/creator/profile/password'));
+    expect(confirm).toHaveBeenCalledTimes(2);
   });
 });
