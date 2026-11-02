@@ -14,6 +14,8 @@
  *   4. The brand's proxies send the signed-in admin and the fee rate;
  *      a brand in review can claim, write and pay but not reach out.
  *   5. Tracking a booking (an offering) needs a plan.
+ *   6. A free mail address can't open a brand (hosted needs a work email):
+ *      the preview says so and signup refuses it.
  *
  * A local HTTP server plays the Network. Skipped without DATABASE_URL.
  */
@@ -51,6 +53,9 @@ const app = createApp({ enableLogger: false });
 const TOKEN = `opbk_${'a'.repeat(48)}`;
 const EXPIRED = `opbk_${'e'.repeat(48)}`;
 const REQUESTER = `grace-${ulid().slice(-6).toLowerCase()}@newbrand.test`;
+/** A link sent to a Gmail address, which no brand can be created for. */
+const FREE_MAIL_TOKEN = `opbk_${'9'.repeat(48)}`;
+const FREE_MAIL_REQUESTER = `grace-${ulid().slice(-6).toLowerCase()}@gmail.com`;
 /** Links sent to addresses that already have some identity here. */
 const OTHER_TOKENS = new Map<string, string>(
   ['revoked', 'operator', 'envop', 'password', 'race'].map((k, i) => [`opbk_${String(i + 1).repeat(48)}`, `${k}-${ulid().slice(-6).toLowerCase()}@other.test`]),
@@ -91,7 +96,7 @@ beforeAll(async () => {
         if (path === '/bookings/preview') {
           if (req.headers.authorization !== `Bearer ${NETWORK_ADMIN}`) return json(401, { error: 'unauthorized' });
           if (body?.token === EXPIRED) return json(410, { error: 'expired' });
-          const other = OTHER_TOKENS.get(String(body?.token));
+          const other = OTHER_TOKENS.get(String(body?.token)) ?? (body?.token === FREE_MAIL_TOKEN ? FREE_MAIL_REQUESTER : undefined);
           if (body?.token !== TOKEN && !other) return json(404, { error: 'invalid_or_used' });
           return json(200, {
             creator: { id: 'crt_ada', name: 'Ada Lovelace', handle: 'ada', avatarUrl: null },
@@ -225,6 +230,7 @@ describe.skipIf(skipIntegration)('booking claims', () => {
       packageTitle: 'Deep dive',
       email: REQUESTER,
       accountExists: false,
+      workEmailRequired: false,
       suggested: { displayName: 'New Brand Co', slug: 'new-brand-co' },
     });
     expect(last('/bookings/preview')!.auth).toBe(`Bearer ${NETWORK_ADMIN}`);
@@ -285,6 +291,17 @@ describe.skipIf(skipIntegration)('booking claims', () => {
       if (before === undefined) delete process.env.PLATFORM_ADMIN_EMAILS;
       else process.env.PLATFORM_ADMIN_EMAILS = before;
     }
+  });
+
+  it('a Gmail requester is told a work email is needed, and no brand is created', async () => {
+    const shown = await request(app).post('/booking-claims/preview').send({ token: FREE_MAIL_TOKEN });
+    expect(shown.body).toMatchObject({ email: FREE_MAIL_REQUESTER, accountExists: false, workEmailRequired: true });
+    const slug = `gm${ulid().slice(-8).toLowerCase()}`;
+    slugs.push(slug);
+    const res = await request(app).post('/booking-claims/signup').send({ token: FREE_MAIL_TOKEN, displayName: 'Grace Co', slug, country: 'US' });
+    expect([res.status, res.body]).toEqual([403, { error: 'work_email_required' }]);
+    expect(await db(TABLES.Tenant).where({ slug }).first()).toBeUndefined();
+    expect(await db(TABLES.Admin).where({ email: FREE_MAIL_REQUESTER }).first()).toBeUndefined();
   });
 
   it('two signups from one link at once make one brand', async () => {

@@ -35,18 +35,23 @@ import { brandSignalLabel, shortUrl, type PartnershipSignal } from '../../lib/pa
 import { PlatformMark, compactCount, platformName } from '../../lib/PlatformMark.js';
 import { MailboxesSection, type MailboxState } from './Mailboxes.js';
 
-type DiscoverySource = 'creatorDatabase' | 'storefronts' | 'sponsorPages' | 'people';
+type DiscoverySource = 'creatorDatabase' | 'storefronts' | 'sponsorPages' | 'mediaKits' | 'people';
 
 /** Where seed queries are searched, as ops read it. */
 const DISCOVERY_SOURCES: Array<{ key: DiscoverySource; label: string }> = [
   { key: 'creatorDatabase', label: 'Creator database (YouTube and X, with brand deals)' },
   { key: 'storefronts', label: 'Sponsorship storefronts' },
   { key: 'sponsorPages', label: 'Creators’ sponsor and media-kit pages' },
+  { key: 'mediaKits', label: 'Media kits on Beacons' },
   { key: 'people', label: 'Anyone who posts about the topic' },
 ];
 
+/** Shown only once the Network has them, so an older one is never sent a
+ *  switch it would refuse. */
+const NEWER_SOURCES: DiscoverySource[] = ['creatorDatabase', 'mediaKits'];
+
 /** Until the Network sends its own. */
-const SOURCE_DEFAULTS: Record<DiscoverySource, boolean> = { creatorDatabase: false, storefronts: true, sponsorPages: true, people: false };
+const SOURCE_DEFAULTS: Record<DiscoverySource, boolean> = { creatorDatabase: false, storefronts: true, sponsorPages: true, mediaKits: false, people: false };
 
 interface IndexSettings {
   enabled: boolean;
@@ -1401,7 +1406,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
             <div style={{ marginTop: 14 }}>
               <Label>Search each query in</Label>
               <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
-                {DISCOVERY_SOURCES.filter((src) => src.key !== 'creatorDatabase' || draft.discoverySources?.creatorDatabase !== undefined).map((src) => {
+                {DISCOVERY_SOURCES.filter((src) => !NEWER_SOURCES.includes(src.key) || draft.discoverySources?.[src.key] !== undefined).map((src) => {
                   const sources = draft.discoverySources ?? SOURCE_DEFAULTS;
                   return (
                     <label key={src.key} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>

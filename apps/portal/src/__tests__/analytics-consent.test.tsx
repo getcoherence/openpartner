@@ -152,6 +152,9 @@ describe('consent banner', () => {
     render(<ConsentBanner />);
 
     expect(screen.getByRole('region', { name: 'Cookie consent' })).toBeTruthy();
+    // Every page shows it, a creator's first visit and white-label portals
+    // too: it names neither a page nor us.
+    expect(screen.getByText(/to see how this site is used/)).toBeTruthy();
     expect(snippetTags()).toHaveLength(0);
     expect(init).not.toHaveBeenCalled();
 

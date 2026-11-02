@@ -477,6 +477,11 @@ export interface InvoiceBillingState {
   tenants: InvoiceBillingTenant[];
 }
 
+/** Who may create a brand (platform-settings.ts BrandSignupSettings). */
+export interface BrandSignupSettings {
+  workEmailRequired: boolean;
+}
+
 export interface BlocklistEntry {
   id: string;
   type: 'email' | 'domain';
