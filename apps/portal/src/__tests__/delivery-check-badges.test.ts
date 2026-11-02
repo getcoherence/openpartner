@@ -29,4 +29,10 @@ describe('urlBadges', () => {
       'Couldn’t check: The creator is deleting their account',
     ]);
   });
+
+  it('says so when YouTube data was cleared after 28 days unread', () => {
+    expect(urlBadges({ ...youtube, error: 'youtube_expired' })).toEqual([
+      { tone: 'neutral', text: 'Couldn’t check: YouTube data expired' },
+    ]);
+  });
 });
