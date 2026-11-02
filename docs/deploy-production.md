@@ -111,6 +111,11 @@ For the **router** component, set:
 | --- | --- |
 | `COOKIE_DOMAIN` | `.openpartner.dev` (leading dot — covers subdomains) |
 
+Both the api and the router also need `TRUST_PROXY=cloudflare` (plain, not
+encrypted; `.do/app.yaml` has it). App Platform puts Cloudflare in front of
+its ingress, so without it every visitor's IP is a Cloudflare edge address:
+rate limits, country checks and click velocity all key on the edge.
+
 Click **Save** and let DO redeploy.
 
 ## 5. Wire DNS and custom domains

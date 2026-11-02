@@ -272,6 +272,59 @@ describe('creator-api proxy: the creator address header', () => {
   });
 });
 
+describe('creator-api proxy: the creator address behind Cloudflare', () => {
+  // Hosted runs TRUST_PROXY=cloudflare: visitor → Cloudflare → App
+  // Platform's ingress → api, so X-Forwarded-For arrives as "visitor, edge".
+  // The signed address is req.ip.
+  const key = 'network-admin-key-for-tests';
+  const EDGE = '172.71.30.204';
+  const appWithTrustProxy = (value: string) => {
+    const previous = process.env.TRUST_PROXY;
+    process.env.TRUST_PROXY = value;
+    try {
+      return createApp({ enableLogger: false });
+    } finally {
+      if (previous === undefined) delete process.env.TRUST_PROXY;
+      else process.env.TRUST_PROXY = previous;
+    }
+  };
+  const cloudflareApp = appWithTrustProxy('cloudflare');
+  const signedIps = () => clientIpHeaders.map((h) => h?.split(';')[0]);
+
+  it('vouches for the visitor, not the Cloudflare edge', async () => {
+    process.env.NETWORK_ADMIN_API_KEY = key;
+    await request(cloudflareApp).post('/creator-api/creators/signin').set('X-Forwarded-For', `203.0.113.7, ${EDGE}`).send({});
+    await request(cloudflareApp).get('/creator-api/offerings').set('X-Forwarded-For', '203.0.113.7, 2a06:98c0:3600::1');
+    expect(signedIps()).toEqual(['203.0.113.7', '203.0.113.7']);
+
+    // Unset, it's one hop as before: the same chain gives the edge.
+    await request(app).get('/creator-api/offerings').set('X-Forwarded-For', `203.0.113.7, ${EDGE}`);
+    expect(signedIps()[2]).toBe(EDGE);
+  });
+
+  it("can't be talked into another address by a request straight to the origin", async () => {
+    process.env.NETWORK_ADMIN_API_KEY = key;
+    // Forged headers through Cloudflare: it appends the caller's own
+    // address, the ingress appends the edge.
+    await request(cloudflareApp)
+      .get('/creator-api/offerings')
+      .set('X-Forwarded-For', `192.0.2.1, 198.51.100.9, ${EDGE}`)
+      .set('CF-Connecting-IP', '192.0.2.1')
+      .set('True-Client-IP', '192.0.2.1');
+    // A forged Cloudflare hop in front of the caller.
+    await request(cloudflareApp).get('/creator-api/offerings').set('X-Forwarded-For', `192.0.2.1, ${EDGE}, 198.51.100.9, ${EDGE}`);
+    // The ingress reached without Cloudflare: it appends the caller.
+    await request(cloudflareApp).get('/creator-api/offerings').set('X-Forwarded-For', `192.0.2.1, ${EDGE}, 198.51.100.9`);
+    // A Cloudflare Worker connects from Cloudflare's ranges; it is the caller.
+    await request(cloudflareApp).get('/creator-api/offerings').set('X-Forwarded-For', `192.0.2.1, 2a06:98c0:3600::103, ${EDGE}`);
+    expect(signedIps()).toEqual(['198.51.100.9', '198.51.100.9', '198.51.100.9', '2a06:98c0:3600::103']);
+  });
+
+  it('refuses to start with a TRUST_PROXY it does not know', () => {
+    expect(() => appWithTrustProxy('cloudfare')).toThrow(/TRUST_PROXY/);
+  });
+});
+
 describe('creator-api proxy: image uploads', () => {
   it('forwards the avatar and cover uploads as raw images', async () => {
     const cookie = 'op_network_creator_session=abc';
