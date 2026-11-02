@@ -1117,7 +1117,7 @@ describe('ops console: creator index settings', () => {
     confirm.mockRestore();
   });
 
-  it('hides the creators ticked, or all the filters match, after a confirm, and offers the reach setting', async () => {
+  it('hides the creators ticked after a confirm, offers Hide and Unhide only once one is, and offers the reach setting', async () => {
     const base = { status: 'active', headline: null, country: 'US', region: 'US-TX', brandVisible: true, emailsSent: 0, contact: null, platforms: [] };
     const listed = [
       { ...base, id: 'a', name: 'Jo Rivera', totalReach: 5_000 },
@@ -1137,6 +1137,8 @@ describe('ops console: creator index settings', () => {
     wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
     // Over the reach setting, or hidden by ops.
     expect(await screen.findAllByText('active · hidden')).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: 'Hide accounts' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Unhide accounts' })).toBeNull();
 
     fireEvent.click(screen.getByRole('checkbox', { name: 'Tick Jo Rivera' }));
     expect(screen.getByText('1 ticked')).toBeTruthy();
@@ -1144,14 +1146,17 @@ describe('ops console: creator index settings', () => {
     expect(confirm).toHaveBeenCalledWith("Hide 1 ticked? They stay in the index, but brands won't see them and they won't be emailed.");
     await waitFor(() => expect(calls.find((c) => c.url.endsWith('/creators/hidden'))?.body).toEqual({ hidden: true, ids: ['a'] }));
     expect(await screen.findByText('2 hidden')).toBeTruthy();
+    // The ticks went with it, and so did the buttons.
+    expect(screen.queryByRole('button', { name: 'Hide accounts' })).toBeNull();
 
-    // None ticked: everyone the filters match.
+    // A filter on, still none until a tick.
     fireEvent.click(screen.getByRole('button', { name: 'Hidden' }));
     await waitFor(() => expect(calls.map((c) => c.url)).toContain('/api/platform-admin/creator-index/creators?hidden=yes'));
-    expect(await screen.findByText('All 3 matching')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Unhide accounts' })).toBeNull();
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Tick Ana Ruiz' }));
     fireEvent.click(screen.getByRole('button', { name: 'Unhide accounts' }));
-    expect(confirm).toHaveBeenLastCalledWith('Unhide all 3 matching?');
-    await waitFor(() => expect(calls.filter((c) => c.url.endsWith('/creators/hidden')).at(-1)?.body).toEqual({ hidden: false, match: { hidden: 'yes' } }));
+    expect(confirm).toHaveBeenLastCalledWith('Unhide 1 ticked?');
+    await waitFor(() => expect(calls.filter((c) => c.url.endsWith('/creators/hidden')).at(-1)?.body).toEqual({ hidden: false, ids: ['c'] }));
 
     await openTab('Settings');
     expect(((await screen.findByLabelText('Hide over (reach)')) as HTMLInputElement).value).toBe('50000');
