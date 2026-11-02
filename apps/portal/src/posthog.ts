@@ -8,12 +8,15 @@
  * fire and no consent banner shows — graceful no-op for self-hosters and
  * contributors.
  *
- * With the key, PostHog still loads only after the visitor clicks Accept
- * on the consent banner (lib/ConsentBanner.tsx; the choice and the
- * cleanup live in lib/consent.ts). Importing this module (main.tsx) runs
- * the startup half: load PostHog if the visitor already accepted,
- * otherwise clear anything PostHog left behind and, unless the browser
- * sends Global Privacy Control / Do Not Track, ask.
+ * With the key, the visitor's choice decides (lib/consent.ts; the banner
+ * is lib/ConsentBanner.tsx). Importing this module (main.tsx) runs the
+ * startup half: load PostHog if the visitor accepted; clear anything
+ * PostHog left behind if they declined or the browser sends Global
+ * Privacy Control / Do Not Track. With no choice yet, ask the API which
+ * rule applies where they are (GET /api/consent-region): outside the EU,
+ * EEA, UK and Switzerland PostHog loads with no banner, so problems in
+ * the app show up in session replays; there, or when the lookup fails,
+ * show the banner.
  *
  * The bootstrap below is the verbatim PostHog snippet, injected into
  * <head> as a <script> element. We do this instead of re-implementing
@@ -88,7 +91,29 @@ export function scrubAnalyticsEvent(event: CaptureResult | null): CaptureResult 
   return event;
 }
 
+/** Replays keep each request's URL, and the page's, without its query string or fragment. */
+export function scrubRecordedRequest(request: Props | null): Props | null {
+  if (request && typeof request.name === 'string') request.name = stripUrlQuery(request.name);
+  return request;
+}
+
+/** Pages nothing is captured on: a shared booking report (/reports) is
+ *  someone else's deal, opened by a link with a token in it. */
+const UNTRACKED_PATHS = ['/reports'];
+
+function onUntrackedPage(): boolean {
+  return typeof window !== 'undefined' && UNTRACKED_PATHS.includes(window.location.pathname);
+}
+
+export function dropUntrackedPages(event: CaptureResult | null): CaptureResult | null {
+  return onUntrackedPage() ? null : event;
+}
+
 let loaded = false;
+/** The visitor (here or in another tab) chose during this page view. */
+let chosen = false;
+/** PostHog runs because of where the visitor is, not because they accepted. */
+let onByRegion = false;
 
 function loadPostHog(): void {
   if (loaded || !KEY || typeof document === 'undefined') return;
@@ -105,17 +130,28 @@ function loadPostHog(): void {
     person_profiles: 'identified_only',
     // Dashboards show partner names, emails and amounts. That's the
     // brand's data, not ours to send anywhere: clicks are captured
-    // without element text or attributes, and nothing is recorded.
+    // without element text or attributes, and session replays keep the
+    // layout and the clicks with every text node and input masked, no
+    // request headers or bodies, and URLs without their query strings.
+    // Whether replays record at all is the PostHog project's setting. A
+    // page load that starts on an untracked page records no replay.
     mask_all_text: true,
     mask_all_element_attributes: true,
-    disable_session_recording: true,
+    disable_session_recording: onUntrackedPage(),
+    session_recording: {
+      maskAllInputs: true,
+      maskTextSelector: '*',
+      recordHeaders: false,
+      recordBody: false,
+      maskCapturedNetworkRequestFn: scrubRecordedRequest,
+    },
     // Sign-in links carry a one-time token in the query string. The
     // landing pages strip it from the address bar as soon as they read
     // it, but array.js loads async and the first pageview can win that
     // race: scrubSensitiveEvent redacts token / ntoken wherever they
     // appear, then scrubAnalyticsEvent drops every remaining query string
     // and fragment from URL properties (invitations, Stripe session ids).
-    before_send: [scrubSensitiveEvent, scrubAnalyticsEvent],
+    before_send: [dropUntrackedPages, scrubSensitiveEvent, scrubAnalyticsEvent],
   });
 }
 
@@ -132,6 +168,8 @@ function stopPostHog(): void {
 
 /** The visitor clicked Accept or Decline on the banner. */
 export function chooseAnalyticsConsent(choice: ConsentChoice): void {
+  chosen = true;
+  onByRegion = false;
   writeConsent(choice);
   setConsentBannerOpen(false);
   if (choice === 'granted') loadPostHog();
@@ -144,18 +182,62 @@ function onStorage(e: StorageEvent): void {
   if (e.key !== CONSENT_STORAGE_KEY && e.key !== null) return;
   const choice = readConsent();
   if (choice === null) return;
+  chosen = true;
+  onByRegion = false;
   setConsentBannerOpen(false);
   if (choice === 'granted') loadPostHog();
   else stopPostHog();
+}
+
+/** Analytics are on without a choice: the banner tells them so instead of asking. */
+export function analyticsOnByDefault(): boolean {
+  return onByRegion;
+}
+
+/** As long as the browser SDK's regional mode waits before asking instead. */
+const REGION_TIMEOUT_MS = 1_500;
+
+/**
+ * GET /api/consent-region (apps/api/src/consent-region.ts) answers
+ * 'opt_out' where the visitor's country needs no prior consent. An
+ * 'opt_in', an error or no answer in time all mean ask first.
+ */
+async function regionAllowsDefault(): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REGION_TIMEOUT_MS);
+  try {
+    const res = await fetch('/api/consent-region', { credentials: 'omit', signal: controller.signal });
+    if (!res.ok) return false;
+    const body = (await res.json()) as { rule?: unknown };
+    return body.rule === 'opt_out';
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function startWithoutChoice(): Promise<void> {
+  const byRegion = await regionAllowsDefault();
+  // Accept or Decline while the lookup ran already settled it.
+  if (chosen) return;
+  if (byRegion) {
+    onByRegion = true;
+    loadPostHog();
+  } else {
+    clearAnalyticsStorage();
+    setConsentBannerOpen(true);
+  }
 }
 
 if (KEY && typeof window !== 'undefined') {
   const choice = readConsent();
   if (choice === 'granted') {
     loadPostHog();
-  } else {
+  } else if (choice === 'denied' || browserSignalsOptOut()) {
     clearAnalyticsStorage();
-    if (choice === null && !browserSignalsOptOut()) setConsentBannerOpen(true);
+  } else {
+    void startWithoutChoice();
   }
   window.addEventListener('storage', onStorage);
 }

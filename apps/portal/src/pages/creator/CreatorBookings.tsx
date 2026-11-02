@@ -95,6 +95,11 @@ export function CreatorBookingsPage() {
                 )}
               </div>
               <div style={{ fontSize: 14, fontWeight: 600 }}>{amountText(b)}</div>
+              {b.hasReport && (
+                <Link to={`/creator/bookings/${encodeURIComponent(b.id)}/report`} style={{ textDecoration: 'none' }}>
+                  <Button size="sm" variant="secondary">Report</Button>
+                </Link>
+              )}
               {b.conversationId ? (
                 <Link to={`/creator/messages/${b.conversationId}`} style={{ textDecoration: 'none' }}>
                   <Button size="sm" variant="secondary">Open</Button>

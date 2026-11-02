@@ -138,6 +138,10 @@ const ALLOWED_EXACT = new Set([
   // claim may sign the creator in, so its Set-Cookie comes back through here.
   '/creator-index/claim/preview',
   '/creator-index/claim',
+  // A shared booking report (the Network's docs/campaign-reports.md): the
+  // public page posts the token from its URL fragment, so it never sits in
+  // a path or a log line here.
+  '/reports/view',
 ]);
 
 const ALLOWED_PREFIX: Array<{ prefix: string; methods: Set<string> }> = [
@@ -166,7 +170,8 @@ const ALLOWED_PREFIX: Array<{ prefix: string; methods: Set<string> }> = [
   { prefix: '/creators/by-handle/', methods: new Set(['GET', 'POST']) },
   // Storefront: edit/delete a package (PATCH/DELETE /creators/me/packages/:id),
   // answer, withdraw, deliver, refund or delete a booking (POST
-  // .../:id/accept|decline|withdraw|deliver|refund, DELETE .../:id).
+  // .../:id/accept|decline|withdraw|deliver|refund, DELETE .../:id), and make
+  // or revoke a report's share link (POST .../:id/report/shares[/:shareId/revoke]).
   { prefix: '/creators/me/packages/', methods: new Set(['PATCH', 'DELETE']) },
   { prefix: '/creators/me/bookings/', methods: new Set(['POST', 'DELETE']) },
   // A conversation: read it (GET .../:id), write, send an offer, block, or
@@ -183,11 +188,25 @@ const REALTIME_TICKET_PATH = /^\/creators\/me\/conversations\/[^/]+\/realtime$/;
 /** GET /creators/me/conversations/:id/attachments/:attachmentId → an image's
  *  file: the one response relayed as bytes, and only as an image. */
 const ATTACHMENT_FILE_PATH = /^\/creators\/me\/conversations\/[^/]+\/attachments\/[^/]+$/;
+/** A booking report, public or the creator's own: never cached, so a
+ *  revoked link or a narrowed sharing choice takes effect at once. */
+const REPORT_PATH = /^(\/reports\/view|\/creators\/me\/bookings\/[^/]+\/report(\/.*)?)$/;
+
+/** Single paths under a prefix that otherwise keeps a method off. */
+const ALLOWED_PATTERN: Array<{ pattern: RegExp; methods: Set<string> }> = [
+  // A booking's report and the creator's own share links for it.
+  { pattern: /^\/creators\/me\/bookings\/[^/]+\/report(\/shares)?$/, methods: new Set(['GET']) },
+  // The creator's own numbers for a post we can't read.
+  { pattern: /^\/creators\/me\/bookings\/[^/]+\/reported-stats$/, methods: new Set(['PUT']) },
+];
 
 function isAllowed(method: string, subpath: string): boolean {
   if (ALLOWED_EXACT.has(subpath)) return true;
   for (const { prefix, methods } of ALLOWED_PREFIX) {
     if (subpath.startsWith(prefix) && methods.has(method)) return true;
+  }
+  for (const { pattern, methods } of ALLOWED_PATTERN) {
+    if (pattern.test(subpath) && methods.has(method)) return true;
   }
   return false;
 }
@@ -315,6 +334,7 @@ creatorPortalRouter.all(/^\/creator-api(\/.*)?$/, async (req: Request, res: Resp
     }
 
     res.status(upstream.status);
+    if (REPORT_PATH.test(subpath)) res.setHeader('Cache-Control', 'no-store');
     // Force JSON content-type on the response. The upstream is the
     // Network — which we control — but pinning the type here means a
     // future Network change that returns html/plain (e.g. an error
