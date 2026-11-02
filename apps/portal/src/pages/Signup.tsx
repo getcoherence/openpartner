@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
+import { isFreeMailAddress } from '@openpartner/db';
 import { ApiError } from '../api.js';
 import { alpha, softText, theme } from '../theme.js';
 import { AuthFrame, SignupTabs } from './auth/Shared.js';
@@ -12,6 +13,8 @@ import {
   PasswordInput,
   SIGNUP_PLAN_KEY,
   useAuthProviders,
+  useWorkEmailRequired,
+  WORK_EMAIL_NEEDED,
 } from './auth/PasswordAuth.js';
 
 type SignupPlan = 'flex' | 'revshare' | 'enterprise';
@@ -45,6 +48,8 @@ export function SignupPage() {
   const [adminName, setAdminName] = useState('');
   const [password, setPassword] = useState('');
   const providers = useAuthProviders();
+  const workEmailRequired = useWorkEmailRequired();
+  const freeMail = workEmailRequired && isFreeMailAddress(adminEmail.trim());
   const [country, setCountry] = useState('');
   const [outsideOccupiedRegions, setOutsideOccupiedRegions] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -193,7 +198,11 @@ export function SignupPage() {
             style={inputStyle}
           />
         </Field>
-        <Field label="Your email" hint="We'll send a link here to confirm it's yours.">
+        <Field
+          label={workEmailRequired ? 'Work email' : 'Your email'}
+          hint="We'll send a link here to confirm it's yours."
+          error={freeMail ? WORK_EMAIL_NEEDED : undefined}
+        >
           <input
             type="email"
             name="email"
@@ -209,7 +218,7 @@ export function SignupPage() {
           <PasswordInput value={password} onChange={setPassword} autoComplete="new-password" style={inputStyle} />
         </Field>
         {err && <div style={{ color: theme.danger, fontSize: 13, marginTop: 4, marginBottom: 8 }}>{err}</div>}
-        <button type="submit" disabled={busy} style={primaryBtnStyle(busy)}>
+        <button type="submit" disabled={busy || freeMail} style={primaryBtnStyle(busy || freeMail)}>
           {busy ? 'Creating brand…' : 'Create brand account'}
         </button>
         <div style={{ marginTop: 12, fontSize: 12, color: theme.textDim, textAlign: 'center' }}>
@@ -220,12 +229,16 @@ export function SignupPage() {
   );
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({ label, hint, error, children }: { label: string; hint?: string; error?: string; children: React.ReactNode }) {
   return (
     <div style={{ marginBottom: 12 }}>
       <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 4 }}>{label}</div>
       {children}
-      {hint && <div style={{ fontSize: 11, color: theme.textDim, marginTop: 4 }}>{hint}</div>}
+      {error ? (
+        <div style={{ fontSize: 12, color: theme.danger, marginTop: 4 }}>{error}</div>
+      ) : (
+        hint && <div style={{ fontSize: 11, color: theme.textDim, marginTop: 4 }}>{hint}</div>
+      )}
     </div>
   );
 }
@@ -235,6 +248,7 @@ function friendlyError(code: string): string {
   if (country) return country;
   if (code.includes('slug_taken')) return 'That slug is already taken. Pick another.';
   if (code.includes('slug_reserved')) return 'That slug is reserved. Try a different one.';
+  if (code.includes('work_email_required')) return WORK_EMAIL_NEEDED;
   if (code.includes('invalid_body'))
     return `Some fields look invalid — check the slug format, the email, and that the password has at least ${MIN_PASSWORD_LENGTH} characters.`;
   if (code.includes('signup_not_available')) return 'Public signup is disabled on this deployment.';

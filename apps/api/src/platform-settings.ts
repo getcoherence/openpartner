@@ -9,6 +9,7 @@
 
 import type { Knex } from 'knex';
 import { TABLES, type PlatformSettingRow } from '@openpartner/db';
+import { getMode } from './stripe.js';
 
 export interface NotificationSettings {
   /** Daily sweep emailing brand admins whose setup is incomplete. */
@@ -180,4 +181,41 @@ export async function setInvoiceBillingSettings(
     .onConflict('key')
     .merge({ value: value as unknown as never, updatedByEmail: operatorEmail, updatedAt: new Date() });
   return value;
+}
+
+/** Who may create a brand (signup, add-brand, a storefront request). */
+export interface BrandSignupSettings {
+  /** Refuse a new brand whose admin address is at a free mail provider
+   *  (FREE_MAIL_DOMAINS). Existing brands and their admins are untouched. */
+  workEmailRequired: boolean;
+}
+
+const BRAND_SIGNUP_KEY = 'brandSignup';
+
+/** On for the hosted platform, off for a self-hosted one, until ops say
+ *  otherwise: a self-hoster's signups are their own business. */
+export function brandSignupDefaults(): BrandSignupSettings {
+  const mode = getMode();
+  return { workEmailRequired: mode === 'flat' || mode === 'revshare' };
+}
+
+export async function getBrandSignupSettings(db: Knex): Promise<BrandSignupSettings> {
+  const row = await db<PlatformSettingRow>(TABLES.PlatformSetting).where({ key: BRAND_SIGNUP_KEY }).first();
+  const v = (row?.value ?? {}) as Partial<BrandSignupSettings>;
+  return {
+    workEmailRequired: typeof v.workEmailRequired === 'boolean' ? v.workEmailRequired : brandSignupDefaults().workEmailRequired,
+  };
+}
+
+export async function setBrandSignupSettings(
+  db: Knex,
+  patch: Partial<BrandSignupSettings>,
+  operatorEmail: string,
+): Promise<BrandSignupSettings> {
+  const next = { ...(await getBrandSignupSettings(db)), ...patch };
+  await db(TABLES.PlatformSetting)
+    .insert({ key: BRAND_SIGNUP_KEY, value: next as unknown as never, updatedByEmail: operatorEmail, updatedAt: new Date() })
+    .onConflict('key')
+    .merge({ value: next as unknown as never, updatedByEmail: operatorEmail, updatedAt: new Date() });
+  return next;
 }

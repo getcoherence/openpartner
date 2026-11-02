@@ -26,7 +26,7 @@ import {
   recordLocationDeclaration,
   requireServedCountry,
 } from '../country-access.js';
-import { findBlockingEntry, notifyOpsNewBrand } from '../brand-review.js';
+import { findBlockingEntry, notifyOpsNewBrand, workEmailRequiredFor } from '../brand-review.js';
 import { screenTenantInBackground } from '../sanctions-screening.js';
 import { recordHouseSignup, signupCrefs } from '../house-program.js';
 import {
@@ -190,7 +190,13 @@ platformAuthRouter.get('/me/workspaces', async (req, res) => {
     activated: !!r.activatedAt,
   }));
 
-  res.json({ email: session.email, workspaces });
+  res.json({
+    email: session.email,
+    workspaces,
+    // POST /me/brands would refuse this address (a free mail provider's):
+    // the add-brand page says so instead of showing its form.
+    workEmailRequired: await workEmailRequiredFor(db, session.email),
+  });
 });
 
 // -------- Create another brand under this platform identity (§13) --------
@@ -265,6 +271,9 @@ platformAuthRouter.post('/me/brands', addBrandLimit, async (req, res) => {
     console.warn('[add-brand] blocked', { email, rule: `${blocked.type}:${blocked.value}` });
     return res.status(403).json({ error: 'signup_unavailable' });
   }
+  // A Gmail "Sign up with Google" lands here too. Someone who already runs
+  // an approved brand may add another from the same address.
+  if (await workEmailRequiredFor(db, email)) return res.status(403).json({ error: 'work_email_required' });
 
   // Reuse the person's display name from any brand they already admin;
   // fall back to the mailbox name.

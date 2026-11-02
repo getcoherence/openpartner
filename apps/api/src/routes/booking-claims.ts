@@ -15,8 +15,10 @@
  *     claims the request into it. The admin is activated straight away
  *     (following the link proved the inbox, so no second email) and both
  *     sessions are set. The brand clears the same checks as any signup
- *     (reserved slugs, country, blocklist, sanctions screening) and lands in
- *     operator review. It has no plan, so it pays the Revshare booking fee
+ *     (reserved slugs, work email, country, blocklist, sanctions screening)
+ *     and lands in operator review. A free mail address can't open one
+ *     while ops require a work email: the requester signs up from a work
+ *     address and claims the request into that brand. It has no plan, so it pays the Revshare booking fee
  *     (booking-fee.ts) until it picks one.
  *   - The address already has a brand, or the visitor is signed in: they
  *     sign in the usual way (a 48-hour link never signs anyone into an
@@ -37,7 +39,7 @@ import { createSession, SESSION_COOKIE_NAME, sessionCookieOptions } from '../aut
 import { RESERVED_SLUGS, getTenancyMode } from '../tenancy.js';
 import { newTrialEnd } from '../billing-plan.js';
 import { checkCountryAccess, countryAccessStatus, countryCodeSchema, recordLocationDeclaration } from '../country-access.js';
-import { findBlockingEntry, notifyOpsNewBrand } from '../brand-review.js';
+import { findBlockingEntry, notifyOpsNewBrand, workEmailRequiredFor } from '../brand-review.js';
 import { screenTenantInBackground } from '../sanctions-screening.js';
 import {
   attachSessionToBundle,
@@ -156,6 +158,9 @@ bookingClaimsRouter.post('/booking-claims/preview', claimLimit, async (req, res)
     // link is no disclosure; the form says the brand is created for it.
     email: preview.contactEmail,
     accountExists: await accountExists(preview.contactEmail),
+    // No brand can be created for it here (signup below refuses it); the
+    // page asks for a brand on a work address, which can claim this link.
+    workEmailRequired: await workEmailRequiredFor(db, preview.contactEmail),
     suggested: { displayName: preview.company ?? '', slug: suggestSlug(preview.company, preview.contactEmail) },
   });
 });
@@ -172,6 +177,8 @@ bookingClaimsRouter.post('/booking-claims/signup', claimLimit, async (req, res) 
   const email = preview.contactEmail.toLowerCase();
   // An existing account signs in the usual way; this link only creates.
   if (await accountExists(email)) return res.status(409).json({ error: 'account_exists' });
+  // Same rule as public /signup: a brand needs a work address.
+  if (await workEmailRequiredFor(db, email)) return res.status(403).json({ error: 'work_email_required' });
 
   const location = await checkCountryAccess(db, {
     declared: body.data.country,
