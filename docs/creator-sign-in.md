@@ -31,11 +31,11 @@ Nothing here mints a creator session.
 | `/creator/login` | Email + password, "Forgot password?", "Email me a sign-in link instead", "Continue with Google" (when Google is configured). |
 | `/creator/signup` | "Sign up with Google". Coming back from Google with no account yet, the email is fixed ("✓ Verified by Google", with "Use a different email") and the form still asks for a name, handle and country. |
 | `/creator/reset-password` | Where the Network's "forgot password" email lands. Choose a password, then sign in. |
-| `/creator/profile` | A **Password** card: set a first password, or change it (current password required). Hidden while the account is scheduled for deletion. |
+| `/creator/profile/password` | The **Password** tab: set a first password, or change it (current password required). Unavailable while the account is scheduled for deletion. |
 
 Passwords need at least 10 characters (no composition rules). A creator who
 only ever used emailed links sets a first password either from the
-Password card or through "Forgot password?".
+Password tab or through "Forgot password?".
 
 - **Change:** signs the creator out on their other devices.
 - **Reset:** signs them out everywhere, this browser included.

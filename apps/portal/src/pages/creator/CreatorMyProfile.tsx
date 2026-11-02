@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link, NavLink, Navigate, Route, Routes } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, Card, ErrorBanner, Input, Label, Page } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
@@ -34,31 +35,92 @@ export const creatorProfileAdapter: NetworkProfileAdapter = {
     creatorApi<{ ok: boolean; platform?: PlatformRow }>(`/creators/me/platforms/${platform}/verify`, { method: 'POST', body: {} }),
 };
 
+/**
+ * Three tabs, so Save profile ends the Profile tab: Profile (the editor),
+ * Password, and Account (data download + deletion).
+ */
 export function CreatorMyProfilePage() {
   const { data, isLoading, error } = useQuery({
     queryKey: ['creator-my-profile'],
-    queryFn: () => creatorApi<NetworkProfile>('/creators/me'),
+    queryFn: () => creatorApi<NetworkProfile & { pendingDeletionAt?: string | null }>('/creators/me'),
     retry: false,
   });
+  const pendingDeletionAt = data?.pendingDeletionAt ?? null;
 
   return (
     <Page title="Profile" subtitle="How vendors see you across the Network. Richer profile = better matches.">
       <ErrorBanner error={error} />
+      <ProfileTabs />
       {isLoading ? (
         <Card>Loading…</Card>
-      ) : data ? (
-        <NetworkProfileEditor
-          adapter={creatorProfileAdapter}
-          data={data}
-          publicProfileHref={data.handle ? publicStorefrontUrl(data.handle) : null}
-        />
-      ) : null}
-      <div style={{ height: 18 }} />
-      <CreatorMessagesCard />
-      <CreatorPasswordCard pendingDeletion={!!(data as NetworkProfile & { pendingDeletionAt?: string | null })?.pendingDeletionAt} />
-      <div style={{ height: 18 }} />
-      <CreatorDangerZone email={data?.email ?? ''} pendingDeletionAt={(data as NetworkProfile & { pendingDeletionAt?: string | null })?.pendingDeletionAt ?? null} />
+      ) : (
+        <Routes>
+          <Route
+            index
+            element={
+              <>
+                <CreatorMessagesCard />
+                {data && (
+                  <NetworkProfileEditor
+                    adapter={creatorProfileAdapter}
+                    data={data}
+                    publicProfileHref={data.handle ? publicStorefrontUrl(data.handle) : null}
+                  />
+                )}
+              </>
+            }
+          />
+          <Route
+            path="password"
+            element={
+              pendingDeletionAt ? (
+                <Card>
+                  <div style={{ fontSize: 13, color: theme.textMuted }}>
+                    Your account is scheduled for deletion.{' '}
+                    <Link to="/creator/profile/account" style={{ color: theme.accentText }}>Recover it</Link> to change your password.
+                  </div>
+                </Card>
+              ) : (
+                <CreatorPasswordCard pendingDeletion={false} />
+              )
+            }
+          />
+          <Route path="account" element={<CreatorDangerZone email={data?.email ?? ''} pendingDeletionAt={pendingDeletionAt} />} />
+          {/* Absolute, like CreatorShell's redirects (a splat route). */}
+          <Route path="*" element={<Navigate to="/creator/profile" replace />} />
+        </Routes>
+      )}
     </Page>
+  );
+}
+
+function ProfileTabs() {
+  const tabs: Array<{ to: string; label: string; end?: boolean }> = [
+    { to: '/creator/profile', label: 'Profile', end: true },
+    { to: '/creator/profile/password', label: 'Password' },
+    { to: '/creator/profile/account', label: 'Account' },
+  ];
+  return (
+    <div style={{ display: 'flex', gap: 4, borderBottom: `1px solid ${theme.borderSubtle}`, marginBottom: 14 }}>
+      {tabs.map((t) => (
+        <NavLink
+          key={t.to}
+          to={t.to}
+          end={t.end}
+          style={({ isActive }) => ({
+            padding: '8px 14px',
+            fontSize: 13,
+            color: isActive ? theme.text : theme.textMuted,
+            borderBottom: `2px solid ${isActive ? theme.accent : 'transparent'}`,
+            marginBottom: -1,
+            fontWeight: isActive ? 500 : 400,
+            textDecoration: 'none',
+          })}
+        >
+          {t.label}
+        </NavLink>
+      ))}
+    </div>
   );
 }
 
@@ -75,7 +137,8 @@ export function CreatorPasswordCard({ pendingDeletion }: { pendingDeletion: bool
     retry: false,
   });
   // Mid-deletion the account takes recovery actions only.
-  if (pendingDeletion || !q.data) return null;
+  if (pendingDeletion) return null;
+  if (!q.data) return q.isLoading ? <Card>Loading…</Card> : <ErrorBanner error={q.error} />;
   return (
     <PasswordSection
       hasPassword={q.data.hasPassword}
@@ -100,7 +163,7 @@ function CreatorDangerZone({ email, pendingDeletionAt }: { email: string; pendin
   const del = useMutation({
     mutationFn: () => creatorApi('/creators/me/delete', { method: 'POST', body: { confirmEmail } }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['network-my-profile'] });
+      qc.invalidateQueries({ queryKey: creatorProfileAdapter.profileKey });
       setShowForm(false);
       setConfirmEmail('');
     },
@@ -108,7 +171,7 @@ function CreatorDangerZone({ email, pendingDeletionAt }: { email: string; pendin
 
   const restore = useMutation({
     mutationFn: () => creatorApi('/creators/me/restore', { method: 'POST' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['network-my-profile'] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: creatorProfileAdapter.profileKey }),
   });
 
   const pending = !!pendingDeletionAt;
