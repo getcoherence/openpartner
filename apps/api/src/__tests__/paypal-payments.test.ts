@@ -41,7 +41,7 @@ const { db } = await import('../db.js');
 const { createApp } = await import('../app.js');
 const { __setMailerForTests } = await import('../mailer.js');
 const { __setPaypalFetchForTests, PAYPAL_PAYMENT_EVENTS, PAYPAL_WEBHOOK_EVENTS } = await import('../paypal-api.js');
-const { runPaypalPaymentsCatchup, SEARCH_RECHECK_HOURS } = await import('../paypal-payments-catchup.js');
+const { runPaypalPaymentsCatchup, SEARCH_LAG_HOURS, SEARCH_RECHECK_HOURS } = await import('../paypal-payments-catchup.js');
 const { sumBillableBasis } = await import('../usage-ledger.js');
 
 const T = DEFAULT_TENANT_ID;
@@ -855,8 +855,39 @@ describe.skipIf(skipIntegration)('catch-up', () => {
     expect((await db(TABLES.PaypalConnection).where({ id: conn.id }).first()).transactionSearch).toBe('ok');
   });
 
+  it('leaves Transaction Search alone until tracking is older than PayPal’s lag, then searches from when it began', async () => {
+    const conn = await connect();
+    await db(TABLES.PaypalConnection).where({ id: conn.id }).update({ paymentsSince: new Date(Date.now() - 3_600_000) });
+    const searches = () => fake.seen.filter((r) => r.path === '/v1/reporting/transactions').length;
+    const n = searches();
+    const early = (await runPaypalPaymentsCatchup()).connections.find((c) => c.connectionId === conn.id)!;
+    expect(early).toMatchObject({ transactionSearch: 'skipped', truncated: false });
+    expect(early.error).toBeUndefined();
+    expect(searches()).toBe(n);
+    expect((await db(TABLES.PaypalConnection).where({ id: conn.id }).first()).transactionSearch).toBeNull();
+
+    // A payment made just after tracking began, found once the window is old enough.
+    const { clickId } = await click(await program());
+    const capId = `CAP${ulid().slice(0, 14)}`;
+    const began = new Date(Date.now() - (SEARCH_LAG_HOURS + 1) * 3_600_000);
+    await db(TABLES.PaypalConnection).where({ id: conn.id }).update({ paymentsSince: began });
+    fake.addTransaction(liveApp, {
+      transaction_id: capId,
+      transaction_event_code: 'T0006',
+      transaction_status: 'S',
+      transaction_initiation_date: new Date(began.getTime() + 60_000).toISOString(),
+      transaction_amount: { currency_code: 'USD', value: '25.00' },
+      custom_field: clickId,
+    });
+    const later = (await runPaypalPaymentsCatchup()).connections.find((c) => c.connectionId === conn.id)!;
+    expect(later).toMatchObject({ transactionSearch: 'ok', recovered: 1 });
+    expect(later.error).toBeUndefined();
+    expect(await eventsOf(capId)).toHaveLength(1);
+  });
+
   it('marks an app without Transaction Search unavailable, and asks again a day later', async () => {
     const conn = await connect();
+    await sinceDaysAgo(conn.id, 1);
     fake.noSearch.add(liveApp.appId);
     const first = await runPaypalPaymentsCatchup();
     expect(first.connections.find((c) => c.connectionId === conn.id)!.transactionSearch).toBe('unavailable');

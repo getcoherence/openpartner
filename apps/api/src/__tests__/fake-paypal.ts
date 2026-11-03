@@ -381,6 +381,11 @@ export class FakePaypal {
       const start = new Date(u.searchParams.get('start_date') ?? 0).getTime();
       const end = new Date(u.searchParams.get('end_date') ?? '2100-01-01').getTime();
       if (end - start > 31 * 86_400_000) return res(400, { name: 'INVALID_REQUEST', message: 'Date range is greater than 31 days' });
+      // Its data runs up to three hours behind; a window starting after the
+      // newest is refused (seen live, Nov 3 2026).
+      if (start > Date.now() - 3 * 3_600_000) {
+        return res(400, { name: 'INVALID_REQUEST', message: 'Data for the given start date is not available.', debug_id: 'dbglag' });
+      }
       const size = Number(u.searchParams.get('page_size') ?? '100');
       const page = Number(u.searchParams.get('page') ?? '1');
       const all = this.transactions
