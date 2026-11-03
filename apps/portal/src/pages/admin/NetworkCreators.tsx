@@ -24,16 +24,16 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, Users, X } from 'lucide-react';
-import { api, ApiError } from '../../api.js';
+import { api } from '../../api.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Textarea } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
 import { countryOptions } from '../../lib/CountryField.js';
 import { ChannelCount, compactCount } from '../../lib/PlatformMark.js';
 import { useMediaQuery } from '../../lib/useMediaQuery.js';
 import { PLATFORMS as CREATOR_PLATFORMS } from '../../lib/NetworkProfileEditor.js';
-import { BookCreatorDialog } from './BookCreatorDialog.js';
+import { BookCreatorDialog, networkErrorCode } from './BookCreatorDialog.js';
 import { CreatorList, CreatorRow, RowFigure } from './CreatorRow.js';
 import { NetworkCreatorStorefrontPanel } from './NetworkCreatorStorefront.js';
 import {
@@ -80,6 +80,9 @@ interface DirectoryRow {
   createdAt: string;
   platforms: PlatformRow[];
   totalReach: number;
+  /** This brand's invitations to the creator, one per offering. Absent on
+   *  an older Network. */
+  invitations?: Array<{ offeringId: string; status: 'pending' | 'consumed' | 'expired'; expiresAt?: string }>;
 }
 
 const CATEGORIES = [
@@ -721,6 +724,7 @@ function MemberRow({ creator, selected, onSelect }: { creator: DirectoryRow; sel
         <RowFigure value={creator.totalReach > 0 ? compactCount(creator.totalReach) : '—'} caption="followers" />
       }
       tags={creator.categories}
+      note={creator.invitations?.length ? <InviteNote invitations={creator.invitations} /> : undefined}
       actions={
         <>
           <InviteButton creator={creator} />
@@ -728,6 +732,36 @@ function MemberRow({ creator, selected, onSelect }: { creator: DirectoryRow; sel
         </>
       }
     />
+  );
+}
+
+const INVITE_ORDER = { pending: 0, consumed: 1, expired: 2 } as const;
+
+/** Which of the brand's programs it invited the creator to, a line each. */
+function InviteNote({ invitations }: { invitations: NonNullable<DirectoryRow['invitations']> }) {
+  const { offerings } = useOfferings();
+  return (
+    <>
+      {[...invitations]
+        .sort((a, b) => INVITE_ORDER[a.status] - INVITE_ORDER[b.status])
+        .map((i) => {
+          const title = offerings.find((o) => o.id === i.offeringId)?.title;
+          const text =
+            i.status === 'consumed'
+              ? title ? `Applied to ${title}` : 'Applied'
+              : i.status === 'expired'
+                ? title ? `Invite to ${title} expired` : 'Invite expired'
+                : title ? `Invited to ${title}` : 'Invited';
+          const until = i.status === 'pending' && i.expiresAt
+            ? `Link valid until ${new Date(i.expiresAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
+            : undefined;
+          return (
+            <div key={i.offeringId} title={until} style={{ color: i.status === 'consumed' ? theme.success : theme.textMuted }}>
+              {text}
+            </div>
+          );
+        })}
+    </>
   );
 }
 
@@ -751,36 +785,69 @@ function BookButton({ creator }: { creator: DirectoryRow }) {
   );
 }
 
+/** The brand's offerings; the published ones are those a creator can be
+ *  invited to. */
+function useOfferings() {
+  const query = useQuery({
+    queryKey: ['admin-network-offerings'],
+    queryFn: () => api<{ offerings: OfferingOption[] }>('/admin/network/offerings'),
+    retry: false,
+  });
+  const offerings = query.data?.offerings ?? [];
+  return { isLoading: query.isLoading, offerings, published: offerings.filter((o) => o.published) };
+}
+
+/** Offerings the creator holds a pending invitation to. The Network refuses
+ *  another until it expires or they use it. */
+function pendingInvites(creator: DirectoryRow): Set<string> {
+  return new Set((creator.invitations ?? []).filter((i) => i.status === 'pending').map((i) => i.offeringId));
+}
+
 function InviteButton({ creator }: { creator: DirectoryRow }) {
   const [open, setOpen] = useState(false);
+  const { published } = useOfferings();
   if (useViewOnly()) return null;
+  const invited = pendingInvites(creator);
+  const allInvited = published.length > 0 && published.every((o) => invited.has(o.id));
   return (
     <>
-      <Button size="sm" onClick={() => setOpen(true)}>
-        Invite
-      </Button>
+      {allInvited ? (
+        <Button size="sm" disabled>
+          Invited
+        </Button>
+      ) : (
+        <Button size="sm" onClick={() => setOpen(true)}>
+          Invite
+        </Button>
+      )}
       {open && <InviteDialog creator={creator} onClose={() => setOpen(false)} />}
     </>
   );
 }
 
+const INVITE_ERROR_TEXT: Record<string, string> = {
+  creator_not_found: 'This creator is no longer available (deleted account?).',
+  already_invited: 'You already invited them to this offering.',
+};
+
 function InviteDialog({ creator, onClose }: { creator: DirectoryRow; onClose: () => void }) {
-  const offerings = useQuery({
-    queryKey: ['admin-network-offerings'],
-    queryFn: () => api<{ offerings: OfferingOption[] }>('/admin/network/offerings'),
-    retry: false,
-  });
-  const published = (offerings.data?.offerings ?? []).filter((o) => o.published);
+  const offerings = useOfferings();
+  const published = offerings.published;
+  const invited = pendingInvites(creator);
+  const invitable = published.filter((o) => !invited.has(o.id));
 
   const [offeringId, setOfferingId] = useState('');
   const [message, setMessage] = useState('');
 
-  // Default-select the only published offering when there's one — saves
-  // a click in the common case.
+  // Default-select the only offering they can be invited to when there's
+  // one — saves a click in the common case. A pick that turns out to be
+  // invited already (the Network said so) is dropped.
   useEffect(() => {
-    if (!offeringId && published.length === 1) setOfferingId(published[0]!.id);
-  }, [offeringId, published]);
+    if (offeringId && invited.has(offeringId)) setOfferingId('');
+    else if (!offeringId && invitable.length === 1) setOfferingId(invitable[0]!.id);
+  }, [offeringId, invited, invitable]);
 
+  const queryClient = useQueryClient();
   const send = useMutation({
     mutationFn: () =>
       api<{ ok: boolean; expiresAt: string; deeplink?: string }>(
@@ -790,7 +857,10 @@ function InviteDialog({ creator, onClose }: { creator: DirectoryRow; onClose: ()
           body: { creatorId: creator.id, message: message.trim() || undefined },
         },
       ),
+    // The row behind the dialog picks up the invitation.
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['admin-discover-creators'] }),
   });
+  const errorCode = networkErrorCode(send.error);
 
   const sent = send.isSuccess;
   const deeplink = send.data?.deeplink;
@@ -877,13 +947,7 @@ function InviteDialog({ creator, onClose }: { creator: DirectoryRow; onClose: ()
           </>
         ) : (
           <>
-            {send.error && (
-              <ErrorBanner error={
-                send.error instanceof ApiError && send.error.message === 'creator_not_found'
-                  ? 'This creator is no longer available (deleted account?).'
-                  : send.error
-              } />
-            )}
+            {send.error && <ErrorBanner error={(errorCode && INVITE_ERROR_TEXT[errorCode]) || send.error} />}
             <div style={{ marginBottom: 14 }}>
               <Label>Offering</Label>
               {offerings.isLoading ? (
@@ -895,7 +959,11 @@ function InviteDialog({ creator, onClose }: { creator: DirectoryRow; onClose: ()
               ) : (
                 <Select value={offeringId} onChange={(e) => setOfferingId(e.target.value)}>
                   <option value="">— pick an offering —</option>
-                  {published.map((o) => <option key={o.id} value={o.id}>{o.title}</option>)}
+                  {published.map((o) => (
+                    <option key={o.id} value={o.id} disabled={invited.has(o.id)}>
+                      {invited.has(o.id) ? `${o.title} (invited)` : o.title}
+                    </option>
+                  ))}
                 </Select>
               )}
             </div>
