@@ -6,8 +6,9 @@
 //   PAYPAL_CLIENT_ID=… PAYPAL_CLIENT_SECRET=… node sandbox-dispute.mjs PP-D-…
 //
 // Run it in your own terminal with the sandbox app's credentials (the app
-// needs Customer disputes). It escalates an inquiry to a claim, waits up to
-// five minutes for PayPal to put it under review, then settles it.
+// needs Customer disputes). It escalates an inquiry to a claim, answers the
+// claim with test evidence so PayPal puts it under review (waiting up to five
+// minutes for each step), then settles it.
 
 const API = 'https://api-m.sandbox.paypal.com';
 const clientId = process.env.PAYPAL_CLIENT_ID ?? '';
@@ -20,10 +21,11 @@ if (!clientId || !secret || !/^PP-[A-Z0-9-]{4,60}$/.test(disputeId)) {
 }
 
 async function call(method, path, token, body) {
+  const form = body instanceof FormData;
   const res = await fetch(`${API}${path}`, {
     method,
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
+    headers: { Authorization: `Bearer ${token}`, ...(form ? {} : { 'Content-Type': 'application/json' }) },
+    body: form ? body : body ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`${method} ${path}: ${res.status} ${text.slice(0, 500)}`);
@@ -53,10 +55,25 @@ if (d.dispute_life_cycle_stage === 'INQUIRY' && links.includes('escalate')) {
   await call('POST', `${path}/escalate`, token, { note: 'Escalated for an end-to-end test.' });
   ({ d, links } = await show());
 }
-// PayPal moves an escalated dispute into review in its own time.
+// PayPal turns the escalated dispute into a claim in its own time. The claim
+// then waits for the seller: answering it puts it under review.
 const settleable = () => d.status === 'UNDER_REVIEW' && links.includes('adjudicate');
+let answered = false;
 for (let i = 0; i < 20 && !settleable() && d.status !== 'RESOLVED'; i++) {
-  await new Promise((r) => setTimeout(r, 15_000));
+  if (!answered && d.dispute_life_cycle_stage === 'CHARGEBACK' && links.includes('provide_evidence')) {
+    const form = new FormData();
+    form.append('input', new Blob([JSON.stringify({
+      evidences: [{
+        evidence_type: 'PROOF_OF_FULFILLMENT',
+        evidence_info: { tracking_info: [{ carrier_name: 'FEDEX', tracking_number: '122533485' }] },
+        notes: 'Sandbox end-to-end test.',
+      }],
+    })], { type: 'application/json' }));
+    await call('POST', `${path}/provide-evidence`, token, form);
+    answered = true;
+  } else {
+    await new Promise((r) => setTimeout(r, 15_000));
+  }
   ({ d, links } = await show());
 }
 if (settleable()) {

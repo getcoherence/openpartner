@@ -371,7 +371,9 @@ Only the webhook needs to be public: the checkout page can run on
    ```bash
    PAYPAL_CLIENT_ID=… PAYPAL_CLIENT_SECRET=… node examples/paypal-checkout/sandbox-dispute.mjs PP-D-…
    ```
-   It escalates the dispute to a claim and settles it in the buyer's favour.
+   It escalates the dispute to a claim, answers the claim with test
+   evidence (which puts it under review), and settles it in the buyer's
+   favour.
    PayPal reverses the payment: a `chargeback` is recorded and the
    commission is reversed.
 10. **Transaction Search.** After the next hourly catch-up (at :50) the card
