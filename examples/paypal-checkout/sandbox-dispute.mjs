@@ -65,7 +65,7 @@ const path = `/v1/customer/disputes/${encodeURIComponent(disputeId)}`;
 let last = '';
 const show = async () => {
   const d = await call('GET', path, token);
-  const links = (d.links ?? []).map((l) => l.rel);
+  const links = (d.links ?? []).map((l) => l.rel).sort();
   const line = `${d.dispute_id}: status ${d.status}, stage ${d.dispute_life_cycle_stage}, can: ${links.join(', ') || 'nothing'}`;
   if (line !== last) console.log(line);
   last = line;
