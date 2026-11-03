@@ -946,7 +946,12 @@ function PlatformRowEditor({
         ...(existing?.profileUrl && nextHandle === existing.handle ? { profileUrl: existing.profileUrl } : {}),
       });
     },
-    onSuccess: onChanged,
+    onSuccess: (saved) => {
+      // A pasted profile link is saved as its handle.
+      const savedHandle = (saved as Partial<PlatformRow> | null)?.handle;
+      if (typeof savedHandle === 'string') setHandle(savedHandle);
+      onChanged();
+    },
   });
   const remove = useMutation({
     mutationFn: () => adapter.deletePlatform(platform),
@@ -1007,6 +1012,11 @@ function PlatformRowEditor({
           </Button>
         )}
       </div>
+      {save.error && (
+        <p role="alert" style={{ gridColumn: '1 / -1', fontSize: 12, color: theme.danger, margin: 0 }}>
+          {platformSaveError(save.error, label)}
+        </p>
+      )}
       {verifying && existing && (
         <VerifyAccountDialog
           adapter={adapter}
@@ -1321,6 +1331,17 @@ function networkErrorBody(err: unknown): Record<string, unknown> | null {
     }
   }
   return body ?? null;
+}
+
+/** Why the Network refused a platform's handle, for the creator. */
+function platformSaveError(err: unknown, label: string): string {
+  const body = networkErrorBody(err);
+  if (body?.error === 'handle_wrong_platform') {
+    const other = PLATFORMS.find((p) => p.kind === body.platform)?.label;
+    return other ? `That’s a ${other} link, not ${label}.` : `That link isn’t a ${label} profile.`;
+  }
+  if (body?.error === 'invalid_handle') return `Enter your ${label} handle or profile link.`;
+  return err instanceof Error ? err.message : 'Couldn’t save.';
 }
 
 /** The Network's error code and a sentence for the creator. */
