@@ -364,16 +364,16 @@ Only the webhook needs to be public: the checkout page can run on
    sandbox buyer: `subscription_created` at approval and an `invoice_paid`
    for the first payment, under the same partner.
 9. **A dispute, then a reversal.** Pay again through the partner's link.
-   As the sandbox buyer, open a dispute on that payment (Resolution Center,
-   item not received): a `dispute_created` is recorded and the commission
-   stays. Then settle it for the buyer with PayPal's sandbox-only calls,
-   from your own terminal, with the app's credentials:
+   In your own terminal, start PayPal's sandbox-only settle with the app's
+   credentials:
    ```bash
-   PAYPAL_CLIENT_ID=… PAYPAL_CLIENT_SECRET=… node examples/paypal-checkout/sandbox-dispute.mjs PP-D-…
+   PAYPAL_CLIENT_ID=… PAYPAL_CLIENT_SECRET=… node examples/paypal-checkout/sandbox-dispute.mjs
    ```
-   It escalates the dispute to a claim, answers the claim with test
-   evidence (which puts it under review), and settles it in the buyer's
-   favour.
+   Then, as the sandbox buyer, open a dispute on that payment
+   (sandbox.paypal.com/disputes, item not received): a `dispute_created` is
+   recorded and the commission stays. The script picks the dispute up and
+   settles it for the buyer as soon as PayPal offers to. Don't escalate or
+   answer it first: PayPal never offered to settle a claim that had been.
    PayPal reverses the payment: a `chargeback` is recorded and the
    commission is reversed.
 10. **Transaction Search.** After the next hourly catch-up (at :50) the card

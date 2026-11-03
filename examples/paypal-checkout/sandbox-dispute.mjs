@@ -1,31 +1,32 @@
-// Settle a PayPal SANDBOX dispute in the buyer's favour, so PayPal reverses
-// the payment and OpenPartner records the chargeback (docs/paypal-payments.md,
-// "Checking it against PayPal"). Sandbox only: the host is fixed, and the
-// settle call (adjudicate) exists only there. No dependencies; Node 20+.
+// Settle a PayPal SANDBOX dispute in the buyer's favour, so PayPal takes the
+// payment back and OpenPartner records it (docs/paypal-payments.md, "Checking
+// it against PayPal"). Sandbox only: the host is fixed, and the settle call
+// (adjudicate) exists only there. No dependencies; Node 20+.
 //
-//   PAYPAL_CLIENT_ID=… PAYPAL_CLIENT_SECRET=… node sandbox-dispute.mjs PP-D-…
+//   PAYPAL_CLIENT_ID=… PAYPAL_CLIENT_SECRET=… node sandbox-dispute.mjs [PP-D-…]
 //
 // Run it in your own terminal with the sandbox app's credentials (the app
-// needs Customer disputes). It escalates an inquiry to a claim, answers the
-// claim with test evidence so PayPal puts it under review (waiting up to five
-// minutes for each step), then settles it.
+// needs Customer disputes). Start it with no id, then open the dispute as the
+// sandbox buyer: it picks up the first dispute opened after it started.
+// PayPal settles a dispute only while it offers adjudicate, so this checks
+// every 10 seconds and settles as soon as it does. Don't escalate or answer
+// the dispute first: a claim escalated and answered was never offered it.
 
 const API = 'https://api-m.sandbox.paypal.com';
 const clientId = process.env.PAYPAL_CLIENT_ID ?? '';
 const secret = process.env.PAYPAL_CLIENT_SECRET ?? '';
-const disputeId = process.argv[2] ?? '';
+const given = process.argv[2] ?? '';
 
-if (!clientId || !secret || !/^PP-[A-Z0-9-]{4,60}$/.test(disputeId)) {
-  console.error('Usage: PAYPAL_CLIENT_ID=… PAYPAL_CLIENT_SECRET=… node sandbox-dispute.mjs PP-D-…');
+if (!clientId || !secret || (given && !/^PP-[A-Z0-9-]{4,60}$/.test(given))) {
+  console.error('Usage: PAYPAL_CLIENT_ID=… PAYPAL_CLIENT_SECRET=… node sandbox-dispute.mjs [PP-D-…]');
   process.exit(1);
 }
 
 async function call(method, path, token, body) {
-  const form = body instanceof FormData;
   const res = await fetch(`${API}${path}`, {
     method,
-    headers: { Authorization: `Bearer ${token}`, ...(form ? {} : { 'Content-Type': 'application/json' }) },
-    body: form ? body : body ? JSON.stringify(body) : undefined,
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`${method} ${path}: ${res.status} ${text.slice(0, 500)}`);
@@ -42,47 +43,46 @@ if (!tokenRes.ok) {
   process.exit(1);
 }
 const { access_token: token } = await tokenRes.json();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const until = (minutes) => Date.now() + minutes * 60_000;
+
+let disputeId = given;
+if (!disputeId) {
+  const since = new Date().toISOString();
+  console.log('Waiting for a new dispute: open one as the sandbox buyer now.');
+  for (const end = until(20); !disputeId && Date.now() < end; ) {
+    const { items = [] } = await call('GET', `/v1/customer/disputes?start_time=${encodeURIComponent(since)}`, token);
+    disputeId = items[0]?.dispute_id ?? '';
+    if (!disputeId) await sleep(10_000);
+  }
+  if (!disputeId) {
+    console.log('No new dispute in 20 minutes.');
+    process.exit(1);
+  }
+}
+
 const path = `/v1/customer/disputes/${encodeURIComponent(disputeId)}`;
+let last = '';
 const show = async () => {
   const d = await call('GET', path, token);
   const links = (d.links ?? []).map((l) => l.rel);
-  console.log(`${d.dispute_id}: status ${d.status}, stage ${d.dispute_life_cycle_stage}, can: ${links.join(', ') || 'nothing'}`);
+  const line = `${d.dispute_id}: status ${d.status}, stage ${d.dispute_life_cycle_stage}, can: ${links.join(', ') || 'nothing'}`;
+  if (line !== last) console.log(line);
+  last = line;
   return { d, links };
 };
 
 let { d, links } = await show();
-if (d.dispute_life_cycle_stage === 'INQUIRY' && links.includes('escalate')) {
-  await call('POST', `${path}/escalate`, token, { note: 'Escalated for an end-to-end test.' });
+for (const end = until(20); !links.includes('adjudicate') && d.status !== 'RESOLVED' && Date.now() < end; ) {
+  await sleep(10_000);
   ({ d, links } = await show());
 }
-// PayPal turns the escalated dispute into a claim in its own time. The claim
-// then waits for the seller: answering it puts it under review. PayPal never
-// lists adjudicate among the links, so a claim under review is settleable.
-const settleable = () => d.status === 'UNDER_REVIEW' && d.dispute_life_cycle_stage !== 'INQUIRY';
-let answered = false;
-for (let i = 0; i < 20 && !settleable() && d.status !== 'RESOLVED'; i++) {
-  if (!answered && d.dispute_life_cycle_stage === 'CHARGEBACK' && links.includes('provide_evidence')) {
-    const form = new FormData();
-    form.append('input', new Blob([JSON.stringify({
-      evidences: [{
-        evidence_type: 'PROOF_OF_FULFILLMENT',
-        evidence_info: { tracking_info: [{ carrier_name: 'FEDEX', tracking_number: '122533485' }] },
-        notes: 'Sandbox end-to-end test.',
-      }],
-    })], { type: 'application/json' }));
-    await call('POST', `${path}/provide-evidence`, token, form);
-    answered = true;
-  } else {
-    await new Promise((r) => setTimeout(r, 15_000));
-  }
-  ({ d, links } = await show());
-}
-if (settleable()) {
+if (links.includes('adjudicate')) {
   await call('POST', `${path}/adjudicate`, token, { adjudication_outcome: 'BUYER_FAVOR' });
   await show();
-  console.log('Settled for the buyer. PayPal reverses the payment; OpenPartner records the chargeback within a minute.');
+  console.log('Settled for the buyer. PayPal takes the payment back; OpenPartner records it within a minute.');
 } else if (d.status === 'RESOLVED') {
   console.log(`Already resolved: ${d.dispute_outcome?.outcome_code ?? 'outcome not shown'}.`);
 } else {
-  console.log('PayPal hasn’t made it settleable. Run this again later.');
+  console.log('PayPal never offered to settle it (no adjudicate link) in 20 minutes.');
 }
