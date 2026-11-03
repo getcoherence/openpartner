@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 /**
  * Inviting an OpenPartner creator from Discover creators: the Network
- * returns the brand's invitations on each row, so a creator invited to every
- * published offering shows Invited (disabled), the dialog marks the offerings
- * they're already invited to, and sending updates the row.
+ * returns the brand's invitations on each row, so the row names the programs
+ * they were invited to, a creator invited to every published offering shows
+ * Invited (disabled), the dialog marks the offerings they're already invited
+ * to, and sending updates the row.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -17,7 +18,7 @@ interface Recorded {
   body: unknown;
 }
 let calls: Recorded[] = [];
-let invitations: Array<{ offeringId: string; status: string }> = [];
+let invitations: Array<{ offeringId: string; status: string; expiresAt?: string }> = [];
 let offerings: Array<{ id: string; title: string; published: boolean }> = [];
 let inviteResponse: { status: number; body: unknown } = { status: 201, body: { ok: true, expiresAt: '2026-12-03T00:00:00Z' } };
 
@@ -116,6 +117,34 @@ describe('inviting an OpenPartner creator', () => {
     expect(calls.find((c) => c.method === 'POST')!.url).toBe('/api/admin/network/offerings/off_pro/invite-creator');
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     await waitFor(() => expect(button('Invited')?.disabled).toBe(true));
+    expect(screen.getByText('Invited to Acme Pro')).toBeTruthy();
+  });
+
+  it('names the programs they were invited to, pending first', async () => {
+    offerings = [
+      { id: 'off_pro', title: 'Acme Pro', published: true },
+      { id: 'off_team', title: 'Acme Team', published: true },
+      { id: 'off_old', title: 'Acme Old', published: false },
+    ];
+    invitations = [
+      { offeringId: 'off_team', status: 'expired', expiresAt: '2026-10-01T00:00:00Z' },
+      { offeringId: 'off_old', status: 'consumed', expiresAt: '2026-11-20T00:00:00Z' },
+      { offeringId: 'off_pro', status: 'pending', expiresAt: '2026-12-03T12:00:00Z' },
+    ];
+    wrap();
+    const pending = await screen.findByText('Invited to Acme Pro');
+    expect(pending.getAttribute('title')).toMatch(/^Link valid until /);
+    const lines = Array.from(pending.parentElement!.children).map((e) => e.textContent);
+    expect(lines).toEqual(['Invited to Acme Pro', 'Applied to Acme Old', 'Invite to Acme Team expired']);
+    // Team's invitation expired, so the button stays live.
+    expect(button('Invite')?.disabled).toBe(false);
+  });
+
+  it('says nothing when they haven’t been invited', async () => {
+    wrap();
+    await screen.findByText('Member Mo');
+    await waitFor(() => expect(calls.some((c) => c.url.includes('/admin/network/offerings'))).toBe(true));
+    expect(screen.queryByText(/^Invited|^Applied|^Invite to/)).toBeNull();
   });
 
   it('marks the offerings they’re already invited to and picks the one left', async () => {

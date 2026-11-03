@@ -82,7 +82,7 @@ interface DirectoryRow {
   totalReach: number;
   /** This brand's invitations to the creator, one per offering. Absent on
    *  an older Network. */
-  invitations?: Array<{ offeringId: string; status: 'pending' | 'consumed' | 'expired' }>;
+  invitations?: Array<{ offeringId: string; status: 'pending' | 'consumed' | 'expired'; expiresAt?: string }>;
 }
 
 const CATEGORIES = [
@@ -724,6 +724,7 @@ function MemberRow({ creator, selected, onSelect }: { creator: DirectoryRow; sel
         <RowFigure value={creator.totalReach > 0 ? compactCount(creator.totalReach) : '—'} caption="followers" />
       }
       tags={creator.categories}
+      note={creator.invitations?.length ? <InviteNote invitations={creator.invitations} /> : undefined}
       actions={
         <>
           <InviteButton creator={creator} />
@@ -731,6 +732,36 @@ function MemberRow({ creator, selected, onSelect }: { creator: DirectoryRow; sel
         </>
       }
     />
+  );
+}
+
+const INVITE_ORDER = { pending: 0, consumed: 1, expired: 2 } as const;
+
+/** Which of the brand's programs it invited the creator to, a line each. */
+function InviteNote({ invitations }: { invitations: NonNullable<DirectoryRow['invitations']> }) {
+  const { offerings } = useOfferings();
+  return (
+    <>
+      {[...invitations]
+        .sort((a, b) => INVITE_ORDER[a.status] - INVITE_ORDER[b.status])
+        .map((i) => {
+          const title = offerings.find((o) => o.id === i.offeringId)?.title;
+          const text =
+            i.status === 'consumed'
+              ? title ? `Applied to ${title}` : 'Applied'
+              : i.status === 'expired'
+                ? title ? `Invite to ${title} expired` : 'Invite expired'
+                : title ? `Invited to ${title}` : 'Invited';
+          const until = i.status === 'pending' && i.expiresAt
+            ? `Link valid until ${new Date(i.expiresAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
+            : undefined;
+          return (
+            <div key={i.offeringId} title={until} style={{ color: i.status === 'consumed' ? theme.success : theme.textMuted }}>
+              {text}
+            </div>
+          );
+        })}
+    </>
   );
 }
 
@@ -754,14 +785,16 @@ function BookButton({ creator }: { creator: DirectoryRow }) {
   );
 }
 
-/** The brand's published offerings, the ones a creator can be invited to. */
-function usePublishedOfferings() {
-  const offerings = useQuery({
+/** The brand's offerings; the published ones are those a creator can be
+ *  invited to. */
+function useOfferings() {
+  const query = useQuery({
     queryKey: ['admin-network-offerings'],
     queryFn: () => api<{ offerings: OfferingOption[] }>('/admin/network/offerings'),
     retry: false,
   });
-  return { isLoading: offerings.isLoading, published: (offerings.data?.offerings ?? []).filter((o) => o.published) };
+  const offerings = query.data?.offerings ?? [];
+  return { isLoading: query.isLoading, offerings, published: offerings.filter((o) => o.published) };
 }
 
 /** Offerings the creator holds a pending invitation to. The Network refuses
@@ -772,7 +805,7 @@ function pendingInvites(creator: DirectoryRow): Set<string> {
 
 function InviteButton({ creator }: { creator: DirectoryRow }) {
   const [open, setOpen] = useState(false);
-  const { published } = usePublishedOfferings();
+  const { published } = useOfferings();
   if (useViewOnly()) return null;
   const invited = pendingInvites(creator);
   const allInvited = published.length > 0 && published.every((o) => invited.has(o.id));
@@ -798,7 +831,7 @@ const INVITE_ERROR_TEXT: Record<string, string> = {
 };
 
 function InviteDialog({ creator, onClose }: { creator: DirectoryRow; onClose: () => void }) {
-  const offerings = usePublishedOfferings();
+  const offerings = useOfferings();
   const published = offerings.published;
   const invited = pendingInvites(creator);
   const invitable = published.filter((o) => !invited.has(o.id));
