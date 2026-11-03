@@ -164,7 +164,8 @@ async function paymentEvent(res: Response, conn: PaypalConnectionRow, event: Pay
       processPaypalFact(trx, { conn, via: 'webhook', type, token: () => paypalAccessToken(privilegedDb, conn) }, fact),
     );
   } catch (err) {
-    console.error(`[paypal] payment event ${String(event.id ?? '')} for connection ${conn.id} failed`, err instanceof Error ? err.message : err);
+    // A constant format: the event id comes from the delivery.
+    console.error('[paypal] payment event %s for connection %s failed', String(event.id ?? ''), conn.id, err instanceof Error ? err.message : err);
     return res.status(500).json({ error: 'not_recorded' });
   }
   for (const r of result.refunds) void announceRefund(conn.tenantId, r.announce, { kind: 'refund', refundEventId: r.refundEventId });
