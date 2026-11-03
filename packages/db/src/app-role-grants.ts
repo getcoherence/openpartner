@@ -100,6 +100,11 @@ export const RESTRICTED_GRANTS: ReadonlyArray<{ table: string; grant: string }> 
   { table: 'HostedBillingProfile', grant: 'select, insert, update' },
   { table: 'PaypalConnection', grant: 'select, insert, update' },
   { table: 'PaypalPayoutBatch', grant: 'select, insert, update' },
+  // PayPal payments as conversions (paypal-payments.ts): the log is
+  // appended and pruned on the privileged pool; subscriptions are a cache
+  // of PayPal's own data, refreshed in place.
+  { table: 'PaymentEventLog', grant: 'select, insert' },
+  { table: 'PaypalSubscription', grant: 'select, insert, update' },
   // Platform-fee metering: the tenant-scoped reporter appends usage and
   // shadow rows and fills in its own terms row; everything else is the
   // ops console's privileged pool.

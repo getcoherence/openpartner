@@ -46,6 +46,13 @@
  *                podcast it's normal.
  *   stripe       distinct Stripe events the catch-up job recovered after
  *                the webhook missed them (metadata.recoveredBy), when it runs.
+ *   paypal       for a brand whose PayPal app reports payments
+ *                (paypal-payments.ts): the window's PayPal payments, how
+ *                many carried a partner click, how many came with no click
+ *                reference or one naming no click, and how many the
+ *                catch-up recorded after the webhook missed them. From
+ *                PaymentEventLog, a delivery log (sandbox apps' rehearsals
+ *                left out). Null while no app has ever tracked payments.
  *   issues       input OpenPartner dropped (tracking-issues.ts).
  *   signals      when each integration last delivered anything.
  */
@@ -109,14 +116,30 @@ export interface TrackingHealth {
   coupons: { overrodeLink: number };
   codes: CodeShareRow[];
   stripe: { recovered: number };
+  paypal: PaypalHealth | null;
   issues: TrackingIssueSummary[];
   signals: {
     lastClickAt: string | null;
     lastLandingAt: string | null;
     lastStitchAt: string | null;
     lastStripeEventAt: string | null;
+    lastPaypalEventAt: string | null;
     lastPostbackAt: string | null;
   };
+}
+
+export interface PaypalHealth {
+  /** PayPal payments (checkout captures and subscription payments) seen. */
+  payments: number;
+  /** Of those, recorded for the partner click their custom_id named. */
+  withClick: number;
+  /** No custom_id at all: the checkout doesn't pass the click, or the
+   *  buyer came without one. */
+  withoutReference: number;
+  /** A custom_id naming no click of this brand's. */
+  unknownReference: number;
+  /** Payments and refunds the catch-up recorded after the webhook missed them. */
+  recovered: number;
 }
 
 const iso = (d: Date | string | null | undefined) => (d ? new Date(d).toISOString() : null);
@@ -138,6 +161,7 @@ export async function trackingHealth(
   const coupons = await couponOverrides(db, tenantId, since, programId);
   const codes = await codeShare(db, tenantId, since, programId);
   const recovered = await stripeRecovered(db, tenantId, since);
+  const paypal = await paypalHealth(db, tenantId, since);
   const issues = await trackingIssuesSince(db, tenantId, since);
   const signals = await lastSignals(db, tenantId);
   const landingReported = await db(TABLES.ClickLanding).where({ tenantId }).first('clickId');
@@ -192,6 +216,7 @@ export async function trackingHealth(
     coupons: { overrodeLink: coupons },
     codes,
     stripe: { recovered },
+    paypal,
     issues,
     signals,
   };
@@ -481,6 +506,34 @@ async function stripeRecovered(db: Knex, tenantId: string, since: Date): Promise
   return Number(row?.n ?? 0);
 }
 
+/** PayPal payments in the window by what became of them (paypal-payments.ts
+ *  PaypalOutcome), or null when this brand has never tracked them. */
+async function paypalHealth(db: Knex, tenantId: string, since: Date): Promise<PaypalHealth | null> {
+  const rows = (await db(TABLES.PaymentEventLog)
+    .where({ tenantId, provider: 'paypal' })
+    .andWhere('receivedAt', '>=', since)
+    .andWhere((q) => q.where('eventKey', 'like', 'capture:%').orWhere('eventKey', 'like', 'sale:%'))
+    .whereNotIn('outcome', ['sandbox', 'test_click'])
+    .groupBy('outcome')
+    .select('outcome')
+    .count({ n: '*' })) as Array<{ outcome: string; n: string | number }>;
+  const tracked = await db(TABLES.PaypalConnection).where({ tenantId }).whereNotNull('paymentsSince').first('id');
+  if (!tracked && rows.length === 0) return null;
+  const of = (...outcomes: string[]) => rows.filter((r) => outcomes.includes(r.outcome)).reduce((n, r) => n + Number(r.n), 0);
+  const [rec] = (await db(TABLES.Event)
+    .where({ tenantId })
+    .andWhere('ts', '>=', since)
+    .whereRaw(`"metadata"->>'recoveredBy' = 'paypal_catchup'`)
+    .count({ n: '*' })) as Array<{ n: string | number }>;
+  return {
+    payments: rows.reduce((n, r) => n + Number(r.n), 0),
+    withClick: of('recorded'),
+    withoutReference: of('no_reference'),
+    unknownReference: of('unknown_click', 'foreign_reference'),
+    recovered: Number(rec?.n ?? 0),
+  };
+}
+
 async function lastSignals(db: Knex, tenantId: string): Promise<TrackingHealth['signals']> {
   const click = await db(TABLES.Click).where({ tenantId }).whereNotNull('linkId').max({ at: 'ts' }).first();
   const landing = await db(TABLES.ClickLanding).where({ tenantId }).max({ at: 'landedAt' }).first();
@@ -490,6 +543,7 @@ async function lastSignals(db: Knex, tenantId: string): Promise<TrackingHealth['
     .whereRaw(`"metadata"->>'stripeEventId' is not null`)
     .max({ at: 'ts' })
     .first();
+  const paypal = await db(TABLES.PaymentEventLog).where({ tenantId, provider: 'paypal' }).max({ at: 'receivedAt' }).first();
   const postback = await db(TABLES.ConversionPostbackToken)
     .where({ tenantId })
     .whereNull('revokedAt')
@@ -500,6 +554,7 @@ async function lastSignals(db: Knex, tenantId: string): Promise<TrackingHealth['
     lastLandingAt: iso(landing?.at),
     lastStitchAt: iso(stitch?.at),
     lastStripeEventAt: iso(stripe?.at),
+    lastPaypalEventAt: iso(paypal?.at),
     lastPostbackAt: iso(postback?.at),
   };
 }

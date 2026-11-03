@@ -17,7 +17,11 @@
  *                             shaped like a click id but names none
  *   stripe_foreign_reference  client_reference_id is something else
  *                             entirely (the brand's own order or user id)
- *   coupon_unknown_code       POST /coupons/redeem with a code nobody holds
+ *   paypal_unknown_click      a PayPal payment's or subscription's
+ *                             custom_id carries a click id this tenant
+ *                             doesn't have (paypal-payments.ts)
+ *   paypal_foreign_reference  its custom_id carries no click id at all
+ *   coupon_unknown_code      POST /coupons/redeem with a code nobody holds
  *   reward_code_refused       the brand's Stripe wouldn't create a partner
  *                             code's customer discount (customer-rewards.ts);
  *                             `detail` keeps Stripe's answer, and the setup
@@ -41,6 +45,8 @@ export const TRACKING_ISSUE_KINDS: readonly TrackingIssueKind[] = [
   'conversion_unknown_click',
   'stripe_unknown_click',
   'stripe_foreign_reference',
+  'paypal_unknown_click',
+  'paypal_foreign_reference',
   'coupon_unknown_code',
   'reward_code_refused',
 ];
@@ -51,6 +57,7 @@ const UNKNOWN_CLICK_KINDS = new Set<TrackingIssueKind>([
   'landing_unknown_click',
   'conversion_unknown_click',
   'stripe_unknown_click',
+  'paypal_unknown_click',
 ]);
 
 const SAMPLE_MAX = 64;

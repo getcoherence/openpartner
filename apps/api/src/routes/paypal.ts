@@ -1,8 +1,12 @@
 /**
- * Pay with PayPal (docs/paypal-payouts.md).
+ * Pay with PayPal (docs/paypal-payouts.md), and PayPal payments as
+ * conversions (docs/paypal-payments.md).
  *
  *   /config/paypal…               the brand's PayPal REST app, per
  *                                 environment (paypal-connection.ts)
+ *   /config/paypal-payments…,     which apps report the payments the
+ *   /config/paypal/:env/payments  brand's checkout takes: Pay with
+ *                                 PayPal's, or a checkout app of its own
  *   /config/paypal-payouts        "pay balances PayPal can't send in"
  *                                 (paypal-send-as.ts)
  *   /payouts/runs/:runId/paypal-batches, /payouts/paypal-batches/…
@@ -29,10 +33,14 @@ import {
   PAYPAL_ENVIRONMENTS,
   PaypalConnectError,
   connectPaypal,
+  connectPaypalCheckout,
   disconnectPaypal,
+  disconnectPaypalCheckout,
   listPaypalConnections,
+  listPaypalPaymentApps,
   reverifyPaypal,
   setActivePaypalEnvironment,
+  setPaypalPaymentTracking,
 } from '../paypal-connection.js';
 import {
   cancelUnclaimedPayout,
@@ -101,9 +109,21 @@ export const resolvePaypalBatchSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('link'), payoutBatchId: z.string().trim().regex(/^[A-Za-z0-9]{1,64}$/, 'a PayPal payout batch id') }),
 ]);
 
+/** POST /config/paypal/{environment}/payments. */
+export const paypalPaymentTrackingSchema = z.object({
+  tracking: z.boolean().describe('Report the payments this app takes as conversions (`true`), or stop (`false`).'),
+});
+
 function connectError(res: Response, err: unknown) {
   if (!(err instanceof PaypalConnectError)) throw err;
-  const status = err.code === 'not_connected' ? 404 : err.code === 'open_batches' ? 409 : err.code === 'paypal_unreachable' ? 502 : 422;
+  const status =
+    err.code === 'not_connected'
+      ? 404
+      : err.code === 'open_batches' || err.code === 'same_app_as_payouts' || err.code === 'already_tracked'
+        ? 409
+        : err.code === 'paypal_unreachable'
+          ? 502
+          : 422;
   return res.status(status).json({ error: err.code, detail: err.message, ...(err.openBatches !== undefined ? { openBatches: err.openBatches } : {}) });
 }
 
@@ -168,6 +188,51 @@ paypalRouter.delete('/config/paypal/:environment', requireAuth, requireAdmin, as
   if (!environment) return;
   try {
     await disconnectPaypal(db, tenantId, environment);
+    res.status(204).end();
+  } catch (err) {
+    return connectError(res, err);
+  }
+});
+
+// --------------------------------------------- PayPal payments as conversions
+
+paypalRouter.get('/config/paypal-payments', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ apps: await listPaypalPaymentApps(db, tenantId) });
+});
+
+paypalRouter.post('/config/paypal/:environment/payments', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const environment = environmentOf(req, res);
+  if (!environment) return;
+  const body = paypalPaymentTrackingSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  try {
+    res.json({ app: await setPaypalPaymentTracking(db, tenantId, environment, body.data.tracking) });
+  } catch (err) {
+    return connectError(res, err);
+  }
+});
+
+paypalRouter.post('/config/paypal-payments', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const body = connectPaypalSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  try {
+    const adminId = req.principal?.role === 'admin' && req.principal.source === 'session' ? req.principal.adminId : null;
+    res.status(201).json({ app: await connectPaypalCheckout(db, tenantId, { ...body.data, adminId }) });
+  } catch (err) {
+    return connectError(res, err);
+  }
+});
+
+paypalRouter.delete('/config/paypal-payments/:environment', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const environment = environmentOf(req, res);
+  if (!environment) return;
+  try {
+    await disconnectPaypalCheckout(db, tenantId, environment);
     res.status(204).end();
   } catch (err) {
     return connectError(res, err);

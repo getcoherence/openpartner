@@ -70,8 +70,15 @@ export class FakePaypal {
   readonly batches = new Map<string, FakeBatch>();
   private readonly bySender = new Map<string, string>();
   private readonly requestIds = new Map<string, { status: number; body: unknown }>();
-  readonly webhooks = new Map<string, { id: string; url: string; account: string }>();
+  readonly webhooks = new Map<string, { id: string; url: string; account: string; eventTypes: string[] }>();
   readonly faults: { create: Fault[]; token: Fault[]; get: Fault[] } = { create: [], token: [], get: [] };
+  /** Payments (docs/paypal-payments.md): the webhook events PayPal
+   *  generated, Transaction Search rows and subscriptions, per account. */
+  readonly events: Array<{ account: string; event: Record<string, unknown> }> = [];
+  readonly transactions: Array<{ account: string; info: Record<string, unknown> }> = [];
+  readonly subscriptions = new Map<string, { account: string; sub: Record<string, unknown>; transactions: Array<{ id: string; time: string }> }>();
+  /** Apps PayPal hasn't given Transaction Search (it answers 403). */
+  readonly noSearch = new Set<string>();
   /** Every POST /v1/payments/payouts that reached PayPal. */
   createCalls = 0;
   /** Batches actually created. */
@@ -85,6 +92,28 @@ export class FakePaypal {
     const full: App = { env: 'sandbox', appId: id('APP-'), payouts: true, ...app };
     this.apps.push(full);
     return full;
+  }
+
+  static account(app: App): string {
+    return `${app.env}:${app.appId}`;
+  }
+
+  /** An event PayPal generated for `app` (listed by the events API). */
+  addEvent(app: App, event: Record<string, unknown>): void {
+    this.events.push({ account: FakePaypal.account(app), event });
+  }
+
+  addTransaction(app: App, info: Record<string, unknown>): void {
+    this.transactions.push({ account: FakePaypal.account(app), info });
+  }
+
+  addSubscription(app: App, sub: Record<string, unknown>, transactions: Array<{ id: string; time: string }> = []): void {
+    this.subscriptions.set(String(sub.id), { account: FakePaypal.account(app), sub, transactions });
+  }
+
+  webhookAt(url: string): { id: string; url: string; account: string; eventTypes: string[] } | undefined {
+    for (const w of this.webhooks.values()) if (w.url === url) return w;
+    return undefined;
   }
 
   /** PayPal forgets request ids (past their 30 days, say); sender_batch_id
@@ -278,13 +307,77 @@ export class FakePaypal {
     }
 
     if (path === '/v1/notifications/webhooks' && init.method === 'POST') {
-      const body = JSON.parse(init.body ?? '{}') as { url: string };
+      const body = JSON.parse(init.body ?? '{}') as { url: string; event_types?: Array<{ name: string }> };
       for (const w of this.webhooks.values()) {
         if (w.account === account && w.url === body.url) return res(400, { name: 'WEBHOOK_URL_ALREADY_EXISTS', message: 'Webhook URL already exists' });
       }
-      const w = { id: id('WH-'), url: body.url, account };
+      const w = { id: id('WH-'), url: body.url, account, eventTypes: (body.event_types ?? []).map((e) => e.name) };
       this.webhooks.set(w.id, w);
-      return res(201, { id: w.id, url: w.url, event_types: [] });
+      return res(201, { id: w.id, url: w.url, event_types: body.event_types ?? [] });
+    }
+    const patchPath = /^\/v1\/notifications\/webhooks\/([A-Za-z0-9-]+)$/.exec(path);
+    if (patchPath && init.method === 'PATCH') {
+      const w = this.webhooks.get(patchPath[1]!);
+      if (!w || w.account !== account) return res(404, { name: 'INVALID_RESOURCE_ID', message: 'not found' });
+      const ops = JSON.parse(init.body ?? '[]') as Array<{ op: string; path: string; value: Array<{ name: string }> }>;
+      for (const op of ops) if (op.op === 'replace' && op.path === '/event_types') w.eventTypes = op.value.map((e) => e.name);
+      return res(200, { id: w.id, url: w.url, event_types: w.eventTypes.map((name) => ({ name })) });
+    }
+
+    if (path === '/v1/notifications/webhooks-events' && init.method === 'GET') {
+      const start = new Date(u.searchParams.get('start_time') ?? 0).getTime();
+      const end = new Date(u.searchParams.get('end_time') ?? '2100-01-01').getTime();
+      const size = Number(u.searchParams.get('page_size') ?? '10');
+      const offset = Number(u.searchParams.get('page_token') ?? '0');
+      const all = this.events
+        .filter((e) => e.account === account)
+        .map((e) => e.event)
+        .filter((e) => {
+          const t = new Date(String(e.create_time)).getTime();
+          return t >= start && t <= end;
+        })
+        .sort((a, b) => new Date(String(b.create_time)).getTime() - new Date(String(a.create_time)).getTime());
+      const page = all.slice(offset, offset + size);
+      const next = new URLSearchParams(u.searchParams);
+      next.set('page_token', String(offset + size));
+      return res(200, {
+        events: page,
+        count: page.length,
+        links: offset + size < all.length ? [{ href: `https://api-m.paypal.com/v1/notifications/webhooks-events?${next.toString()}`, rel: 'next', method: 'GET' }] : [],
+      });
+    }
+
+    if (path === '/v1/reporting/transactions' && init.method === 'GET') {
+      if (this.noSearch.has(app.appId)) return res(403, { name: 'NOT_AUTHORIZED', message: 'Authorization failed due to insufficient permissions.', debug_id: 'dbg403' });
+      const start = new Date(u.searchParams.get('start_date') ?? 0).getTime();
+      const end = new Date(u.searchParams.get('end_date') ?? '2100-01-01').getTime();
+      if (end - start > 31 * 86_400_000) return res(400, { name: 'INVALID_REQUEST', message: 'Date range is greater than 31 days' });
+      const size = Number(u.searchParams.get('page_size') ?? '100');
+      const page = Number(u.searchParams.get('page') ?? '1');
+      const all = this.transactions
+        .filter((t) => t.account === account)
+        .map((t) => t.info)
+        .filter((t) => {
+          const at = new Date(String(t.transaction_initiation_date)).getTime();
+          return at >= start && at <= end;
+        });
+      return res(200, {
+        transaction_details: all.slice((page - 1) * size, page * size).map((info) => ({ transaction_info: info })),
+        page,
+        total_items: all.length,
+        total_pages: Math.max(1, Math.ceil(all.length / size)),
+      });
+    }
+
+    const subPath = /^\/v1\/billing\/subscriptions\/([A-Za-z0-9-]+)(\/transactions)?$/.exec(path);
+    if (subPath && init.method === 'GET') {
+      const s = this.subscriptions.get(subPath[1]!);
+      if (!s || s.account !== account) return res(404, { name: 'RESOURCE_NOT_FOUND', message: 'The specified resource does not exist.' });
+      if (!subPath[2]) return res(200, s.sub);
+      const start = new Date(u.searchParams.get('start_time') ?? 0).getTime();
+      const end = new Date(u.searchParams.get('end_time') ?? '2100-01-01').getTime();
+      const transactions = s.transactions.filter((t) => new Date(t.time).getTime() >= start && new Date(t.time).getTime() <= end);
+      return res(200, { transactions: transactions.map((t) => ({ id: t.id, status: 'COMPLETED', time: t.time })) });
     }
     if (path === '/v1/notifications/webhooks' && init.method === 'GET') {
       return res(200, { webhooks: [...this.webhooks.values()].filter((w) => w.account === account).map((w) => ({ id: w.id, url: w.url })) });

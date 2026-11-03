@@ -663,7 +663,7 @@ logs — not customer data):
 `PlatformAuditLog`, `SignupBlocklist`, `WebhookDelivery`, `NetworkOutbox`,
 `StripeWebhookInbox`, `LocationDeclaration`, `SanctionsScreening`,
 `PartnerSigninLinkLog`, `TrackingIssue`, `TrackingAlert`, `StripeEventLog`,
-`TestClick`.
+`PaymentEventLog`, `PaypalSubscription`, `TestClick`.
 
 `TrackingIssue` counts, per day, the input this deployment had to drop: a
 click id that `identify()`, a conversion or the landing beacon named but the
@@ -696,6 +696,17 @@ pipeline processed, so the Stripe catch-up ([stripe-app.md](stripe-app.md#missed
 can replay the ones no webhook delivered. A delivery log of one deployment,
 pruned after 35 days. What the events recorded is in the exported `Event`
 rows, and a recovered one carries `metadata.recoveredBy`.
+
+`PaymentEventLog` (Nov 2026) is the provider-neutral counterpart for PayPal
+payments ([paypal-payments.md](paypal-payments.md)): each capture, sale,
+refund, subscription and dispute this deployment settled, and what became of
+it, so the webhook and the catch-up never settle one twice and Tracking
+health can count payments that came without a click. A delivery log, pruned
+after 95 days. `PaypalSubscription` caches the `custom_id` each PayPal
+subscription was created with, to join renewals to it: PayPal's own data,
+read back from PayPal by another instance that needs it. What either led to
+is in the exported `Event` rows (`metadata.via = 'paypal'`, PayPal's ids,
+the raw `paypalCustomId`), with the click's `Identity`.
 
 `PartnerSigninLinkLog` records each sign-in link a brand's backend minted for
 a partner (`POST /partners/{id}/signin-link`): which partner, which key,

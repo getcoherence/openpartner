@@ -1,6 +1,8 @@
 # Roadmap: Stripe-quality conversion data from other payment providers
 
-Status: draft for Keith, Oct 24 2026. Nothing here is built yet.
+Status: draft for Keith, Oct 24 2026. Phase 1 (PayPal through the brand's
+own app) is built, Nov 2 2026: [paypal-payments.md](paypal-payments.md), with
+what still needs a live sandbox check. The rest isn't built yet.
 
 Stripe is the one provider where OpenPartner sees a purchase end to end
 without the brand writing code. This document says what that rests on, which

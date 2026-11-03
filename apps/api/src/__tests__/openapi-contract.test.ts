@@ -952,6 +952,19 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
         await db(TABLES.PaypalPayoutBatch).where({ runId: inrRun }).del();
         await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID, key: 'paypal_payouts' }).del();
       }
+
+      // PayPal payments as conversions.
+      fake.addApp({ env: 'live', clientId: 'ContractCheckoutId0123456789', secret: 'ContractCheckoutSecret0123456' });
+      check('listPaypalPaymentApps', await admin.get('/config/paypal-payments'));
+      check('setPaypalPaymentTracking', await admin.post('/config/paypal/live/payments', { tracking: true }));
+      check('setPaypalPaymentTracking', await admin.post('/config/paypal/sandbox/payments', { tracking: true }));
+      check('setPaypalPaymentTracking', await admin.post('/config/paypal/live/payments', { tracking: false }));
+      check('connectPaypalCheckoutApp', await admin.post('/config/paypal-payments', { environment: 'live', clientId: 'ContractClientId0123456789', clientSecret: 'ContractSecret0123456789' }));
+      check('connectPaypalCheckoutApp', await admin.post('/config/paypal-payments', { environment: 'live', clientId: 'ContractCheckoutId0123456789', clientSecret: 'ContractCheckoutSecret0123456' }));
+      check('listPaypalPaymentApps', await admin.get('/config/paypal-payments'));
+      check('disconnectPaypalCheckoutApp', await admin.delete('/config/paypal-payments/live'));
+      check('disconnectPaypalCheckoutApp', await admin.delete('/config/paypal-payments/live'));
+
       check('disconnectPaypal', await admin.delete('/config/paypal/live'));
       check('disconnectPaypal', await admin.delete('/config/paypal/live'));
       await db(TABLES.Payout).where({ id: ppPayout }).del();

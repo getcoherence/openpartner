@@ -271,6 +271,21 @@ async function seedEverything(tenantId: string): Promise<void> {
     total: '10.00',
     createdBy: 'admin',
   });
+  await db(TABLES.PaypalSubscription).insert({
+    tenantId,
+    subscriptionId: `I-${short()}`,
+    connectionId: paypalConnectionId,
+    environment: 'sandbox',
+  });
+  await db(TABLES.PaymentEventLog).insert({
+    tenantId,
+    provider: 'paypal',
+    eventKey: `capture:${short()}`,
+    connectionId: paypalConnectionId,
+    type: 'PAYMENT.CAPTURE.COMPLETED',
+    via: 'webhook',
+    outcome: 'no_reference',
+  });
   await db(TABLES.PortalCustomDomain).insert({
     id: u(),
     tenantId,

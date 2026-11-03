@@ -14,6 +14,9 @@ same principle as Connect Standard (CLAUDE.md principle 4), and the reason
 this uses the brand's credentials rather than a PayPal account of
 OpenPartner's.
 
+The same connection can also record the payments the brand's checkout
+takes through that app as conversions: [paypal-payments.md](paypal-payments.md).
+
 Code: `apps/api/src/paypal-api.ts` (the PayPal client),
 `paypal-connection.ts` (credentials), `paypal-payouts.ts` (batches),
 `paypal-send-as.ts` (INR sent in USD), `routes/paypal.ts`,

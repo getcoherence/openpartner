@@ -221,6 +221,27 @@ describe('Admin → Tracking health', () => {
     expect(screen.getByText('25%').getAttribute('title')).toBeNull();
   });
 
+  it('counts PayPal payments with a partner click once a PayPal app records payments', async () => {
+    renderPage();
+    await screen.findByText('Stripe events recovered');
+    expect(screen.queryByText('PayPal payments with a partner click')).toBeNull();
+    expect(screen.queryByText('PayPal payment')).toBeNull();
+    cleanup();
+
+    report = {
+      ...baseReport(),
+      paypal: { payments: 40, withClick: 12, withoutReference: 25, unknownReference: 3, recovered: 2 },
+      issues: [{ kind: 'paypal_foreign_reference', count: 3, days: 1, sampleRef: 'order-55', lastSeenAt: '2026-10-23T10:00:00.000Z' }],
+      signals: { ...baseReport().signals, lastPaypalEventAt: null },
+    };
+    renderPage();
+    expect(await screen.findByText('PayPal payments with a partner click')).toBeTruthy();
+    expect(screen.getByText('12 of 40')).toBeTruthy();
+    expect(screen.getByText(/25 came with no click in custom_id, 3 with one naming no click\. 2 recorded by the hourly catch-up/)).toBeTruthy();
+    expect(screen.getByText('PayPal payment carried your own reference')).toBeTruthy();
+    expect(screen.getByText('PayPal payment')).toBeTruthy();
+  });
+
   it('shows empty states when nothing is wrong', async () => {
     report = { ...baseReport(), unattributed: { events: 0, byReason: [] }, issues: [], codes: [] };
     renderPage();

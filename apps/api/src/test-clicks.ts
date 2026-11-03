@@ -179,6 +179,7 @@ const LINKED_SUMMARY: Record<TestClickLinkedVia, string> = {
   identify: 'Your site linked it to a signup or login.',
   checkout: 'A Stripe checkout carried it.',
   conversion: 'A conversion call sent it.',
+  paypal: 'A PayPal payment carried it.',
 };
 
 /** Why a link that goes straight to Stripe's checkout wasn't linked. */
