@@ -31,6 +31,8 @@ import {
   type CommissionSourceFields,
 } from '../../lib/commission-source.js';
 import { ReferralList, type ReferralListPage, type ReferralStageDefinition } from '../Referrals.js';
+import { RecruitLink, RecruitsTable, type RecruitsList } from '../PartnerRecruiting.js';
+import { formatRecruiterShare, type RecruiterShareLike } from '../../lib/commission-summary.js';
 
 // ---------- Shared types (mirror federation responses) ----------
 
@@ -442,7 +444,43 @@ function OverviewTab() {
           <CommissionsList rows={(recentCommissions.data?.commissions ?? []).slice(0, 10)} />
         )}
       </Card>
+      <RecruitCard partnershipId={partnership.id} />
     </>
+  );
+}
+
+/** GET /creators/me/partnerships/:id/recruits: two-tier commissions
+ *  (docs/two-tier-commissions.md), through the Network. */
+interface CreatorRecruits extends RecruitsList {
+  share: RecruiterShareLike | null;
+  recruitUrl: string | null;
+  signupOpen: boolean;
+}
+
+/** The creator's recruit link while this program pays for recruiting, and
+ *  who joined through it. Nothing while it pays none and nobody has. */
+function RecruitCard({ partnershipId }: { partnershipId: string }) {
+  const q = useQuery({
+    queryKey: ['creator-program-recruits', partnershipId],
+    queryFn: () => creatorApi<CreatorRecruits>(`/creators/me/partnerships/${partnershipId}/recruits`),
+    retry: false,
+    staleTime: 60_000,
+  });
+  const data = q.data;
+  if (!data || (!data.share && data.total === 0)) return null;
+  return (
+    <Card style={{ marginTop: 14 }}>
+      <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>Recruit partners</div>
+      {data.share && data.recruitUrl && (
+        <>
+          <p style={{ fontSize: 13, color: theme.text, margin: '0 0 10px' }}>You earn {formatRecruiterShare(data.share)}.</p>
+          <RecruitLink url={data.recruitUrl} signupOpen={data.signupOpen} />
+        </>
+      )}
+      <div style={{ marginTop: 14 }}>
+        <RecruitsTable data={data} emptyHint="Partners who join through your link show here." />
+      </div>
+    </Card>
   );
 }
 

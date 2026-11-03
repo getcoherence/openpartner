@@ -94,6 +94,17 @@ The recruiter's own postback carries nothing of the recruit's sale: `{click_id}`
 
 Statement lines and commission lists read "Recruiter commission: \<recruit\>, invoice paid". A clawback from a reversed source reads "Clawback, recruit's commission reversed". Partners see a Recruit partners page once a program they're granted pays a share (or once they have recruits): their link, the share per program, and each recruit with what they've earned them.
 
+## The Network
+
+A program listed on the Network sends its share with the listing's terms, as `recruiterCommission: { percent, months }` (null when it pays none; `campaign-marketplace-sync.ts buildTermsPayload`). Creators see it before they apply:
+
+- Discover and the marketing site's marketplace mark the program "Pays for recruits" and filter on it.
+- The program page says what it pays, e.g. "10% of your recruits' commissions, for 12 months after each one joins".
+
+A creator who joined is a partner of the brand like any other. Their program page on the Network shows their recruit link and recruits, from `GET /creators/me/partnerships/:id/recruits`. The Network reads this brand's `GET /partners/:id/recruits` with its federation key and keeps only the partnership's own program: its share, the link while it pays one, and the recruits without partner ids. The link is the brand's join page, so whoever joins through it is the brand's partner, recruited by the creator. A recruit who applies through the Network marketplace instead isn't tied to whoever sent them.
+
+A listing picks the share up the next time its program is saved.
+
 ## Export
 
 Export `schemaVersion` 11 carries the new columns (`docs/data-portability.md`). A v1–v10 bundle restores with all of them null.
@@ -102,5 +113,5 @@ Export `schemaVersion` 11 carries the new columns (`docs/data-portability.md`). 
 
 - **Self-referral checks.** Nothing stops one person recruiting their own second account beyond the brand's join-page review and the holdback. A check on shared payout details is the obvious next step.
 - **Per-partner recruiter terms.** The share is per program; there is no PartnerCommission override for it.
-- **The Network.** Creators on the OpenPartner Network see recruiter commissions in their earnings (the rows pass through), but the Network has no recruit link of its own.
+- **Recruiting through the Network marketplace.** The recruit link is the brand's join page (see The Network above). A creator who applies on the Network after following someone's link isn't recorded as their recruit.
 - **More than 200 recruits on one page.** `GET /partners/:id/recruits` lists the newest 200 and counts the rest.

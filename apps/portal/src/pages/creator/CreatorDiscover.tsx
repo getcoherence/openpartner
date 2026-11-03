@@ -7,9 +7,11 @@ import { theme } from '../../theme.js';
 import { creatorApi } from './creator-api.js';
 import {
   formatCustomerReward,
+  formatPercent,
   renderCommissionSummary,
   type CommissionSubRuleLike,
   type CustomerRewardLike,
+  type RecruiterShareLike,
 } from '../../lib/commission-summary.js';
 import { PROGRAM_CATEGORIES, categoryLabel } from '@openpartner/db';
 import { ListingBanner, type OfferingVideo } from './ListingBanner.js';
@@ -44,6 +46,9 @@ interface OfferingTerms {
    *  before the snapshot was added — duration UI omits the chip
    *  rather than guessing. */
   campaignEndsAt?: string | null;
+  /** What the program pays of the commissions of partners you recruit.
+   *  Drives the "Pays for recruits" chip and filter. */
+  recruiterCommission?: RecruiterShareLike | null;
 }
 
 interface OfferingListItem {
@@ -126,6 +131,7 @@ export function CreatorDiscoverPage() {
   const [maxHoldback, setMaxHoldback] = useState<'any' | '0' | '14' | '30' | '60' | '90'>('any');
   const [minWindow, setMinWindow] = useState<'any' | '30' | '60' | '90'>('any');
   const [recurringOnly, setRecurringOnly] = useState(false);
+  const [recruitsOnly, setRecruitsOnly] = useState(false);
   const [minCommission, setMinCommission] = useState<'any' | '10' | '20' | '30'>('any');
   /** Selected category slug, or 'any'. Single-select keeps the filter
    *  bar compact; brands tag a program with up to 5 categories so the
@@ -173,6 +179,7 @@ export function CreatorDiscoverPage() {
         if (w < min) return false;
       }
       if (recurringOnly && !t.recurring) return false;
+      if (recruitsOnly && !t.recruiterCommission) return false;
       if (minCommission !== 'any') {
         const min = Number(minCommission);
         // Only filter by commission % when the offering explicitly
@@ -195,13 +202,14 @@ export function CreatorDiscoverPage() {
       }
       return true;
     });
-  }, [data, model, maxHoldback, minWindow, recurringOnly, minCommission, minDuration, category]);
+  }, [data, model, maxHoldback, minWindow, recurringOnly, recruitsOnly, minCommission, minDuration, category]);
 
   const activeFilterCount =
     (model !== 'any' ? 1 : 0) +
     (maxHoldback !== 'any' ? 1 : 0) +
     (minWindow !== 'any' ? 1 : 0) +
     (recurringOnly ? 1 : 0) +
+    (recruitsOnly ? 1 : 0) +
     (minCommission !== 'any' ? 1 : 0) +
     (minDuration !== 'any' ? 1 : 0) +
     (category !== 'any' ? 1 : 0);
@@ -211,6 +219,7 @@ export function CreatorDiscoverPage() {
     setMaxHoldback('any');
     setMinWindow('any');
     setRecurringOnly(false);
+    setRecruitsOnly(false);
     setMinCommission('any');
     setMinDuration('any');
     setCategory('any');
@@ -345,6 +354,11 @@ export function CreatorDiscoverPage() {
                 <input type="checkbox" checked={recurringOnly} onChange={(e) => setRecurringOnly(e.target.checked)} />
                 Recurring only
                 <HelpIcon hint="Show only programs that pay commission on every renewal of a subscription, not just the first invoice. Best for SaaS / membership products where the customer keeps paying month after month." />
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.text, padding: '9px 0' }}>
+                <input type="checkbox" checked={recruitsOnly} onChange={(e) => setRecruitsOnly(e.target.checked)} />
+                Pays for recruits
+                <HelpIcon hint="Programs that also pay you a share of what the partners you recruit earn." />
               </label>
             </div>
             {activeFilterCount > 0 && (
@@ -631,6 +645,9 @@ function OfferingChips({
   const chips: Array<{ label: string; tone?: 'accent' | 'muted' | 'lead' }> = [];
   if (commissionLine) chips.push({ label: commissionLine, tone: 'lead' });
   if (customerRewardLine) chips.push({ label: `Customers: ${customerRewardLine}`, tone: 'accent' });
+  if (terms.recruiterCommission) {
+    chips.push({ label: `Pays for recruits: ${formatPercent(terms.recruiterCommission.percent)}`, tone: 'accent' });
+  }
   // Category chips render right after the lead — top-of-mind axis creators
   // sort by. Cap at 2 displayed so a heavily-tagged program doesn't crowd
   // out the attribution / payout chips below.
