@@ -56,8 +56,9 @@ if (d.dispute_life_cycle_stage === 'INQUIRY' && links.includes('escalate')) {
   ({ d, links } = await show());
 }
 // PayPal turns the escalated dispute into a claim in its own time. The claim
-// then waits for the seller: answering it puts it under review.
-const settleable = () => d.status === 'UNDER_REVIEW' && links.includes('adjudicate');
+// then waits for the seller: answering it puts it under review. PayPal never
+// lists adjudicate among the links, so a claim under review is settleable.
+const settleable = () => d.status === 'UNDER_REVIEW' && d.dispute_life_cycle_stage !== 'INQUIRY';
 let answered = false;
 for (let i = 0; i < 20 && !settleable() && d.status !== 'RESOLVED'; i++) {
   if (!answered && d.dispute_life_cycle_stage === 'CHARGEBACK' && links.includes('provide_evidence')) {
@@ -80,6 +81,8 @@ if (settleable()) {
   await call('POST', `${path}/adjudicate`, token, { adjudication_outcome: 'BUYER_FAVOR' });
   await show();
   console.log('Settled for the buyer. PayPal reverses the payment; OpenPartner records the chargeback within a minute.');
+} else if (d.status === 'RESOLVED') {
+  console.log(`Already resolved: ${d.dispute_outcome?.outcome_code ?? 'outcome not shown'}.`);
 } else {
   console.log('PayPal hasn’t made it settleable. Run this again later.');
 }
