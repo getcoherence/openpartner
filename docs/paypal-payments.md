@@ -104,8 +104,8 @@ app that records payments must be the one the checkout uses.
   payment events off again.
 - **Disputes are optional.** If PayPal refuses the dispute event for an app
   (one without the Customer disputes feature), the webhook takes the other
-  payment events and the card says to turn Customer disputes on, then
-  record its payments again.
+  payment events and the card says to turn Customer disputes on. The
+  hourly catch-up adds them once PayPal accepts them.
 - **The checkout runs on another app.** **Connect your checkout's PayPal
   app** and paste that app's client id and secret
   (`POST /config/paypal-payments`). It is verified, sealed and never shown,
@@ -284,6 +284,16 @@ settles it. Oldest first, so a subscription is stored before its renewals
 and a payment before its refunds. Bounded per app per
 run (1,000 facts, 40 pages); what a run leaves is still in the window next
 hour. Events it records carry `metadata.recoveredBy: "paypal_catchup"`.
+
+Each run also checks the app's webhook against PayPal's copy
+(`GET /v1/notifications/webhooks/{id}`) and puts it back to the events
+OpenPartner reads, in place:
+- an app set up before an event was added gets it, with nothing for the
+  brand to do;
+- events changed in PayPal's dashboard are put back;
+- a webhook removed there is registered again;
+- dispute events PayPal refused are asked for once per run, and added when
+  PayPal takes them.
 
 ## Amounts and currencies
 

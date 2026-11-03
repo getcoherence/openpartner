@@ -412,6 +412,11 @@ export class FakePaypal {
       return res(200, { webhooks: [...this.webhooks.values()].filter((w) => w.account === account).map((w) => ({ id: w.id, url: w.url })) });
     }
     const hookPath = /^\/v1\/notifications\/webhooks\/([A-Za-z0-9-]+)$/.exec(path);
+    if (hookPath && init.method === 'GET') {
+      const w = this.webhooks.get(hookPath[1]!);
+      if (!w || w.account !== account) return res(404, { name: 'INVALID_RESOURCE_ID', message: 'Resource id is invalid.' });
+      return res(200, { id: w.id, url: w.url, event_types: w.eventTypes.map((name) => ({ name, description: name, status: 'ENABLED' })) });
+    }
     if (hookPath && init.method === 'DELETE') {
       const w = this.webhooks.get(hookPath[1]!);
       if (!w || w.account !== account) return res(404, { name: 'INVALID_RESOURCE_ID', message: 'not found' });

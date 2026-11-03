@@ -215,7 +215,7 @@ const JOBS: ScheduledJob[] = [
     name: 'paypal-payments-catchup',
     cronExpr: '50 * * * *',
     description:
-      'For each PayPal app tracking payments, list the webhook events of the last 72 hours and Transaction Search of the last 4 days, and record the payments no webhook delivered (paypal-payments-catchup.ts; hourly at :50)',
+      'For each PayPal app tracking payments, list the webhook events of the last 72 hours and Transaction Search of the last 4 days, record the payments no webhook delivered, and put its webhook back to the events OpenPartner reads (paypal-payments-catchup.ts; hourly at :50)',
     handler: async () => {
       const { runPaypalPaymentsCatchup } = await import('./paypal-payments-catchup.js');
       return runPaypalPaymentsCatchup();

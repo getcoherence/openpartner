@@ -20,7 +20,8 @@
  *     against the brand: then the refunds PayPal lists, each once, keyed as
  *     their own events are; a refund that beats its payment waits for it;
  *   - the catch-up records what no webhook delivered, from the events list
- *     and from Transaction Search, once, never before tracking began;
+ *     and from Transaction Search, once, never before tracking began, and
+ *     keeps each app's webhook on the events OpenPartner reads;
  *   - Tracking health counts PayPal payments by what became of them.
  */
 
@@ -867,6 +868,66 @@ describe.skipIf(skipIntegration)('catch-up', () => {
     fake.noSearch.clear();
     await runPaypalPaymentsCatchup({ now: new Date(Date.now() + SEARCH_RECHECK_HOURS * 3_600_000 + 60_000) });
     expect((await db(TABLES.PaypalConnection).where({ id: conn.id }).first()).transactionSearch).toBe('ok');
+  });
+
+  const webhookOf = async (connectionId: string) =>
+    (await runPaypalPaymentsCatchup()).connections.find((c) => c.connectionId === connectionId)!.webhook;
+  const patches = () => fake.seen.filter((r) => r.method === 'PATCH').length;
+
+  it('gives an app set up before an event was added that event, in place, and registers a webhook removed since', async () => {
+    const conn = await connect();
+    const url = `https://portal.brand.example/api/webhooks/paypal/${conn.id}`;
+    const hook = fake.webhookAt(url)!;
+    const full = [...PAYPAL_WEBHOOK_EVENTS, ...PAYPAL_PAYMENT_EVENTS];
+    // As an app recording before CUSTOMER.DISPUTE.RESOLVED was read.
+    hook.eventTypes = full.filter((t) => t !== 'CUSTOMER.DISPUTE.RESOLVED');
+
+    expect(await webhookOf(conn.id)).toBe('updated');
+    expect(fake.webhookAt(url)).toMatchObject({ id: hook.id, eventTypes: full });
+    const n = patches();
+    expect(await webhookOf(conn.id)).toBe('current');
+    expect(patches()).toBe(n);
+
+    // Changed in PayPal's dashboard: put back to what OpenPartner reads.
+    hook.eventTypes = [...full.filter((t) => t !== 'PAYMENT.CAPTURE.COMPLETED'), 'CHECKOUT.ORDER.APPROVED'];
+    expect(await webhookOf(conn.id)).toBe('updated');
+    expect(fake.webhookAt(url)!.eventTypes).toEqual(full);
+
+    // Removed there: registered again, and the new one is kept.
+    fake.webhooks.delete(hook.id);
+    expect(await webhookOf(conn.id)).toBe('registered');
+    expect(fake.webhookAt(url)!.id).not.toBe(hook.id);
+    expect(fake.webhookAt(url)!.eventTypes).toEqual(full);
+    expect((await admin.get('/config/paypal-payments')).body.apps[0].webhook).toEqual({ registered: true, error: null });
+    expect(await webhookOf(conn.id)).toBe('current');
+
+    // A checkout app's webhook, the same way.
+    const checkout = await admin.post('/config/paypal-payments', { environment: 'live', clientId: CHECKOUT_ID, clientSecret: CHECKOUT_SECRET });
+    const checkoutHook = fake.webhookAt(`https://portal.brand.example/api/webhooks/paypal/${checkout.body.app.id}`)!;
+    checkoutHook.eventTypes = PAYPAL_PAYMENT_EVENTS.filter((t) => t !== 'CUSTOMER.DISPUTE.RESOLVED');
+    expect(await webhookOf(checkout.body.app.id)).toBe('updated');
+    expect(checkoutHook.eventTypes).toEqual([...PAYPAL_PAYMENT_EVENTS]);
+  });
+
+  it('asks once a run for dispute events PayPal refused, and adds them when it takes them', async () => {
+    fake.noDisputes.add(liveApp.appId);
+    const conn = await connect();
+    const url = `https://portal.brand.example/api/webhooks/paypal/${conn.id}`;
+    const without = [...fake.webhookAt(url)!.eventTypes];
+    expect(without).not.toContain('CUSTOMER.DISPUTE.CREATED');
+
+    const n = patches();
+    expect(await webhookOf(conn.id)).toBe('current');
+    // One refused ask; what's there isn't written again.
+    expect(patches()).toBe(n + 1);
+    expect(fake.webhookAt(url)!.eventTypes).toEqual(without);
+    expect((await admin.get('/config/paypal-payments')).body.apps[0].webhook.error).toContain('within the hour');
+
+    // The brand turns Customer disputes on in PayPal.
+    fake.noDisputes.delete(liveApp.appId);
+    expect(await webhookOf(conn.id)).toBe('updated');
+    expect(fake.webhookAt(url)!.eventTypes).toEqual([...PAYPAL_WEBHOOK_EVENTS, ...PAYPAL_PAYMENT_EVENTS]);
+    expect((await admin.get('/config/paypal-payments')).body.apps[0].webhook.error).toBeNull();
   });
 });
 
