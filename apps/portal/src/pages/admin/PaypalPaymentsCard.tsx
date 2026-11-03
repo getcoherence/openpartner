@@ -203,6 +203,7 @@ function AppRow({
               {(app.purpose === 'checkout' && app.webhook.error) || 'No webhook: payments are read from PayPal every hour.'}
             </div>
           )}
+          {app.webhook.registered && app.webhook.error && <div style={{ ...note, color: theme.warn }}>{app.webhook.error}</div>}
           {app.transactionSearch === 'unavailable' && (
             <div style={{ ...note, color: theme.warn }}>
               Turn on Transaction Search for this app in the PayPal developer dashboard, so missed payments are caught up.

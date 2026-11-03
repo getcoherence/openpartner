@@ -95,7 +95,15 @@ app that records payments must be the one the checkout uses.
 - **The checkout runs on Pay with PayPal's app.** Press **Record its
   payments** on that app (`POST /config/paypal/{environment}/payments`
   `{"tracking": true}`). OpenPartner adds the payment events to the webhook
-  it already has on the app. **Stop recording** takes them off again.
+  it already has on the app, in place, with the credentials it already
+  holds: a brand connected before this needs to paste nothing again, and the
+  app never gets a second webhook (PayPal allows 10 per app). One removed in
+  PayPal's dashboard since is registered again. **Stop recording** takes the
+  payment events off again.
+- **Disputes are optional.** If PayPal refuses the dispute event for an app
+  (one without the Customer disputes feature), the webhook takes the other
+  payment events and the card says to turn Customer disputes on, then
+  record its payments again.
 - **The checkout runs on another app.** **Connect your checkout's PayPal
   app** and paste that app's client id and secret
   (`POST /config/paypal-payments`). It is verified, sealed and never shown,
@@ -280,34 +288,71 @@ All admin-only; see `/docs` for the schemas.
 | `DELETE /config/paypal-payments/{environment}` | disconnect it |
 | `POST /webhooks/paypal/{connectionId}` | PayPal's webhook (public, verified by PayPal), shared with Pay with PayPal |
 
-## Verifying in the PayPal sandbox
+## Checking it against PayPal
 
 The automated tests run against a fake PayPal
-(`apps/api/src/__tests__/fake-paypal.ts`) and PayPal's documented payloads.
-These need checking against PayPal's real sandbox before relying on them:
+(`apps/api/src/__tests__/fake-paypal.ts`) built from PayPal's documented
+payloads. What still needs PayPal itself:
 
-1. **The webhook fires with `custom_id`.** Connect a sandbox app, turn on
-   recording, send a [test click](tracking-health.md#send-a-test-click), and
-   pay through the JS SDK snippet with the test click id in `custom_id`.
-   Expect the test's "Linked to a customer" to read "A PayPal payment
-   carried it". This also proves PayPal accepts the PATCH that adds the
-   payment events to an existing webhook, and `CUSTOMER.DISPUTE.CREATED` on
-   a merchant's own app.
-2. **Transaction Search works on the brand's own credentials.** Run the
-   catch-up with the deployment's webhook unreachable; the card's
-   Transaction Search status must not read unavailable once it's enabled for
-   the app. Check the date format (`2026-11-02T10:00:00Z`) is accepted, and
-   that a capture's `transaction_id` equals the webhook's capture id and a
-   subscription payment's equals the sale id.
-3. **Subscriptions**: `custom_id` passed through
-   `actions.subscription.create`; `BILLING.SUBSCRIPTION.CREATED` carries it;
-   renewals' `PAYMENT.SALE.COMPLETED` carry `billing_agreement_id`; and
-   `GET /v1/billing/subscriptions/{id}/transactions` lists the sale ids.
-4. **The events list** (`GET /v1/notifications/webhooks-events`): its
-   retention, that it lists events for the app's webhooks, and its next-page
-   link.
-5. **Refunds**: a v2 refund's `up` link names the capture; `T1107` rows'
-   `paypal_reference_id` is the refunded capture.
+- a payment through the connected app fires the webhook with `custom_id`,
+  and PayPal accepts the PATCH that adds the payment events to an existing
+  webhook (and `CUSTOMER.DISPUTE.CREATED` on a merchant's own app);
+- Transaction Search works on the brand's own credentials, takes the date
+  format (`2026-11-02T10:00:00Z`), and its ids match the webhook's (a
+  capture's `transaction_id` is the capture id, a subscription payment's the
+  sale id);
+- `custom_id` passes through `actions.subscription.create`, renewals carry
+  `billing_agreement_id`, and a subscription's transactions list its sale
+  ids;
+- the events list's retention and next-page link;
+- a v2 refund's `up` link names the capture, and a `T1107` row's
+  `paypal_reference_id` is the refunded payment.
+
+**Where to run it.** PayPal posts webhooks only to public https addresses.
+Run the check **after deploying, in a test workspace on the hosted app**:
+the change is additive (new columns and tables; Pay with PayPal unchanged)
+and nothing happens for any brand until an admin presses **Record its
+payments**. A local stack behind a public tunnel works too, but `PORTAL_URL`
+then has to be the tunnel's address, which every sign-in link uses as well.
+Only the webhook needs to be public: the checkout page can run on
+`localhost`.
+
+**Steps** (a test workspace of your own, approved):
+
+1. In PayPal's developer dashboard, on the sandbox app, tick **Customer
+   disputes** and **Transaction search**. Under Sandbox Accounts, note the
+   Personal (buyer) account.
+2. In the workspace, create a program whose rule pays a percentage of
+   `invoice_paid`, a partner and their link. Set the program's destination
+   to `http://localhost:3001/`.
+3. **Settings → Pay with PayPal → Connect sandbox app**: paste the app's
+   client id and secret there yourself (nowhere else). Then **Integrations
+   → PayPal → Record its payments** on it. Expect "Recording payments" and no
+   note about disputes. In PayPal's dashboard, the app's Webhooks list shows
+   one webhook, OpenPartner's, now with the payment events too.
+4. Run the sample checkout page
+   ([examples/paypal-checkout](../examples/paypal-checkout/README.md)) with
+   the app's client id. Add `PAYPAL_PLAN_ID` (a sandbox plan of the same app)
+   to test subscriptions.
+5. **The webhook and `custom_id`.** Tracking health → **Send a test click**
+   on the program. The tab lands on the page, which shows the partner click.
+   Pay with the sandbox buyer. Within a minute the test's last step reads
+   "A PayPal payment carried it". A second test click through
+   `/?mode=subscription` proves the subscription's `custom_id` the same way.
+6. **Transaction Search.** After the next hourly catch-up (at :50) the card
+   shows no Transaction Search warning. Payments appear there up to three
+   hours late.
+7. **Conversion, commission and refund.** A sandbox app records no
+   conversion by design ([Sandbox](#sandbox)), so steps 5 and 6 are what a
+   sandbox can prove. For the rest, connect the **live** app in the same
+   test workspace the same way, click the partner's link in a private
+   window, and pay a small amount with a real PayPal account (the page's
+   `AMOUNT`). Expect an `invoice_paid` under the partner in Admin →
+   Commissions within a minute, with its commission. Refund part of it in
+   PayPal (Activity → the payment → Refund): the commission drops to the
+   share kept. Refund the rest: it is reversed. A subscription through
+   `/?mode=subscription` records `subscription_created` and an
+   `invoice_paid` for its first payment.
 
 ## Not yet
 

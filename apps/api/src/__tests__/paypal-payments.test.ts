@@ -291,6 +291,46 @@ describe.skipIf(skipIntegration)('turning payment tracking on', () => {
     expect((await admin.post('/config/paypal/live/payments', { tracking: 'yes' })).status).toBe(400);
   });
 
+  it('changes the webhook already on an existing connection in place, with the saved secret', async () => {
+    const res = await admin.post('/config/paypal', { environment: 'live', clientId: CLIENT_ID, clientSecret: SECRET });
+    const url = `https://portal.brand.example/api/webhooks/paypal/${res.body.connection.id}`;
+    const before = fake.webhookAt(url)!.id;
+    expect((await admin.post('/config/paypal/live/payments', { tracking: true })).status).toBe(200);
+    // No token call with the secret pasted again, and no second webhook.
+    expect([...fake.webhooks.values()].filter((w) => w.account === FakePaypal.account(liveApp))).toHaveLength(1);
+    expect(fake.webhookAt(url)!.id).toBe(before);
+
+    // Removed in PayPal's dashboard since: registered again.
+    await admin.post('/config/paypal/live/payments', { tracking: false });
+    fake.webhooks.delete(before);
+    const again = await admin.post('/config/paypal/live/payments', { tracking: true });
+    expect(again.body.app.webhook).toEqual({ registered: true, error: null });
+    expect(fake.webhookAt(url)!.eventTypes).toEqual([...PAYPAL_WEBHOOK_EVENTS, ...PAYPAL_PAYMENT_EVENTS]);
+  });
+
+  it('records payments without disputes on an app PayPal won’t send dispute events for, and says so', async () => {
+    fake.noDisputes.add(liveApp.appId);
+    fake.noDisputes.add(checkoutApp.appId);
+    const res = await admin.post('/config/paypal', { environment: 'live', clientId: CLIENT_ID, clientSecret: SECRET });
+    const on = await admin.post('/config/paypal/live/payments', { tracking: true });
+    expect(on.status).toBe(200);
+    expect(on.body.app.webhook).toMatchObject({ registered: true, error: expect.stringContaining('Customer disputes') });
+    const hook = fake.webhookAt(`https://portal.brand.example/api/webhooks/paypal/${res.body.connection.id}`)!;
+    expect(hook.eventTypes).toContain('PAYMENT.CAPTURE.COMPLETED');
+    expect(hook.eventTypes).not.toContain('CUSTOMER.DISPUTE.CREATED');
+    // Pay with PayPal's own card still reads the webhook as working.
+    expect((await admin.get('/config/paypal')).body.connections[0].webhook.registered).toBe(true);
+    // Off again: the note goes with the payment events.
+    expect((await admin.post('/config/paypal/live/payments', { tracking: false })).body.app.webhook.error).toBeNull();
+
+    const checkout = await admin.post('/config/paypal-payments', { environment: 'live', clientId: CHECKOUT_ID, clientSecret: CHECKOUT_SECRET });
+    expect(checkout.status).toBe(201);
+    expect(checkout.body.app.webhook.error).toContain('Customer disputes');
+    expect(fake.webhookAt(`https://portal.brand.example/api/webhooks/paypal/${checkout.body.app.id}`)!.eventTypes).toEqual(
+      PAYPAL_PAYMENT_EVENTS.filter((t) => t !== 'CUSTOMER.DISPUTE.CREATED'),
+    );
+  });
+
   it('connects a separate checkout app that only reports payments and never sends', async () => {
     await admin.post('/config/paypal', { environment: 'live', clientId: CLIENT_ID, clientSecret: SECRET });
     const same = await admin.post('/config/paypal-payments', { environment: 'live', clientId: CLIENT_ID, clientSecret: SECRET });

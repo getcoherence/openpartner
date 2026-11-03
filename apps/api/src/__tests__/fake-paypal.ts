@@ -79,6 +79,9 @@ export class FakePaypal {
   readonly subscriptions = new Map<string, { account: string; sub: Record<string, unknown>; transactions: Array<{ id: string; time: string }> }>();
   /** Apps PayPal hasn't given Transaction Search (it answers 403). */
   readonly noSearch = new Set<string>();
+  /** Apps without Customer disputes: a webhook with dispute events is
+   *  refused (an assumption: PayPal's own behaviour is unverified). */
+  readonly noDisputes = new Set<string>();
   /** Every POST /v1/payments/payouts that reached PayPal. */
   createCalls = 0;
   /** Batches actually created. */
@@ -109,6 +112,14 @@ export class FakePaypal {
 
   addSubscription(app: App, sub: Record<string, unknown>, transactions: Array<{ id: string; time: string }> = []): void {
     this.subscriptions.set(String(sub.id), { account: FakePaypal.account(app), sub, transactions });
+  }
+
+  private refusesDisputes(appId: string, eventTypes: string[]): boolean {
+    return this.noDisputes.has(appId) && eventTypes.some((t) => t.startsWith('CUSTOMER.DISPUTE.'));
+  }
+
+  private invalidEventName(): PaypalHttpResponse {
+    return res(400, { name: 'VALIDATION_ERROR', message: 'Invalid data provided', debug_id: 'dbgevt', details: [{ field: 'event_types', issue: 'INVALID_EVENT_NAME' }] });
   }
 
   webhookAt(url: string): { id: string; url: string; account: string; eventTypes: string[] } | undefined {
@@ -308,6 +319,7 @@ export class FakePaypal {
 
     if (path === '/v1/notifications/webhooks' && init.method === 'POST') {
       const body = JSON.parse(init.body ?? '{}') as { url: string; event_types?: Array<{ name: string }> };
+      if (this.refusesDisputes(app.appId, (body.event_types ?? []).map((e) => e.name))) return this.invalidEventName();
       for (const w of this.webhooks.values()) {
         if (w.account === account && w.url === body.url) return res(400, { name: 'WEBHOOK_URL_ALREADY_EXISTS', message: 'Webhook URL already exists' });
       }
@@ -320,6 +332,7 @@ export class FakePaypal {
       const w = this.webhooks.get(patchPath[1]!);
       if (!w || w.account !== account) return res(404, { name: 'INVALID_RESOURCE_ID', message: 'not found' });
       const ops = JSON.parse(init.body ?? '[]') as Array<{ op: string; path: string; value: Array<{ name: string }> }>;
+      if (ops.some((op) => this.refusesDisputes(app.appId, op.value.map((e) => e.name)))) return this.invalidEventName();
       for (const op of ops) if (op.op === 'replace' && op.path === '/event_types') w.eventTypes = op.value.map((e) => e.name);
       return res(200, { id: w.id, url: w.url, event_types: w.eventTypes.map((name) => ({ name })) });
     }

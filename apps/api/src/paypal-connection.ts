@@ -271,6 +271,38 @@ export function webhookEventTypes(conn: Pick<PaypalConnectionRow, 'purpose' | 'p
   return [...PAYPAL_WEBHOOK_EVENTS, ...(conn.paymentsSince ? PAYPAL_PAYMENT_EVENTS : [])];
 }
 
+const DISPUTE_EVENTS: ReadonlySet<string> = new Set(['CUSTOMER.DISPUTE.CREATED']);
+
+/** Kept as the webhook's note while it is registered without them. */
+export const DISPUTES_REFUSED =
+  'PayPal won’t send this app dispute events. Turn on Customer disputes for it in the PayPal developer dashboard, then record its payments again.';
+
+/**
+ * A webhook write with `eventTypes`, and once more without the dispute
+ * events when PayPal refuses the set: an app without the Customer disputes
+ * feature may not take them, and payments, refunds and subscriptions
+ * shouldn't wait on disputes. A refusal about the webhook itself (its URL,
+ * PayPal's limit of 10) isn't retried.
+ */
+async function withDisputeFallback<T>(
+  eventTypes: readonly string[],
+  write: (types: readonly string[]) => Promise<T>,
+): Promise<{ result: T; disputesRefused: boolean }> {
+  try {
+    return { result: await write(eventTypes), disputesRefused: false };
+  } catch (err) {
+    const without = eventTypes.filter((t) => !DISPUTE_EVENTS.has(t));
+    const refusedSet =
+      err instanceof PaypalApiError &&
+      err.kind === 'http' &&
+      (err.status === 400 || err.status === 422) &&
+      err.errorName !== 'WEBHOOK_URL_ALREADY_EXISTS' &&
+      err.errorName !== 'WEBHOOK_NUMBER_LIMIT_EXCEEDED';
+    if (!refusedSet || without.length === eventTypes.length) throw err;
+    return { result: await write(without), disputesRefused: true };
+  }
+}
+
 /** Register (or find) this connection's webhook on the brand's app. */
 async function registerWebhook(
   environment: PaypalEnvironment,
@@ -287,14 +319,15 @@ async function registerWebhook(
     };
   }
   try {
-    return { webhookIdEnc: encryptSecret(await createWebhook(environment, token, url, eventTypes)), webhookError: null };
+    const made = await withDisputeFallback(eventTypes, (types) => createWebhook(environment, token, url, types));
+    return { webhookIdEnc: encryptSecret(made.result), webhookError: made.disputesRefused ? DISPUTES_REFUSED : null };
   } catch (err) {
     if (err instanceof PaypalApiError && err.errorName === 'WEBHOOK_URL_ALREADY_EXISTS') {
       try {
         const hit = (await listWebhooks(environment, token)).find((w) => w.url === url);
         if (hit) {
-          await setWebhookEventTypes(environment, token, hit.id, eventTypes);
-          return { webhookIdEnc: encryptSecret(hit.id), webhookError: null };
+          const set = await withDisputeFallback(eventTypes, (types) => setWebhookEventTypes(environment, token, hit.id, types));
+          return { webhookIdEnc: encryptSecret(hit.id), webhookError: set.disputesRefused ? DISPUTES_REFUSED : null };
         }
       } catch {
         // Fall through to the error below.
@@ -577,9 +610,22 @@ export async function setPaypalPaymentTracking(
   const webhookId = openWebhookId(conn);
   let webhook: { webhookIdEnc?: string | null; webhookError?: string | null } = {};
   try {
+    // The webhook OpenPartner already has on the app is changed in place,
+    // with the saved credentials: never a second one (PayPal allows 10),
+    // and nothing for the brand to paste again.
     const token = await paypalAccessToken(db, conn);
-    if (webhookId) await setWebhookEventTypes(environment, token, webhookId, eventTypes);
-    else if (on) webhook = await registerWebhook(environment, token, conn.id, eventTypes);
+    if (webhookId) {
+      try {
+        const set = await withDisputeFallback(eventTypes, (types) => setWebhookEventTypes(environment, token, webhookId, types));
+        webhook = { webhookError: set.disputesRefused ? DISPUTES_REFUSED : null };
+      } catch (err) {
+        // Removed in PayPal's dashboard since: register it again.
+        if (!(err instanceof PaypalApiError && err.kind === 'http' && err.status === 404)) throw err;
+        webhook = await registerWebhook(environment, token, conn.id, eventTypes);
+      }
+    } else if (on) {
+      webhook = await registerWebhook(environment, token, conn.id, eventTypes);
+    }
   } catch (err) {
     if (err instanceof PaypalConnectError) throw err;
     throw new PaypalConnectError('paypal_unreachable', 'PayPal didn’t take the change to the app’s webhook. Try again.');
