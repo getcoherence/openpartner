@@ -163,6 +163,25 @@ export function formatCustomerReward(reward: CustomerRewardLike): string {
   return base;
 }
 
+/** Two-tier commissions: what a program pays a partner of the commissions
+ *  the partners they recruit earn there (docs/two-tier-commissions.md). */
+export interface RecruiterShareLike {
+  percent: number;
+  /** Months after recruiting someone the share is paid; null = no limit. */
+  months?: number | null;
+}
+
+/** "10%", "7.5%". */
+export function formatPercent(n: number): string {
+  return `${trimNumber(n)}%`;
+}
+
+/** "10% of your recruits' commissions", "…, for 12 months after each one joins". */
+export function formatRecruiterShare(share: RecruiterShareLike): string {
+  const base = `${formatPercent(share.percent)} of your recruits’ commissions`;
+  return share.months ? `${base}, for ${share.months} ${share.months === 1 ? 'month' : 'months'} after each one joins` : base;
+}
+
 function trimNumber(n: number): string {
   if (Number.isInteger(n)) return String(n);
   return n.toFixed(2).replace(/\.?0+$/, '');
