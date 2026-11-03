@@ -27,6 +27,10 @@
  *
  * Recorded Events carry metadata.recoveredBy = 'paypal_catchup', which
  * Tracking health counts.
+ *
+ * Each run also checks the app's webhook against the events OpenPartner
+ * reads and fixes it in place (syncPaypalWebhook), so an app set up before
+ * an event was added gets it without the brand doing anything.
  */
 
 import { TABLES, type PaypalConnectionRow } from '@openpartner/db';
@@ -37,7 +41,7 @@ import {
   listWebhookEvents,
   searchTransactions,
 } from './paypal-api.js';
-import { openWebhookId, paypalAccessToken } from './paypal-connection.js';
+import { openWebhookId, paypalAccessToken, syncPaypalWebhook, type PaypalWebhookSync } from './paypal-connection.js';
 import { factFromTransaction, factFromWebhookEvent, factKey, processPaypalFact, type PaypalFact } from './paypal-payments.js';
 import { announceRefund } from './refunds.js';
 import { tenantAcceptsStripeEvents } from './stripe-app.js';
@@ -73,6 +77,8 @@ export interface PaypalCatchupConnection {
   recovered: number;
   truncated: boolean;
   transactionSearch: 'ok' | 'unavailable' | 'skipped';
+  /** The app's webhook against the events it should receive. */
+  webhook: PaypalWebhookSync | 'failed' | 'skipped';
   error?: string;
 }
 
@@ -129,6 +135,7 @@ async function catchUpConnection(
     recovered: 0,
     truncated: false,
     transactionSearch: 'skipped',
+    webhook: 'skipped',
   };
   let token: string;
   try {
@@ -136,6 +143,13 @@ async function catchUpConnection(
   } catch (err) {
     out.error = errorMessage(err);
     return out;
+  }
+  try {
+    out.webhook = await syncPaypalWebhook(db, conn, token);
+  } catch (err) {
+    // Payments are still read below; the next run checks again.
+    out.webhook = 'failed';
+    console.warn('[paypal-catchup] webhook check failed', { tenantId: conn.tenantId, connectionId: conn.id, error: errorMessage(err) });
   }
   const since = new Date(conn.paymentsSince!).getTime();
   const found = new Map<string, { fact: PaypalFact; type: string }>();

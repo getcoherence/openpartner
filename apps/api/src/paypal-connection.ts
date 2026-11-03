@@ -47,6 +47,7 @@ import {
   createWebhook,
   deleteWebhook,
   fetchAccessToken,
+  getWebhookEventTypes,
   hasPayoutsScope,
   listWebhooks,
   setWebhookEventTypes,
@@ -273,16 +274,29 @@ export function webhookEventTypes(conn: Pick<PaypalConnectionRow, 'purpose' | 'p
 
 const DISPUTE_EVENTS: ReadonlySet<string> = new Set(['CUSTOMER.DISPUTE.CREATED', 'CUSTOMER.DISPUTE.RESOLVED']);
 
-/** Kept as the webhook's note while it is registered without them. */
+/** Kept as the webhook's note while it is registered without them. The
+ *  hourly catch-up asks for them again (syncPaypalWebhook). */
 export const DISPUTES_REFUSED =
-  'PayPal won’t send this app dispute events. Turn on Customer disputes for it in the PayPal developer dashboard, then record its payments again.';
+  'PayPal won’t send this app dispute events. Turn on Customer disputes for it in the PayPal developer dashboard: they’re added within the hour.';
+
+/** PayPal refused the set of events, not the webhook itself (its URL,
+ *  PayPal's limit of 10). */
+function refusesEventSet(err: unknown): boolean {
+  return (
+    err instanceof PaypalApiError &&
+    err.kind === 'http' &&
+    (err.status === 400 || err.status === 422) &&
+    err.errorName !== 'WEBHOOK_URL_ALREADY_EXISTS' &&
+    err.errorName !== 'WEBHOOK_NUMBER_LIMIT_EXCEEDED'
+  );
+}
 
 /**
  * A webhook write with `eventTypes`, and once more without the dispute
  * events when PayPal refuses the set: an app without the Customer disputes
  * feature may not take them, and payments, refunds and subscriptions
- * shouldn't wait on disputes. A refusal about the webhook itself (its URL,
- * PayPal's limit of 10) isn't retried.
+ * shouldn't wait on disputes. A refusal about the webhook itself isn't
+ * retried.
  */
 async function withDisputeFallback<T>(
   eventTypes: readonly string[],
@@ -292,13 +306,7 @@ async function withDisputeFallback<T>(
     return { result: await write(eventTypes), disputesRefused: false };
   } catch (err) {
     const without = eventTypes.filter((t) => !DISPUTE_EVENTS.has(t));
-    const refusedSet =
-      err instanceof PaypalApiError &&
-      err.kind === 'http' &&
-      (err.status === 400 || err.status === 422) &&
-      err.errorName !== 'WEBHOOK_URL_ALREADY_EXISTS' &&
-      err.errorName !== 'WEBHOOK_NUMBER_LIMIT_EXCEEDED';
-    if (!refusedSet || without.length === eventTypes.length) throw err;
+    if (!refusesEventSet(err) || without.length === eventTypes.length) throw err;
     return { result: await write(without), disputesRefused: true };
   }
 }
@@ -635,6 +643,64 @@ export async function setPaypalPaymentTracking(
     .whereNull('disconnectedAt')
     .update({ paymentsSince, ...webhook, updatedAt: new Date() });
   return toPaymentView((await connectionById(db, tenantId, conn.id))!);
+}
+
+export type PaypalWebhookSync = 'current' | 'updated' | 'registered' | 'none';
+
+/**
+ * Bring an app's webhook to the events its connection reads
+ * (webhookEventTypes), checked against PayPal's own copy: an app set up
+ * before an event was added gets it, one whose webhook was removed in
+ * PayPal's dashboard gets a new one, and dispute events PayPal refused are
+ * asked for again (once; a refusal leaves the rest as they are). Run by the
+ * hourly catch-up for every app recording payments. 'none': there's no
+ * webhook to check (the deployment isn't public, or registering failed).
+ */
+export async function syncPaypalWebhook(db: Knex, conn: PaypalConnectionRow, token: string): Promise<PaypalWebhookSync> {
+  const webhookId = openWebhookId(conn);
+  if (!webhookId) return 'none';
+  const wanted = webhookEventTypes(conn);
+  const current = await getWebhookEventTypes(conn.environment, token, webhookId);
+
+  let outcome: PaypalWebhookSync;
+  let webhook: { webhookIdEnc?: string | null; webhookError: string | null };
+  if (current === null) {
+    const fallback = conn.purpose === 'checkout' ? 'Payments are read from PayPal every hour instead.' : undefined;
+    webhook = await registerWebhook(conn.environment, token, conn.id, wanted, fallback);
+    outcome = 'registered';
+  } else {
+    const have = new Set(current);
+    const missing = wanted.filter((t) => !have.has(t));
+    const extra = current.filter((t) => !wanted.includes(t));
+    if (missing.length === 0 && extra.length === 0) {
+      webhook = { webhookError: null };
+      outcome = 'current';
+    } else if (extra.length === 0 && missing.every((t) => DISPUTE_EVENTS.has(t))) {
+      try {
+        await setWebhookEventTypes(conn.environment, token, webhookId, wanted);
+        webhook = { webhookError: null };
+        outcome = 'updated';
+      } catch (err) {
+        if (!refusesEventSet(err)) throw err;
+        webhook = { webhookError: DISPUTES_REFUSED };
+        outcome = 'current';
+      }
+    } else {
+      const set = await withDisputeFallback(wanted, (types) => setWebhookEventTypes(conn.environment, token, webhookId, types));
+      webhook = { webhookError: set.disputesRefused ? DISPUTES_REFUSED : null };
+      outcome = 'updated';
+    }
+  }
+
+  if (outcome !== 'current' || webhook.webhookError !== conn.webhookError) {
+    // Not over an admin's change made meanwhile (a new webhook, tracking off).
+    await db(TABLES.PaypalConnection)
+      .where({ id: conn.id, tenantId: conn.tenantId, webhookIdEnc: conn.webhookIdEnc })
+      .whereNull('disconnectedAt')
+      .whereNotNull('paymentsSince')
+      .update({ ...webhook, updatedAt: new Date() });
+  }
+  return outcome;
 }
 
 /**

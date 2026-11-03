@@ -364,6 +364,22 @@ export async function setWebhookEventTypes(env: PaypalEnvironment, token: string
   });
 }
 
+/** The events a webhook receives, as PayPal holds them; null when PayPal
+ *  has no such webhook (removed in its dashboard). */
+export async function getWebhookEventTypes(env: PaypalEnvironment, token: string, webhookId: string): Promise<string[] | null> {
+  try {
+    const { data } = await call<{ event_types?: Array<{ name?: unknown }> }>(env, {
+      method: 'GET',
+      path: `/v1/notifications/webhooks/${encodeURIComponent(webhookId)}`,
+      auth: { bearer: token },
+    });
+    return (data?.event_types ?? []).map((e) => e?.name).filter((n): n is string => typeof n === 'string');
+  } catch (err) {
+    if (err instanceof PaypalApiError && err.kind === 'http' && err.status === 404) return null;
+    throw err;
+  }
+}
+
 export async function listWebhooks(env: PaypalEnvironment, token: string): Promise<Array<{ id: string; url: string }>> {
   const { data } = await call<{ webhooks?: Array<{ id?: string; url?: string }> }>(env, {
     method: 'GET',
