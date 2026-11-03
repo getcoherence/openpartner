@@ -967,6 +967,7 @@ export type TrackingIssueKind =
   | 'stripe_foreign_reference'
   | 'paypal_unknown_click'
   | 'paypal_foreign_reference'
+  | 'paypal_dispute_unmatched'
   | 'coupon_unknown_code'
   | 'reward_code_refused';
 

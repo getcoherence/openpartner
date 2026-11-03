@@ -21,6 +21,10 @@
  *                             custom_id carries a click id this tenant
  *                             doesn't have (paypal-payments.ts)
  *   paypal_foreign_reference  its custom_id carries no click id at all
+ *   paypal_dispute_unmatched  a PayPal dispute lost with the brand debited,
+ *                             whose money PayPal didn't tie to one recorded
+ *                             payment's refund: the commission is left for
+ *                             an admin; `sampleRef` is the dispute id
  *   coupon_unknown_code      POST /coupons/redeem with a code nobody holds
  *   reward_code_refused       the brand's Stripe wouldn't create a partner
  *                             code's customer discount (customer-rewards.ts);
@@ -47,6 +51,7 @@ export const TRACKING_ISSUE_KINDS: readonly TrackingIssueKind[] = [
   'stripe_foreign_reference',
   'paypal_unknown_click',
   'paypal_foreign_reference',
+  'paypal_dispute_unmatched',
   'coupon_unknown_code',
   'reward_code_refused',
 ];

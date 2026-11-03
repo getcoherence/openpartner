@@ -60,8 +60,9 @@ export const LOG_RETENTION_DAYS = 95;
 const SEARCH_WINDOW_MS = 31 * 86_400_000;
 const PAYMENT_EVENTS: ReadonlySet<string> = new Set(PAYPAL_PAYMENT_EVENTS);
 /** Same-moment facts in dependency order: a subscription before its
- *  payments, a payment before its refund or dispute. */
-const KIND_ORDER: Record<PaypalFact['kind'], number> = { subscription: 0, capture: 1, sale: 1, refund: 2, dispute: 2 };
+ *  payments, a payment before its refund or dispute, those before the
+ *  dispute's resolution. */
+const KIND_ORDER: Record<PaypalFact['kind'], number> = { subscription: 0, capture: 1, sale: 1, refund: 2, dispute: 2, dispute_resolved: 3 };
 
 export interface PaypalCatchupConnection {
   tenantId: string;

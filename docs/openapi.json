@@ -16235,7 +16235,7 @@
           "Attribution"
         ],
         "summary": "Record the payments Pay with PayPal’s app takes",
-        "description": "With `tracking: true`, a payment your checkout takes through this app is recorded as a conversion when its order's `purchase_units[].custom_id` (or a subscription's `custom_id`) carries the visitor's partner click (`openpartner.getReferral()`): an `invoice_paid` Event for each capture and subscription payment, `subscription_created` when a subscription is approved, refunds through the same path as `POST /attribution/refunds`, a payment PayPal reverses (a lost dispute or chargeback) as a `chargeback`, and disputes recorded without reversing anything. OpenPartner adds the payment events to the app's webhook, and reads the app's recent payments every hour for any the webhook missed.\n\nPayments from before tracking was turned on are never recorded. A sandbox app's payments are recorded the same way (their Events say `paypalEnvironment: sandbox`) and never billed. A payment carrying a test click (`POST /admin/tracking-health/test-click`) links the test instead.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "description": "With `tracking: true`, a payment your checkout takes through this app is recorded as a conversion when its order's `purchase_units[].custom_id` (or a subscription's `custom_id`) carries the visitor's partner click (`openpartner.getReferral()`): an `invoice_paid` Event for each capture and subscription payment, `subscription_created` when a subscription is approved, refunds through the same path as `POST /attribution/refunds`, a payment PayPal reverses (a card chargeback, for example) as a `chargeback`, and disputes recorded without reversing anything until one is resolved for the buyer with you debited: then the refunds PayPal lists on it are recorded, each once. OpenPartner adds the payment events to the app's webhook, and reads the app's recent payments every hour for any the webhook missed.\n\nPayments from before tracking was turned on are never recorded. A sandbox app's payments are recorded the same way (their Events say `paypalEnvironment: sandbox`) and never billed. A payment carrying a test click (`POST /admin/tracking-health/test-click`) links the test instead.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []
@@ -21899,7 +21899,7 @@
           "Webhook events"
         ],
         "summary": "commission.reversed",
-        "description": "A commission was reversed: by an admin, or by a refund or chargeback, reported to `POST /attribution/refunds`, from Stripe's `charge.refunded`, or from a tracked PayPal app. A Stripe dispute reverses nothing until you report the chargeback; a PayPal one, until PayPal reverses the payment.\n\nSubscribe with `events: [\"commission.reversed\"]` (or `\"*\"`). Delivered as a signed JSON POST; see **Webhooks** in the introduction for verification.",
+        "description": "A commission was reversed: by an admin, or by a refund or chargeback, reported to `POST /attribution/refunds`, from Stripe's `charge.refunded`, or from a tracked PayPal app. A Stripe dispute reverses nothing until you report the chargeback; a PayPal one, until it is resolved against you or PayPal reverses the payment.\n\nSubscribe with `events: [\"commission.reversed\"]` (or `\"*\"`). Delivered as a signed JSON POST; see **Webhooks** in the introduction for verification.",
         "parameters": [
           {
             "schema": {
