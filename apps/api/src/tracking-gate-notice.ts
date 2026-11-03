@@ -96,6 +96,7 @@ export async function sendTrackingGateNotices(
   );
   const admins = (await db<AdminRow>(TABLES.Admin)
     .whereIn('tenantId', ids)
+    .where({ role: 'admin' })
     .whereNull('revokedAt')
     .whereNotNull('activatedAt')
     .orderBy('activatedAt', 'asc')

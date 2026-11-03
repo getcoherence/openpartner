@@ -91,6 +91,7 @@ export function AdminProgramBounties() {
 
   return (
     <Page
+      edits
       title={`Bounties · ${programName}`}
       subtitle="Goals that pay a partner a bonus once they reach them. Checked every hour; the bonus waits out the program's holdback before it's approved."
       actions={

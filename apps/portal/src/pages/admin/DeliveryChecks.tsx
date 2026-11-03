@@ -9,6 +9,7 @@ import type { ReactNode } from 'react';
 import { ExternalLink } from 'lucide-react';
 import { Button, formatDate } from '../../ui.js';
 import { theme } from '../../theme.js';
+import { useViewOnly } from '../../lib/viewOnly.js';
 
 export interface DeliveryUrlCheck {
   url: string;
@@ -140,6 +141,7 @@ export function DeliveryChecksPanel({
   onRecheck: () => void;
   rechecking: boolean;
 }) {
+  const viewOnly = useViewOnly();
   const byUrl = new Map((checks?.urls ?? []).map((c) => [c.url, c]));
   return (
     <div
@@ -158,9 +160,11 @@ export function DeliveryChecksPanel({
             <span style={{ fontSize: 12, color: theme.textDim }}>
               {checks ? `Checked ${formatDate(checks.checkedAt, { relative: true })}` : 'Checking the posts…'}
             </span>
-            <Button size="sm" variant="ghost" onClick={onRecheck} disabled={rechecking}>
-              {rechecking ? 'Checking…' : 'Re-check'}
-            </Button>
+            {!viewOnly && (
+              <Button size="sm" variant="ghost" onClick={onRecheck} disabled={rechecking}>
+                {rechecking ? 'Checking…' : 'Re-check'}
+              </Button>
+            )}
           </>
         )}
       </div>

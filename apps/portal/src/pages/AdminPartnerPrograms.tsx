@@ -59,6 +59,7 @@ export function AdminPartnerPrograms() {
 
   return (
     <Page
+      edits
       title={`Programs · ${partnerName}`}
       subtitle="Toggle which programs this partner can create share-links for. Revoking a program retires the partner's coupon code for it, but doesn't remove existing links — those keep working until the partner deletes them."
     >

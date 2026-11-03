@@ -111,6 +111,7 @@ export function AdminPartnerCommission() {
 
   return (
     <Page
+      edits
       title={`Commission · ${partnerName}`}
       subtitle="Override this partner's commission terms, for every program at once or for one program. Useful for VIP creators on a higher cut than the program default. Pay them a one-off bonus, or set who recruited them, at the bottom."
     >

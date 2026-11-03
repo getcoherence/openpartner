@@ -52,6 +52,7 @@ export function AdminReview() {
 
   return (
     <Page
+      edits
       title="Review queue"
       subtitle={`${rows.length}${more} commission${rows.length === 1 && !more ? '' : 's'} awaiting your decision.`}
     >

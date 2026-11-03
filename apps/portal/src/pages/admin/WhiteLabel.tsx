@@ -60,6 +60,7 @@ export function AdminWhiteLabel() {
 
   return (
     <Page
+      edits
       title="White label"
       subtitle={
         billing.data?.mode === 'selfhost'

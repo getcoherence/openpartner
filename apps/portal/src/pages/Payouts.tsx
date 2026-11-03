@@ -9,6 +9,7 @@ import { HOLD_REASON, type HoldReason } from './payout-holds.js';
 import { ManualPayoutFiles } from './ManualPayoutFiles.js';
 import { PayoutRunSummary, payoutMethodLabel, type PayoutRunResult } from './PayoutRunSummary.js';
 import { SentAs, withdrawalNote, type PayoutSent } from './payout-sent.js';
+import { isViewOnly } from '../lib/viewOnly.js';
 
 interface Payout {
   id: string;
@@ -61,6 +62,7 @@ interface PayoutHold {
 
 export function PayoutsPage({ principal }: { principal: Principal }) {
   const qc = useQueryClient();
+  const viewOnly = isViewOnly(principal);
   const [searchParams] = useSearchParams();
   const partnerId = principal.partnerId ?? searchParams.get('partnerId');
   const isAdmin = principal.role === 'admin';
@@ -101,10 +103,12 @@ export function PayoutsPage({ principal }: { principal: Principal }) {
       ? partner.data
         ? `Payout history for ${partner.data.name}.`
         : 'Payout history for this partner.'
-      : 'Run a payout to pay every partner their approved commissions.'
+      : viewOnly
+        ? undefined
+        : 'Run a payout to pay every partner their approved commissions.'
     : 'Your payout history.';
 
-  const actions = isAdmin ? (
+  const actions = isAdmin && !viewOnly ? (
     <Button icon={<Play size={14} />} onClick={() => runPayouts.mutate()} disabled={runPayouts.isPending}>
       {runPayouts.isPending ? 'Running…' : 'Run payouts'}
     </Button>
@@ -143,7 +147,9 @@ export function PayoutsPage({ principal }: { principal: Principal }) {
 
       {runPayouts.data && <PayoutRunSummary result={runPayouts.data} onDismiss={() => runPayouts.reset()} />}
 
-      {isAdmin && !partnerId && <ManualPayoutFiles />}
+      {/* Payout files and PayPal batches: sending money, so not for a
+          view-only seat (the files hold partners' full payout details). */}
+      {isAdmin && !partnerId && !viewOnly && <ManualPayoutFiles />}
 
       {isAdmin && partnerId && (
         <TenantLink

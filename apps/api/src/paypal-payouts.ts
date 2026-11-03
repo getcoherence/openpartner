@@ -1399,13 +1399,13 @@ interface Alert {
   items: AlertItem[];
 }
 
-/** Email the brand's active admins about a batch that needs a look. A
- *  mail failure is logged and never undoes what the sync did. */
+/** Email the brand's active full admins about a batch that needs a look.
+ *  A mail failure is logged and never undoes what the sync did. */
 async function alertAdmins(db: Knex, tenantId: string, alert: Alert): Promise<void> {
   try {
     const tenant = (await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first()) as TenantRow | undefined;
     const admins = (await db<AdminRow>(TABLES.Admin)
-      .where({ tenantId })
+      .where({ tenantId, role: 'admin' })
       .whereNotNull('activatedAt')
       .whereNull('revokedAt')
       .select('id', 'email')) as Array<Pick<AdminRow, 'id' | 'email'>>;

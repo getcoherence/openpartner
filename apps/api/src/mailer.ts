@@ -116,11 +116,12 @@ class RoutingMailer implements Mailer {
       if (supportEmail) {
         replyTo = supportEmail;
       } else {
-        // Fallback: oldest active admin on the tenant. Means a partner
-        // hitting Reply on a sign-in email always lands on a human at
-        // the brand, even before Settings → Brand info is filled in.
+        // Fallback: oldest active full admin on the tenant. Means a
+        // partner hitting Reply on a sign-in email always lands on a human
+        // at the brand who can act on it, even before Settings → Brand
+        // info is filled in.
         const fallbackAdmin = await ctx.db(TABLES.Admin)
-          .where({ tenantId: ctx.tenantId })
+          .where({ tenantId: ctx.tenantId, role: 'admin' })
           .whereNotNull('activatedAt')
           .whereNull('revokedAt')
           .orderBy('activatedAt', 'asc')

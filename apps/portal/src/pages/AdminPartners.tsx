@@ -6,6 +6,7 @@ import { api } from '../api.js';
 import { alpha, theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
 import { useDebouncedSearch, usePartnerSearch } from '../lib/usePartnerSearch.js';
+import { EditOnly, useViewOnly } from '../lib/viewOnly.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Input, Label, Page, StatusPill, Table, formatDate } from '../ui.js';
 
 interface Partner {
@@ -74,9 +75,11 @@ export function AdminPartners() {
       title="Partners"
       subtitle="Invite partners — they set up their own dashboard via an emailed magic link."
       actions={
-        <Button icon={<Plus size={14} />} onClick={() => setShowCreate(true)}>
-          Invite partner
-        </Button>
+        <EditOnly>
+          <Button icon={<Plus size={14} />} onClick={() => setShowCreate(true)}>
+            Invite partner
+          </Button>
+        </EditOnly>
       }
     >
       <ErrorBanner error={list.error} />
@@ -157,6 +160,7 @@ function PartnerTable({
   onView: (p: Partner) => void;
   onRevoke: (p: Partner) => void;
 }) {
+  const viewOnly = useViewOnly();
   return (
     <Table
       columns={['Partner', 'Email', 'Status', 'Portal', 'Stripe', 'Created', 'Actions']}
@@ -175,7 +179,7 @@ function PartnerTable({
             : isPendingReview(p)
               ? <StatusPill status="pending review" />
               : <StatusPill status="invited" />,
-        <PortalAccessToggle partner={p} />,
+        viewOnly ? <span style={{ color: p.portalAccess === false ? theme.textDim : theme.text }}>{p.portalAccess === false ? 'Off' : 'On'}</span> : <PortalAccessToggle partner={p} />,
         p.stripeConnectAccountId ? <StatusPill status="connected" /> : <span style={{ color: theme.textDim }}>—</span>,
         <span style={{ color: theme.textMuted }}>{formatDate(p.createdAt, { relative: true })}</span>,
         <div style={{ display: 'flex', gap: 6 }}>
@@ -190,8 +194,12 @@ function PartnerTable({
           <TenantLink to={`/admin/partners/${p.id}/commission`} style={{ color: theme.accentText, fontSize: 13 }}>Commission</TenantLink>
           <span style={{ color: theme.border }}>·</span>
           <TenantLink to={`/payouts?partnerId=${p.id}`} style={{ color: theme.accentText, fontSize: 13 }}>Payouts</TenantLink>
-          <span style={{ color: theme.border }}>·</span>
-          <TenantLink to={`/payout-details?partnerId=${p.id}`} style={{ color: theme.accentText, fontSize: 13 }}>Payout details</TenantLink>
+          {!viewOnly && (
+            <>
+              <span style={{ color: theme.border }}>·</span>
+              <TenantLink to={`/payout-details?partnerId=${p.id}`} style={{ color: theme.accentText, fontSize: 13 }}>Payout details</TenantLink>
+            </>
+          )}
           {applicationOf(p) ? (
             <>
               <span style={{ color: theme.border }}>·</span>
@@ -210,14 +218,18 @@ function PartnerTable({
           ) : null}
           {/* The invite (and an approval, which sends one) is a sign-in
               link, so it needs portal access first. */}
-          {!p.activatedAt && !p.revokedAt && p.portalAccess !== false && (
+          {!viewOnly && !p.activatedAt && !p.revokedAt && p.portalAccess !== false && (
             <>
               <span style={{ color: theme.border }}>·</span>
               {isPendingReview(p) ? <ApproveApplication partner={p} /> : <ResendInvite partnerId={p.id} />}
             </>
           )}
-          <span style={{ color: theme.border }}>·</span>
-          <RevokeAction partner={p} openDialog={() => onRevoke(p)} />
+          {!viewOnly && (
+            <>
+              <span style={{ color: theme.border }}>·</span>
+              <RevokeAction partner={p} openDialog={() => onRevoke(p)} />
+            </>
+          )}
         </div>,
       ])}
     />

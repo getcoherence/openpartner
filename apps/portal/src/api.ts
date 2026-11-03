@@ -163,10 +163,14 @@ export function saveBlob(blob: Blob, filename: string): void {
   URL.revokeObjectURL(url);
 }
 
+export const READ_ONLY_MESSAGE = 'You have view-only access.';
+
 function friendlyMessage(res: Response, detail: unknown): string {
   const fallback = res.statusText ? `${res.status} ${res.statusText}` : `${res.status}`;
   if (!detail || typeof detail !== 'object') return fallback;
   const d = detail as Record<string, unknown>;
+  // A view-only seat's edit (docs/view-only-seats.md).
+  if (d.error === 'read_only') return READ_ONLY_MESSAGE;
   // Prefer the verbose explanation; fall back to the short error code.
   if (typeof d.detail === 'string' && d.detail.length > 0) {
     return typeof d.error === 'string' ? `${d.error}: ${d.detail}` : d.detail;
@@ -186,5 +190,6 @@ export interface Principal {
   source?: string;
   partnerId?: string;
   partner?: { id: string; name: string; email: string; stripeConnected: boolean };
-  admin?: { id: string; name: string; email: string };
+  /** `role` 'viewer' = a view-only seat (lib/viewOnly.tsx). */
+  admin?: { id: string; name: string; email: string; role?: 'admin' | 'viewer' };
 }

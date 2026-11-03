@@ -102,6 +102,7 @@ import { AddBrandPage } from './pages/AddBrand.js';
 import { PartnerJoinPage } from './pages/PartnerJoin.js';
 import { BrandDocument } from './lib/BrandDocument.js';
 import { UnsavedChangesGuard } from './lib/useUnsavedChanges.js';
+import { isViewOnly, ViewOnlyBadge, ViewOnlyProvider } from './lib/viewOnly.js';
 import { ThemeToggle } from './lib/ThemeToggle.js';
 import { CookieSettingsButton } from './lib/ConsentBanner.js';
 import { PlatformMagicLandingPage } from './pages/auth/PlatformMagicLanding.js';
@@ -333,7 +334,7 @@ function Shell() {
     approvalStatus !== 'pending' &&
     shellPath.startsWith('/admin/network/');
 
-  return (
+  const shell = (
     <div style={{ display: 'flex', minHeight: '100vh', background: theme.bg }}>
       {isMobile ? (
         <MobileDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)}>
@@ -351,7 +352,9 @@ function Shell() {
         {auth.principal.role === 'admin' && approvalStatus === 'pending' && !reviewBannerDismissed && (
           <PendingReviewBanner isMobile={isMobile} onDismiss={() => setReviewBannerDismissed(true)} />
         )}
-        {auth.principal.role === 'admin' && brandLocationMissing && <BrandLocationPrompt isMobile={isMobile} />}
+        {auth.principal.role === 'admin' && brandLocationMissing && !isViewOnly(auth.principal) && (
+          <BrandLocationPrompt isMobile={isMobile} />
+        )}
         {showNetworkConsentPrompt && <NetworkConsentPrompt isMobile={isMobile} />}
         {showNetworkProfileBanner && <NetworkProfileBanner isMobile={isMobile} />}
         {showNetworkListingNotice && <NetworkListingNotice isMobile={isMobile} />}
@@ -403,7 +406,8 @@ function Shell() {
               <Route path="admin/programs" element={<AdminPrograms />} />
               <Route path="admin/programs/:id/bounties" element={<AdminProgramBounties />} />
               <Route path="admin/review" element={<AdminReview />} />
-              <Route path="admin/export" element={<AdminExport />} />
+              {/* The export is every customer and partner at once: not a view-only seat's. */}
+              <Route path="admin/export" element={isViewOnly(auth.principal) ? <Navigate to="/" replace /> : <AdminExport />} />
               <Route path="admin/fraud-review" element={<FraudReviewPage />} />
               <Route path="admin/webhooks" element={<WebhooksPage />} />
               <Route path="admin/integrations" element={<AdminIntegrations />} />
@@ -438,6 +442,7 @@ function Shell() {
       </main>
     </div>
   );
+  return <ViewOnlyProvider principal={auth.principal}>{shell}</ViewOnlyProvider>;
 }
 
 /** Mobile-only top bar: hamburger + brand. Sticky so it stays reachable
@@ -603,7 +608,7 @@ export function Sidebar({ principal, variant = 'sidebar' }: { principal: Princip
             <NavItem to="/admin/partners" icon={<Users size={16} />} locked={locked}>Partners</NavItem>
             <NavItem to="/admin/programs" icon={<Tag size={16} />}>Programs</NavItem>
             <NavItem to="/admin/review" icon={<ShieldCheck size={16} />} locked={locked}>Review queue</NavItem>
-            <NavItem to="/admin/export" icon={<Download size={16} />}>Export / import</NavItem>
+            {!isViewOnly(principal) && <NavItem to="/admin/export" icon={<Download size={16} />}>Export / import</NavItem>}
             <NavItem to="/admin/fraud-review" icon={<ShieldCheck size={16} />} locked={locked}>Fraud review</NavItem>
             <NavItem to="/admin/webhooks" icon={<Webhook size={16} />}>Webhooks</NavItem>
             <NavItem to="/admin/integrations" icon={<Link2 size={16} />}>Integrations</NavItem>
@@ -722,6 +727,7 @@ interface WorkspaceRow {
   tenantDisplayName: string;
   adminId: string;
   activated: boolean;
+  role?: 'admin' | 'viewer';
 }
 
 interface PlatformMe {
@@ -942,11 +948,14 @@ function IdentitySwitcher({ principal }: { principal: Principal }) {
               textOverflow: 'ellipsis',
             }}
           >
-            {activeIdentity?.email ?? workspaces.data?.email ?? (principal.role === 'admin' ? 'Admin' : '')}
+            {activeIdentity?.email ??
+              workspaces.data?.email ??
+              (isViewOnly(principal) ? principal.admin?.email : principal.role === 'admin' ? 'Admin' : '')}
           </div>
         </div>
         <ChevronsUpDown size={14} style={{ color: theme.textMuted }} />
       </button>
+      {isViewOnly(principal) && <ViewOnlyBadge style={{ marginTop: 8 }} />}
 
       {open && (
         <>
@@ -995,7 +1004,7 @@ function IdentitySwitcher({ principal }: { principal: Principal }) {
                   disabled={busyAction !== null}
                   onClick={() => enter(w.tenantSlug)}
                   title={w.tenantDisplayName}
-                  subtitle={`/t/${w.tenantSlug}/`}
+                  subtitle={w.role === 'viewer' ? `/t/${w.tenantSlug}/ · View only` : `/t/${w.tenantSlug}/`}
                   right={busy ? <Spinner /> : active ? <Check size={14} style={{ color: theme.accentText }} /> : null}
                 />
               );
