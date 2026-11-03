@@ -6,8 +6,8 @@
 //   PAYPAL_CLIENT_ID=… PAYPAL_CLIENT_SECRET=… node sandbox-dispute.mjs PP-D-…
 //
 // Run it in your own terminal with the sandbox app's credentials (the app
-// needs Customer disputes). It escalates an inquiry to a claim, then settles
-// it once PayPal shows it under review.
+// needs Customer disputes). It escalates an inquiry to a claim, waits up to
+// five minutes for PayPal to put it under review, then settles it.
 
 const API = 'https://api-m.sandbox.paypal.com';
 const clientId = process.env.PAYPAL_CLIENT_ID ?? '';
@@ -53,10 +53,16 @@ if (d.dispute_life_cycle_stage === 'INQUIRY' && links.includes('escalate')) {
   await call('POST', `${path}/escalate`, token, { note: 'Escalated for an end-to-end test.' });
   ({ d, links } = await show());
 }
-if (d.status === 'UNDER_REVIEW' && links.includes('adjudicate')) {
+// PayPal moves an escalated dispute into review in its own time.
+const settleable = () => d.status === 'UNDER_REVIEW' && links.includes('adjudicate');
+for (let i = 0; i < 20 && !settleable() && d.status !== 'RESOLVED'; i++) {
+  await new Promise((r) => setTimeout(r, 15_000));
+  ({ d, links } = await show());
+}
+if (settleable()) {
   await call('POST', `${path}/adjudicate`, token, { adjudication_outcome: 'BUYER_FAVOR' });
   await show();
   console.log('Settled for the buyer. PayPal reverses the payment; OpenPartner records the chargeback within a minute.');
 } else {
-  console.log('Not under review yet, so it can’t be settled. Run this again in a minute.');
+  console.log('PayPal hasn’t made it settleable. Run this again later.');
 }
