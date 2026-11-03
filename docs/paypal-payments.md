@@ -64,7 +64,9 @@ paypal.Buttons({
 }).render('#paypal-subscribe');
 ```
 
-Server-side (PayPal recommends creating orders on the server): the page
+Server-side (PayPal's standard integration, and what the sample page does;
+in our sandbox check PayPal refused a client-side capture with
+`permission_denied`): the page
 sends `openpartner.getReferral()` with its request, or the server reads the
 `op_ref` cookie the script sets (`referralCookieHeader` in
 `@openpartner/sdk/server` writes one Safari keeps).
@@ -386,9 +388,10 @@ Only the webhook needs to be public: the checkout page can run on
    note about disputes. In PayPal's dashboard, the app's Webhooks list shows
    one webhook, OpenPartner's, now with the payment events too.
 4. Run the sample checkout page
-   ([examples/paypal-checkout](../examples/paypal-checkout/README.md)) with
-   the app's client id. Add `PAYPAL_PLAN_ID` (a sandbox plan of the same app)
-   to test subscriptions.
+   ([examples/paypal-checkout](../examples/paypal-checkout/README.md)) in
+   your own terminal with the app's client id and secret: it creates and
+   captures orders on the server. Add `PAYPAL_PLAN_ID` (a sandbox plan of the
+   same app) to test subscriptions.
 5. **The test click.** Tracking health → **Send a test click** on the
    program. The tab lands on the page, which shows the click. Pay with the
    sandbox buyer. Within a minute the test's last step reads "A PayPal
@@ -403,17 +406,20 @@ Only the webhook needs to be public: the checkout page can run on
 8. **Subscriptions.** Through `/?mode=subscription`, subscribe with the
    sandbox buyer: `subscription_created` at approval and an `invoice_paid`
    for the first payment, under the same partner.
-9. **A dispute, then a reversal.** Pay again through the partner's link.
-   As the sandbox buyer, open a dispute on that payment (Resolution Center,
-   item not received): a `dispute_created` is recorded and the commission
-   stays. Then settle it for the buyer with PayPal's sandbox-only calls,
-   from your own terminal, with the app's credentials:
+9. **A dispute.** Pay again through the partner's link. In your own
+   terminal, start the sandbox settle script with the app's credentials:
    ```bash
-   PAYPAL_CLIENT_ID=… PAYPAL_CLIENT_SECRET=… node examples/paypal-checkout/sandbox-dispute.mjs PP-D-…
+   PAYPAL_CLIENT_ID=… PAYPAL_CLIENT_SECRET=… node examples/paypal-checkout/sandbox-dispute.mjs
    ```
-   It escalates the dispute to a claim and settles it in the buyer's favour.
-   PayPal reverses the payment: a `chargeback` is recorded and the
-   commission is reversed.
+   Then, as the sandbox buyer, open a dispute on that payment
+   (sandbox.paypal.com/disputes, item not received): a `dispute_created` is
+   recorded and the commission stays. The script picks the dispute up and
+   settles it for the buyer: PayPal's sandbox-only adjudicate if PayPal
+   offers it, otherwise by accepting the claim. Accepting refunds the buyer:
+   a `refund` is recorded and the commission is reversed. In our checks
+   (Nov 2026) PayPal never offered adjudicate, whether the dispute was
+   escalated, answered or left alone, so a reversal couldn't be produced in
+   the sandbox. Its parsing is covered by tests only.
 10. **Transaction Search.** After the next hourly catch-up (at :50) the card
    shows no Transaction Search warning. Payments appear there up to three
    hours late, as do any the webhook missed.

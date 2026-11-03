@@ -1,21 +1,25 @@
-// Settle a PayPal SANDBOX dispute in the buyer's favour, so PayPal reverses
-// the payment and OpenPartner records the chargeback (docs/paypal-payments.md,
-// "Checking it against PayPal"). Sandbox only: the host is fixed, and the
-// settle call (adjudicate) exists only there. No dependencies; Node 20+.
+// Settle a PayPal SANDBOX dispute for the buyer, so OpenPartner's handling of
+// a lost dispute can be checked (docs/paypal-payments.md, "Checking it against
+// PayPal"). Sandbox only: the host is fixed. No dependencies; Node 20+.
 //
-//   PAYPAL_CLIENT_ID=… PAYPAL_CLIENT_SECRET=… node sandbox-dispute.mjs PP-D-…
+//   PAYPAL_CLIENT_ID=… PAYPAL_CLIENT_SECRET=… node sandbox-dispute.mjs [PP-D-…]
 //
 // Run it in your own terminal with the sandbox app's credentials (the app
-// needs Customer disputes). It escalates an inquiry to a claim, then settles
-// it once PayPal shows it under review.
+// needs Customer disputes). Start it with no id, then open the dispute as the
+// sandbox buyer: it picks up the first dispute opened after it started.
+//
+// It settles the dispute the first way PayPal offers: the sandbox-only
+// adjudicate (PayPal decides for the buyer) when that link is present,
+// otherwise the seller accepting the claim, which refunds the buyer. In our
+// checks PayPal never offered adjudicate, so expect the refund.
 
 const API = 'https://api-m.sandbox.paypal.com';
 const clientId = process.env.PAYPAL_CLIENT_ID ?? '';
 const secret = process.env.PAYPAL_CLIENT_SECRET ?? '';
-const disputeId = process.argv[2] ?? '';
+const given = process.argv[2] ?? '';
 
-if (!clientId || !secret || !/^PP-[A-Z0-9-]{4,60}$/.test(disputeId)) {
-  console.error('Usage: PAYPAL_CLIENT_ID=… PAYPAL_CLIENT_SECRET=… node sandbox-dispute.mjs PP-D-…');
+if (!clientId || !secret || (given && !/^PP-[A-Z0-9-]{4,60}$/.test(given))) {
+  console.error('Usage: PAYPAL_CLIENT_ID=… PAYPAL_CLIENT_SECRET=… node sandbox-dispute.mjs [PP-D-…]');
   process.exit(1);
 }
 
@@ -40,23 +44,55 @@ if (!tokenRes.ok) {
   process.exit(1);
 }
 const { access_token: token } = await tokenRes.json();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const until = (minutes) => Date.now() + minutes * 60_000;
+
+let disputeId = given;
+if (!disputeId) {
+  // A new dispute takes a few minutes to show up.
+  const since = new Date().toISOString();
+  console.log('Waiting for a new dispute: open one as the sandbox buyer now.');
+  for (const end = until(20); !disputeId && Date.now() < end; ) {
+    const { items = [] } = await call('GET', `/v1/customer/disputes?start_time=${encodeURIComponent(since)}`, token);
+    disputeId = items[0]?.dispute_id ?? '';
+    if (!disputeId) await sleep(10_000);
+  }
+  if (!disputeId) {
+    console.log('No new dispute in 20 minutes.');
+    process.exit(1);
+  }
+}
+
 const path = `/v1/customer/disputes/${encodeURIComponent(disputeId)}`;
+let last = '';
 const show = async () => {
   const d = await call('GET', path, token);
-  const links = (d.links ?? []).map((l) => l.rel);
-  console.log(`${d.dispute_id}: status ${d.status}, stage ${d.dispute_life_cycle_stage}, can: ${links.join(', ') || 'nothing'}`);
+  // PayPal returns the links in a different order on each read.
+  const links = (d.links ?? []).map((l) => l.rel).sort();
+  const line = `${d.dispute_id}: status ${d.status}, stage ${d.dispute_life_cycle_stage}, can: ${links.join(', ') || 'nothing'}${d.dispute_outcome ? `, outcome ${JSON.stringify(d.dispute_outcome)}` : ''}`;
+  if (line !== last) console.log(line);
+  last = line;
   return { d, links };
 };
 
+// Right after it opens, a dispute offers nothing for a minute or so.
 let { d, links } = await show();
-if (d.dispute_life_cycle_stage === 'INQUIRY' && links.includes('escalate')) {
-  await call('POST', `${path}/escalate`, token, { note: 'Escalated for an end-to-end test.' });
+const ready = () => links.includes('adjudicate') || links.includes('accept_claim') || d.status === 'RESOLVED';
+for (const end = until(10); !ready() && Date.now() < end; ) {
+  await sleep(10_000);
   ({ d, links } = await show());
 }
-if (d.status === 'UNDER_REVIEW' && links.includes('adjudicate')) {
+if (links.includes('adjudicate')) {
   await call('POST', `${path}/adjudicate`, token, { adjudication_outcome: 'BUYER_FAVOR' });
-  await show();
-  console.log('Settled for the buyer. PayPal reverses the payment; OpenPartner records the chargeback within a minute.');
-} else {
-  console.log('Not under review yet, so it can’t be settled. Run this again in a minute.');
+  console.log('Settled for the buyer by PayPal (adjudicate).');
+} else if (links.includes('accept_claim')) {
+  await call('POST', `${path}/accept-claim`, token, { note: 'Accepted for a sandbox end-to-end test.', accept_claim_type: 'REFUND' });
+  console.log('Accepted the claim: PayPal refunds the buyer from the merchant account.');
+} else if (d.status !== 'RESOLVED') {
+  console.log('PayPal offered no way to settle it in 10 minutes.');
+  process.exit(1);
+}
+for (const end = until(5); d.status !== 'RESOLVED' && Date.now() < end; ) {
+  await sleep(10_000);
+  ({ d, links } = await show());
 }
