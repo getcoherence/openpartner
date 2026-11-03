@@ -64,7 +64,9 @@ paypal.Buttons({
 }).render('#paypal-subscribe');
 ```
 
-Server-side (PayPal recommends creating orders on the server): the page
+Server-side (PayPal's standard integration, and what the sample page does;
+in our sandbox check PayPal refused a client-side capture with
+`permission_denied`): the page
 sends `openpartner.getReferral()` with its request, or the server reads the
 `op_ref` cookie the script sets (`referralCookieHeader` in
 `@openpartner/sdk/server` writes one Safari keeps).
@@ -343,9 +345,10 @@ Only the webhook needs to be public: the checkout page can run on
    note about disputes. In PayPal's dashboard, the app's Webhooks list shows
    one webhook, OpenPartner's, now with the payment events too.
 4. Run the sample checkout page
-   ([examples/paypal-checkout](../examples/paypal-checkout/README.md)) with
-   the app's client id. Add `PAYPAL_PLAN_ID` (a sandbox plan of the same app)
-   to test subscriptions.
+   ([examples/paypal-checkout](../examples/paypal-checkout/README.md)) in
+   your own terminal with the app's client id and secret: it creates and
+   captures orders on the server. Add `PAYPAL_PLAN_ID` (a sandbox plan of the
+   same app) to test subscriptions.
 5. **The test click.** Tracking health → **Send a test click** on the
    program. The tab lands on the page, which shows the click. Pay with the
    sandbox buyer. Within a minute the test's last step reads "A PayPal
