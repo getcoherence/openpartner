@@ -123,6 +123,8 @@ export interface ExternalFilters {
   openToPartnerships?: boolean;
   /** Percent, on the creator's best channel. */
   minEngagement?: number;
+  /** Only those the brand holds an open invite to. */
+  invited?: boolean;
   sort?: 'reach' | 'newest' | 'engagement';
 }
 
@@ -139,6 +141,7 @@ export function useIndexedCreators(filters: ExternalFilters, enabled = true) {
     if (filters.maxFollowers != null) p.set('maxFollowers', String(filters.maxFollowers));
     if (filters.openToPartnerships) p.set('openToPartnerships', '1');
     if (filters.minEngagement && filters.minEngagement > 0) p.set('minEngagement', String(filters.minEngagement));
+    if (filters.invited) p.set('invited', '1');
     if (filters.sort && filters.sort !== 'reach') p.set('sort', filters.sort);
     return p.toString();
   }, [
@@ -149,6 +152,7 @@ export function useIndexedCreators(filters: ExternalFilters, enabled = true) {
     filters.maxFollowers,
     filters.openToPartnerships,
     filters.minEngagement,
+    filters.invited,
     filters.sort,
   ]);
 
