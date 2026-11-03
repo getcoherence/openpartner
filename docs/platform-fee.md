@@ -10,7 +10,8 @@ installs aren't metered, so none of this applies to them.
 ## The rule
 
 For every attributed conversion (a non-corrective event a partner was
-credited for):
+credited for; a PayPal sandbox app's payments are test money and never
+count, [paypal-payments.md](paypal-payments.md#sandbox)):
 
 ```
 fee = max( revenueRate × revenue , commissionRate × commissions )

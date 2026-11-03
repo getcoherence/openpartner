@@ -5996,6 +5996,113 @@
           "openBatches"
         ]
       },
+      "PaypalPaymentApp": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "live",
+              "sandbox"
+            ]
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "payouts",
+              "checkout"
+            ],
+            "description": "`payouts`: the app Pay with PayPal sends with. `checkout`: an app connected only to report the payments your checkout takes; it never sends."
+          },
+          "clientIdPreview": {
+            "type": "string",
+            "description": "The client id’s first 6 and last 4 characters. The secret is never returned."
+          },
+          "tracking": {
+            "type": "boolean",
+            "description": "Payments this app takes are recorded as conversions when their `custom_id` carries a partner click."
+          },
+          "trackingSince": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When tracking was turned on. Payments from before it are never recorded.",
+            "pattern": "Z$"
+          },
+          "webhook": {
+            "type": "object",
+            "properties": {
+              "registered": {
+                "type": "boolean",
+                "description": "OpenPartner has a webhook on the app, so payments arrive as PayPal sends them. Otherwise they are read every hour."
+              },
+              "error": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "registered",
+              "error"
+            ]
+          },
+          "lastEventAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The last payment webhook PayPal delivered from this app.",
+            "pattern": "Z$"
+          },
+          "transactionSearch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "ok",
+              "unavailable",
+              null
+            ],
+            "description": "Whether PayPal lets the app search its transactions, which the hourly catch-up also reads. `unavailable`: turn Transaction Search on for the app in the PayPal developer dashboard. Null until the catch-up has tried."
+          },
+          "lastError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastErrorAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "pattern": "Z$"
+          }
+        },
+        "required": [
+          "id",
+          "environment",
+          "purpose",
+          "clientIdPreview",
+          "tracking",
+          "trackingSince",
+          "webhook",
+          "lastEventAt",
+          "transactionSearch",
+          "lastError",
+          "lastErrorAt"
+        ]
+      },
       "PaypalBatch": {
         "type": "object",
         "properties": {
@@ -15918,6 +16025,431 @@
         }
       }
     },
+    "/config/paypal-payments": {
+      "get": {
+        "operationId": "listPaypalPaymentApps",
+        "tags": [
+          "Attribution"
+        ],
+        "summary": "Your PayPal apps and which report payments",
+        "description": "Every connected PayPal app, Pay with PayPal’s and checkout apps, and whether each reports the payments it takes as conversions. See docs/paypal-payments.md.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "responses": {
+          "200": {
+            "description": "Apps.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "apps": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/PaypalPaymentApp"
+                      }
+                    }
+                  },
+                  "required": [
+                    "apps"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "connectPaypalCheckoutApp",
+        "tags": [
+          "Attribution"
+        ],
+        "summary": "Connect the PayPal app your checkout runs on",
+        "description": "For a checkout that runs on another PayPal app than the one Pay with PayPal sends with: saves that app's client id and secret for one environment, after a token call proves them, sealed and never returned, logged or exported like Pay with PayPal's. The app only reports payments (as `POST /config/paypal/{environment}/payments` describes) and never sends any. PayPal sends a webhook only to the app a payment went through, which is why the checkout's own app is needed.\n\nPay with PayPal's own app is refused (`409 same_app_as_payouts`): turn tracking on for it instead. Connecting again replaces that environment's checkout app.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "environment": {
+                    "type": "string",
+                    "enum": [
+                      "live",
+                      "sandbox"
+                    ]
+                  },
+                  "clientId": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{8,128}$"
+                  },
+                  "clientSecret": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{8,128}$"
+                  }
+                },
+                "required": [
+                  "environment",
+                  "clientId",
+                  "clientSecret"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Connected and tracking.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "app": {
+                      "$ref": "#/components/schemas/PaypalPaymentApp"
+                    }
+                  },
+                  "required": [
+                    "app"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_body`, `tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`same_app_as_payouts`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`credentials_refused`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`paypal_unreachable`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/config/paypal/{environment}/payments": {
+      "post": {
+        "operationId": "setPaypalPaymentTracking",
+        "tags": [
+          "Attribution"
+        ],
+        "summary": "Record the payments Pay with PayPal’s app takes",
+        "description": "With `tracking: true`, a payment your checkout takes through this app is recorded as a conversion when its order's `purchase_units[].custom_id` (or a subscription's `custom_id`) carries the visitor's partner click (`openpartner.getReferral()`): an `invoice_paid` Event for each capture and subscription payment, `subscription_created` when a subscription is approved, refunds through the same path as `POST /attribution/refunds`, a payment PayPal reverses (a lost dispute or chargeback) as a `chargeback`, and disputes recorded without reversing anything. OpenPartner adds the payment events to the app's webhook, and reads the app's recent payments every hour for any the webhook missed.\n\nPayments from before tracking was turned on are never recorded. A sandbox app's payments are recorded the same way (their Events say `paypalEnvironment: sandbox`) and never billed. A payment carrying a test click (`POST /admin/tracking-health/test-click`) links the test instead.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "live",
+                "sandbox"
+              ]
+            },
+            "required": true,
+            "name": "environment",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "tracking": {
+                    "type": "boolean",
+                    "description": "Report the payments this app takes as conversions (`true`), or stop (`false`)."
+                  }
+                },
+                "required": [
+                  "tracking"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The app.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "app": {
+                      "$ref": "#/components/schemas/PaypalPaymentApp"
+                    }
+                  },
+                  "required": [
+                    "app"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_body`, `tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_connected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`already_tracked`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`credentials_refused`, `credentials_unreadable`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`paypal_unreachable`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/config/paypal-payments/{environment}": {
+      "delete": {
+        "operationId": "disconnectPaypalCheckoutApp",
+        "tags": [
+          "Attribution"
+        ],
+        "summary": "Disconnect a checkout app",
+        "description": "Removes OpenPartner’s webhook from the app and wipes its saved secret and token. Conversions it recorded stay.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "live",
+                "sandbox"
+              ]
+            },
+            "required": true,
+            "name": "environment",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Disconnected."
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_connected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/payouts/runs/{runId}/paypal-batches": {
       "post": {
         "operationId": "sendRunWithPaypal",
@@ -21367,7 +21899,7 @@
           "Webhook events"
         ],
         "summary": "commission.reversed",
-        "description": "A commission was reversed: by an admin, or by a refund or chargeback, reported to `POST /attribution/refunds` or from Stripe's `charge.refunded`. A Stripe dispute reverses nothing until you report the chargeback.\n\nSubscribe with `events: [\"commission.reversed\"]` (or `\"*\"`). Delivered as a signed JSON POST; see **Webhooks** in the introduction for verification.",
+        "description": "A commission was reversed: by an admin, or by a refund or chargeback, reported to `POST /attribution/refunds`, from Stripe's `charge.refunded`, or from a tracked PayPal app. A Stripe dispute reverses nothing until you report the chargeback; a PayPal one, until PayPal reverses the payment.\n\nSubscribe with `events: [\"commission.reversed\"]` (or `\"*\"`). Delivered as a signed JSON POST; see **Webhooks** in the introduction for verification.",
         "parameters": [
           {
             "schema": {
@@ -21501,7 +22033,7 @@
                           "refund",
                           "chargeback"
                         ],
-                        "description": "`manual` = an admin reversed it; `refund` = a refund (`POST /attribution/refunds`, or Stripe's `charge.refunded` from the self-host Stripe webhook or, on OpenPartner Cloud, the OpenPartner Stripe App); `chargeback` = a chargeback reported to `POST /attribution/refunds`."
+                        "description": "`manual` = an admin reversed it; `refund` = a refund (`POST /attribution/refunds`, or Stripe's `charge.refunded` from the self-host Stripe webhook or, on OpenPartner Cloud, the OpenPartner Stripe App, or a tracked PayPal app's refund); `chargeback` = a chargeback reported to `POST /attribution/refunds`, or a tracked PayPal app's payment PayPal reversed."
                       },
                       "refundEventId": {
                         "type": "string",

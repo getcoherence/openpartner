@@ -956,7 +956,7 @@ export interface TestClickRow {
 }
 
 /** How a test click was linked to a customer (apps/api/src/test-clicks.ts). */
-export type TestClickLinkedVia = 'identify' | 'checkout' | 'conversion';
+export type TestClickLinkedVia = 'identify' | 'checkout' | 'conversion' | 'paypal';
 
 /** What a TrackingIssue counts (apps/api/src/tracking-issues.ts). */
 export type TrackingIssueKind =
@@ -965,6 +965,8 @@ export type TrackingIssueKind =
   | 'conversion_unknown_click'
   | 'stripe_unknown_click'
   | 'stripe_foreign_reference'
+  | 'paypal_unknown_click'
+  | 'paypal_foreign_reference'
   | 'coupon_unknown_code'
   | 'reward_code_refused';
 
@@ -1572,6 +1574,49 @@ export interface PaypalConnectionRow {
   lastErrorAt: Date | null;
   disconnectedAt: Date | null;
   disconnectReason: 'admin' | 'replaced' | null;
+  /** 'payouts': Pay with PayPal's app. 'checkout': an app connected only to
+   *  report payments, never to send (migration 20261102140000). */
+  purpose: PaypalConnectionPurpose;
+  /** Payment tracking on since; null = off (docs/paypal-payments.md). */
+  paymentsSince: Date | null;
+  lastPaymentEventAt: Date | null;
+  /** Whether this app may call Transaction Search; null until tried. */
+  transactionSearch: 'ok' | 'unavailable' | null;
+  transactionSearchCheckedAt: Date | null;
+  updatedAt: Date;
+}
+
+export type PaypalConnectionPurpose = 'payouts' | 'checkout';
+
+/** One provider payment fact a deployment settled (migration
+ *  20261102140000_paypal_payment_tracking). Not exported. */
+export interface PaymentEventLogRow {
+  tenantId: string;
+  provider: 'paypal';
+  /** The provider's id for the fact, prefixed by its kind
+   *  (`capture:…`, `sale:…`, `refund:…`, `subscription:…`, `dispute:…`). */
+  eventKey: string;
+  connectionId: string | null;
+  /** The provider's event type, or its transaction event code. */
+  type: string;
+  via: 'webhook' | 'catchup';
+  outcome: string;
+  receivedAt: Date;
+}
+
+/** A PayPal subscription's custom_id and the click it named (migration
+ *  20261102140000). A cache of PayPal's data: not exported. */
+export interface PaypalSubscriptionRow {
+  tenantId: string;
+  subscriptionId: string;
+  connectionId: string;
+  environment: PaypalEnvironment;
+  customId: string | null;
+  clickId: string | null;
+  planId: string | null;
+  status: string | null;
+  createdAt: Date | null;
+  firstSeenAt: Date;
   updatedAt: Date;
 }
 

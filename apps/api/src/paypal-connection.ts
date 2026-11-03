@@ -28,19 +28,28 @@
  *     sent with them is still open: its status can only be read with
  *     them. A new secret for the SAME app (a rotation) moves the batches
  *     over.
+ *
+ * The same connection can also report the payments the brand's checkout
+ * takes (docs/paypal-payments.md): turning that on adds the payment events
+ * to its webhook. When the checkout runs on another app than the one Pay
+ * with PayPal sends from, the brand connects that app too, the same way,
+ * as a `checkout` connection: it only reports payments and never sends.
  */
 
 import type { Knex } from 'knex';
 import { ulid } from 'ulid';
-import { TABLES, type PaypalConnectionRow, type PaypalEnvironment } from '@openpartner/db';
+import { TABLES, type PaypalConnectionPurpose, type PaypalConnectionRow, type PaypalEnvironment } from '@openpartner/db';
 import { decryptSecret, encryptSecret } from './crypto.js';
 import {
+  PAYPAL_PAYMENT_EVENTS,
+  PAYPAL_WEBHOOK_EVENTS,
   PaypalApiError,
   createWebhook,
   deleteWebhook,
   fetchAccessToken,
   hasPayoutsScope,
   listWebhooks,
+  setWebhookEventTypes,
   type PaypalToken,
 } from './paypal-api.js';
 
@@ -57,7 +66,9 @@ export type PaypalConnectErrorCode =
   | 'paypal_unreachable'
   | 'open_batches'
   | 'not_connected'
-  | 'credentials_unreadable';
+  | 'credentials_unreadable'
+  | 'same_app_as_payouts'
+  | 'already_tracked';
 
 export class PaypalConnectError extends Error {
   constructor(
@@ -159,7 +170,7 @@ function toView(conn: PaypalConnectionRow, openBatches: number): PaypalConnectio
 /** The tenant's connected PayPal apps (live and/or sandbox). */
 export async function listPaypalConnections(db: Knex, tenantId: string): Promise<PaypalConnectionView[]> {
   const rows = (await db<PaypalConnectionRow>(TABLES.PaypalConnection)
-    .where({ tenantId })
+    .where({ tenantId, purpose: 'payouts' })
     .whereNull('disconnectedAt')
     .orderBy('environment', 'asc')) as PaypalConnectionRow[];
   // One at a time: `db` is usually the request's transaction, one connection.
@@ -168,10 +179,11 @@ export async function listPaypalConnections(db: Knex, tenantId: string): Promise
   return views;
 }
 
+/** Pay with PayPal's app for `environment` (never a checkout app). */
 export async function liveConnection(db: Knex, tenantId: string, environment: PaypalEnvironment): Promise<PaypalConnectionRow | null> {
   return (
     ((await db<PaypalConnectionRow>(TABLES.PaypalConnection)
-      .where({ tenantId, environment })
+      .where({ tenantId, environment, purpose: 'payouts' })
       .whereNull('disconnectedAt')
       .first()) as PaypalConnectionRow | undefined) ?? null
   );
@@ -251,33 +263,79 @@ export async function paypalAccessToken(db: Knex, conn: PaypalConnectionRow, opt
   return token.accessToken;
 }
 
+/** The events a connection's webhook receives: the Payouts events for
+ *  Pay with PayPal's app, plus the payment events while it tracks
+ *  payments; a checkout app, the payment events alone. */
+export function webhookEventTypes(conn: Pick<PaypalConnectionRow, 'purpose' | 'paymentsSince'>): string[] {
+  if (conn.purpose === 'checkout') return [...PAYPAL_PAYMENT_EVENTS];
+  return [...PAYPAL_WEBHOOK_EVENTS, ...(conn.paymentsSince ? PAYPAL_PAYMENT_EVENTS : [])];
+}
+
+const DISPUTE_EVENTS: ReadonlySet<string> = new Set(['CUSTOMER.DISPUTE.CREATED']);
+
+/** Kept as the webhook's note while it is registered without them. */
+export const DISPUTES_REFUSED =
+  'PayPal won’t send this app dispute events. Turn on Customer disputes for it in the PayPal developer dashboard, then record its payments again.';
+
+/**
+ * A webhook write with `eventTypes`, and once more without the dispute
+ * events when PayPal refuses the set: an app without the Customer disputes
+ * feature may not take them, and payments, refunds and subscriptions
+ * shouldn't wait on disputes. A refusal about the webhook itself (its URL,
+ * PayPal's limit of 10) isn't retried.
+ */
+async function withDisputeFallback<T>(
+  eventTypes: readonly string[],
+  write: (types: readonly string[]) => Promise<T>,
+): Promise<{ result: T; disputesRefused: boolean }> {
+  try {
+    return { result: await write(eventTypes), disputesRefused: false };
+  } catch (err) {
+    const without = eventTypes.filter((t) => !DISPUTE_EVENTS.has(t));
+    const refusedSet =
+      err instanceof PaypalApiError &&
+      err.kind === 'http' &&
+      (err.status === 400 || err.status === 422) &&
+      err.errorName !== 'WEBHOOK_URL_ALREADY_EXISTS' &&
+      err.errorName !== 'WEBHOOK_NUMBER_LIMIT_EXCEEDED';
+    if (!refusedSet || without.length === eventTypes.length) throw err;
+    return { result: await write(without), disputesRefused: true };
+  }
+}
+
 /** Register (or find) this connection's webhook on the brand's app. */
 async function registerWebhook(
   environment: PaypalEnvironment,
   token: string,
   connectionId: string,
+  eventTypes: readonly string[] = PAYPAL_WEBHOOK_EVENTS,
+  fallback = 'Batch status is checked every few minutes instead.',
 ): Promise<{ webhookIdEnc: string | null; webhookError: string | null }> {
   const url = paypalWebhookUrl(connectionId);
   if (!url) {
     return {
       webhookIdEnc: null,
-      webhookError: 'This deployment isn’t at a public https address, so PayPal can’t send it updates. Batch status is checked every few minutes instead.',
+      webhookError: `This deployment isn’t at a public https address, so PayPal can’t send it updates. ${fallback}`,
     };
   }
   try {
-    return { webhookIdEnc: encryptSecret(await createWebhook(environment, token, url)), webhookError: null };
+    const made = await withDisputeFallback(eventTypes, (types) => createWebhook(environment, token, url, types));
+    return { webhookIdEnc: encryptSecret(made.result), webhookError: made.disputesRefused ? DISPUTES_REFUSED : null };
   } catch (err) {
     if (err instanceof PaypalApiError && err.errorName === 'WEBHOOK_URL_ALREADY_EXISTS') {
       try {
         const hit = (await listWebhooks(environment, token)).find((w) => w.url === url);
-        if (hit) return { webhookIdEnc: encryptSecret(hit.id), webhookError: null };
+        if (hit) {
+          const set = await withDisputeFallback(eventTypes, (types) => setWebhookEventTypes(environment, token, hit.id, types));
+          return { webhookIdEnc: encryptSecret(hit.id), webhookError: set.disputesRefused ? DISPUTES_REFUSED : null };
+        }
       } catch {
         // Fall through to the error below.
       }
     }
     const why = err instanceof PaypalApiError && err.errorName === 'WEBHOOK_NUMBER_LIMIT_EXCEEDED'
       ? 'Your PayPal app already has the most webhooks PayPal allows (10). Remove one in the PayPal developer dashboard, then connect again.'
-      : 'PayPal didn’t accept the webhook. Batch status is checked every few minutes instead.';
+      : `PayPal didn’t accept the webhook. ${fallback}`;
     return { webhookIdEnc: null, webhookError: why };
   }
 }
@@ -329,6 +387,10 @@ export async function connectPaypal(db: Knex, tenantId: string, input: ConnectPa
   const active = await activePaypalConnection(db, tenantId);
   const makeActive = !active || active.id === existing?.id;
   const now = new Date();
+  // A new secret for the same app keeps reporting its payments, from when
+  // it started. Another app starts with payment tracking off: its checkout
+  // may not be this one's (docs/paypal-payments.md).
+  const paymentsSince = sameApp && existing ? existing.paymentsSince : null;
 
   if (existing) {
     // The old webhook goes with the old row. Same app: the new token can
@@ -346,11 +408,13 @@ export async function connectPaypal(db: Knex, tenantId: string, input: ConnectPa
     });
   }
 
-  const webhook = await registerWebhook(input.environment, token.accessToken, id);
+  const webhook = await registerWebhook(input.environment, token.accessToken, id, webhookEventTypes({ purpose: 'payouts', paymentsSince }));
   const row: Partial<PaypalConnectionRow> = {
     id,
     tenantId,
     environment: input.environment,
+    purpose: 'payouts',
+    paymentsSince,
     clientId: input.clientId,
     clientSecretEnc: encryptSecret(input.clientSecret),
     accessTokenEnc: encryptSecret(token.accessToken),
@@ -372,7 +436,7 @@ export async function connectPaypal(db: Knex, tenantId: string, input: ConnectPa
     // its old row was replaced just now (a secret rotation) or
     // disconnected earlier (connecting the app again).
     const sameAppRows = (await db(TABLES.PaypalConnection)
-      .where({ tenantId, environment: input.environment, appId: token.appId })
+      .where({ tenantId, environment: input.environment, appId: token.appId, purpose: 'payouts' })
       .whereNot({ id })
       .select('id')) as Array<{ id: string }>;
     if (sameAppRows.length > 0) {
@@ -383,6 +447,7 @@ export async function connectPaypal(db: Knex, tenantId: string, input: ConnectPa
           sameAppRows.map((r) => r.id),
         )
         .update({ connectionId: id, updatedAt: now });
+      await moveSubscriptions(db, tenantId, sameAppRows.map((r) => r.id), id);
       // Finished batches a disconnect stopped following resume, within
       // their 90 days.
       await db(TABLES.PaypalPayoutBatch)
@@ -441,6 +506,216 @@ export async function disconnectPaypal(db: Knex, tenantId: string, environment: 
     disconnectedAt: new Date(),
     disconnectReason: 'admin',
     active: false,
+    clientSecretEnc: null,
+    accessTokenEnc: null,
+    accessTokenExpiresAt: null,
+    webhookIdEnc: null,
+    updatedAt: new Date(),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Payment tracking (docs/paypal-payments.md)
+// ---------------------------------------------------------------------------
+
+/** An app that reports, or could report, the brand's PayPal payments:
+ *  Pay with PayPal's app, or a checkout app. Never the secret. */
+export interface PaypalPaymentAppView {
+  id: string;
+  environment: PaypalEnvironment;
+  purpose: PaypalConnectionPurpose;
+  clientIdPreview: string;
+  tracking: boolean;
+  trackingSince: Date | null;
+  webhook: { registered: boolean; error: string | null };
+  /** The last payment webhook PayPal delivered from this app. */
+  lastEventAt: Date | null;
+  /** Whether PayPal lets this app search its transactions (the hourly
+   *  catch-up's second source); null until it has tried. */
+  transactionSearch: 'ok' | 'unavailable' | null;
+  lastError: string | null;
+  lastErrorAt: Date | null;
+}
+
+function toPaymentView(conn: PaypalConnectionRow): PaypalPaymentAppView {
+  return {
+    id: conn.id,
+    environment: conn.environment,
+    purpose: conn.purpose,
+    clientIdPreview: preview(conn.clientId),
+    tracking: !!conn.paymentsSince,
+    trackingSince: conn.paymentsSince,
+    webhook: { registered: !!conn.webhookIdEnc, error: conn.webhookError },
+    lastEventAt: conn.lastPaymentEventAt,
+    transactionSearch: conn.transactionSearch,
+    lastError: conn.lastError,
+    lastErrorAt: conn.lastErrorAt,
+  };
+}
+
+async function liveCheckoutConnection(db: Knex, tenantId: string, environment: PaypalEnvironment): Promise<PaypalConnectionRow | null> {
+  return (
+    ((await db<PaypalConnectionRow>(TABLES.PaypalConnection)
+      .where({ tenantId, environment, purpose: 'checkout' })
+      .whereNull('disconnectedAt')
+      .first()) as PaypalConnectionRow | undefined) ?? null
+  );
+}
+
+/** Every connected app, Pay with PayPal's and checkout apps. */
+export async function listPaypalPaymentApps(db: Knex, tenantId: string): Promise<PaypalPaymentAppView[]> {
+  const rows = (await db<PaypalConnectionRow>(TABLES.PaypalConnection)
+    .where({ tenantId })
+    .whereNull('disconnectedAt')
+    .orderBy([
+      { column: 'environment', order: 'asc' },
+      { column: 'purpose', order: 'desc' },
+    ])) as PaypalConnectionRow[];
+  return rows.map(toPaymentView);
+}
+
+/** Subscriptions seen through one app follow it to its new row. */
+async function moveSubscriptions(db: Knex, tenantId: string, fromIds: string[], toId: string): Promise<void> {
+  if (fromIds.length === 0) return;
+  await db(TABLES.PaypalSubscription)
+    .where({ tenantId })
+    .whereIn('connectionId', fromIds)
+    .update({ connectionId: toId, updatedAt: new Date() });
+}
+
+/**
+ * Turn payment tracking on or off for Pay with PayPal's app in one
+ * environment: its webhook gains (or loses) the payment events, and the
+ * catch-up starts (or stops) reading its payments. Turning it on never
+ * reaches back: payments from before are left alone, as a new Stripe
+ * connection leaves its account's history.
+ */
+export async function setPaypalPaymentTracking(
+  db: Knex,
+  tenantId: string,
+  environment: PaypalEnvironment,
+  on: boolean,
+): Promise<PaypalPaymentAppView> {
+  const conn = await liveConnection(db, tenantId, environment);
+  if (!conn) throw new PaypalConnectError('not_connected', `No ${environment} PayPal app is connected`);
+  if (on === !!conn.paymentsSince) return toPaymentView(conn);
+  if (on) {
+    const checkout = await liveCheckoutConnection(db, tenantId, environment);
+    if (checkout && checkout.appId && checkout.appId === conn.appId) {
+      throw new PaypalConnectError('already_tracked', 'This app is already connected as your checkout app, which reports its payments.');
+    }
+  }
+  const paymentsSince = on ? new Date() : null;
+  const eventTypes = webhookEventTypes({ purpose: 'payouts', paymentsSince });
+  const webhookId = openWebhookId(conn);
+  let webhook: { webhookIdEnc?: string | null; webhookError?: string | null } = {};
+  try {
+    // The webhook OpenPartner already has on the app is changed in place,
+    // with the saved credentials: never a second one (PayPal allows 10),
+    // and nothing for the brand to paste again.
+    const token = await paypalAccessToken(db, conn);
+    if (webhookId) {
+      try {
+        const set = await withDisputeFallback(eventTypes, (types) => setWebhookEventTypes(environment, token, webhookId, types));
+        webhook = { webhookError: set.disputesRefused ? DISPUTES_REFUSED : null };
+      } catch (err) {
+        // Removed in PayPal's dashboard since: register it again.
+        if (!(err instanceof PaypalApiError && err.kind === 'http' && err.status === 404)) throw err;
+        webhook = await registerWebhook(environment, token, conn.id, eventTypes);
+      }
+    } else if (on) {
+      webhook = await registerWebhook(environment, token, conn.id, eventTypes);
+    }
+  } catch (err) {
+    if (err instanceof PaypalConnectError) throw err;
+    throw new PaypalConnectError('paypal_unreachable', 'PayPal didn’t take the change to the app’s webhook. Try again.');
+  }
+  await db(TABLES.PaypalConnection)
+    .where({ id: conn.id, tenantId })
+    .whereNull('disconnectedAt')
+    .update({ paymentsSince, ...webhook, updatedAt: new Date() });
+  return toPaymentView((await connectionById(db, tenantId, conn.id))!);
+}
+
+/**
+ * Connect the app the brand's checkout runs on, when it isn't Pay with
+ * PayPal's: verified and sealed the same way, with a webhook for the
+ * payment events only. It reports payments and never sends. Pay with
+ * PayPal's own app is refused (`same_app_as_payouts`): turn tracking on
+ * there instead, so one app never has two webhooks for the same payments.
+ * Connecting again replaces the environment's checkout app; a new secret
+ * for the same app keeps its history.
+ */
+export async function connectPaypalCheckout(db: Knex, tenantId: string, input: ConnectPaypalInput): Promise<PaypalPaymentAppView> {
+  let token: PaypalToken;
+  try {
+    token = await fetchAccessToken(input.environment, input.clientId, input.clientSecret);
+  } catch (err) {
+    throw connectErrorFrom(err);
+  }
+  const payouts = await liveConnection(db, tenantId, input.environment);
+  if (payouts && payouts.appId && payouts.appId === token.appId) {
+    throw new PaypalConnectError('same_app_as_payouts', 'This is the app Pay with PayPal already uses. Turn on payment tracking for it instead.');
+  }
+
+  const existing = await liveCheckoutConnection(db, tenantId, input.environment);
+  const sameApp = !!existing && !!existing.appId && existing.appId === token.appId;
+  const now = new Date();
+  if (existing) {
+    await removeWebhook(db, existing, sameApp ? token.accessToken : undefined);
+    await db(TABLES.PaypalConnection).where({ id: existing.id, tenantId }).update({
+      disconnectedAt: now,
+      disconnectReason: 'replaced',
+      clientSecretEnc: null,
+      accessTokenEnc: null,
+      accessTokenExpiresAt: null,
+      webhookIdEnc: null,
+      updatedAt: now,
+    });
+  }
+
+  const id = ulid();
+  const webhook = await registerWebhook(input.environment, token.accessToken, id, PAYPAL_PAYMENT_EVENTS, 'Payments are read from PayPal every hour instead.');
+  await db(TABLES.PaypalConnection).insert({
+    id,
+    tenantId,
+    environment: input.environment,
+    purpose: 'checkout',
+    clientId: input.clientId,
+    clientSecretEnc: encryptSecret(input.clientSecret),
+    accessTokenEnc: encryptSecret(token.accessToken),
+    accessTokenExpiresAt: new Date(Date.now() + token.expiresIn * 1000),
+    appId: token.appId,
+    payoutsScope: hasPayoutsScope(token.scope),
+    webhookIdEnc: webhook.webhookIdEnc,
+    webhookError: webhook.webhookError,
+    active: false,
+    paymentsSince: sameApp && existing?.paymentsSince ? existing.paymentsSince : now,
+    connectedByAdminId: input.adminId,
+    connectedAt: now,
+    verifiedAt: now,
+    updatedAt: now,
+  });
+  if (token.appId) {
+    const sameAppRows = (await db(TABLES.PaypalConnection)
+      .where({ tenantId, environment: input.environment, appId: token.appId, purpose: 'checkout' })
+      .whereNot({ id })
+      .select('id')) as Array<{ id: string }>;
+    await moveSubscriptions(db, tenantId, sameAppRows.map((r) => r.id), id);
+  }
+  return toPaymentView((await connectionById(db, tenantId, id))!);
+}
+
+/** Disconnect an environment's checkout app: its webhook is removed (best
+ *  effort) and its secret, token and webhook id wiped. What it recorded
+ *  stays. */
+export async function disconnectPaypalCheckout(db: Knex, tenantId: string, environment: PaypalEnvironment): Promise<void> {
+  const conn = await liveCheckoutConnection(db, tenantId, environment);
+  if (!conn) throw new PaypalConnectError('not_connected', `No ${environment} checkout app is connected`);
+  await removeWebhook(db, conn);
+  await db(TABLES.PaypalConnection).where({ id: conn.id, tenantId }).update({
+    disconnectedAt: new Date(),
+    disconnectReason: 'admin',
     clientSecretEnc: null,
     accessTokenEnc: null,
     accessTokenExpiresAt: null,

@@ -43,6 +43,23 @@ export const PAYPAL_WEBHOOK_EVENTS = [
   'PAYMENT.PAYOUTS-ITEM.UNCLAIMED',
 ] as const;
 
+/** The payment events a connection tracking payments subscribes to
+ *  (docs/paypal-payments.md, paypal-payments.ts): checkout captures,
+ *  subscription payments (the v1 sale events PayPal still sends for
+ *  them), refunds, reversals (PayPal taking a payment back: a lost
+ *  dispute or chargeback), new subscriptions and disputes. */
+export const PAYPAL_PAYMENT_EVENTS = [
+  'PAYMENT.CAPTURE.COMPLETED',
+  'PAYMENT.CAPTURE.REFUNDED',
+  'PAYMENT.CAPTURE.REVERSED',
+  'PAYMENT.SALE.COMPLETED',
+  'PAYMENT.SALE.REFUNDED',
+  'PAYMENT.SALE.REVERSED',
+  'BILLING.SUBSCRIPTION.CREATED',
+  'BILLING.SUBSCRIPTION.ACTIVATED',
+  'CUSTOMER.DISPUTE.CREATED',
+] as const;
+
 /** Wall-clock limit on one call. A POST that times out may still have
  *  landed: the caller treats it as an unknown outcome, never a failure. */
 const TIMEOUT_MS = 30_000;
@@ -99,7 +116,7 @@ export class PaypalApiError extends Error {
 }
 
 interface CallOptions {
-  method: 'GET' | 'POST' | 'DELETE';
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
   path: string;
   auth: { bearer: string } | { basic: { clientId: string; clientSecret: string } };
   /** A JSON body, already serialised (so a retry sends identical bytes). */
@@ -314,15 +331,31 @@ export function duplicateBatchLink(err: PaypalApiError): string | null {
 // Webhooks
 // ---------------------------------------------------------------------------
 
-export async function createWebhook(env: PaypalEnvironment, token: string, url: string): Promise<string> {
+export async function createWebhook(
+  env: PaypalEnvironment,
+  token: string,
+  url: string,
+  eventTypes: readonly string[] = PAYPAL_WEBHOOK_EVENTS,
+): Promise<string> {
   const { data } = await call<{ id?: string }>(env, {
     method: 'POST',
     path: '/v1/notifications/webhooks',
     auth: { bearer: token },
-    json: JSON.stringify({ url, event_types: PAYPAL_WEBHOOK_EVENTS.map((name) => ({ name })) }),
+    json: JSON.stringify({ url, event_types: eventTypes.map((name) => ({ name })) }),
   });
   if (!data?.id) throw new PaypalApiError('http', 201, null, 'PayPal created the webhook but returned no id', null, null);
   return data.id;
+}
+
+/** Replace the events a webhook receives (PATCH, a JSON Patch `replace`
+ *  of /event_types). */
+export async function setWebhookEventTypes(env: PaypalEnvironment, token: string, webhookId: string, eventTypes: readonly string[]): Promise<void> {
+  await call(env, {
+    method: 'PATCH',
+    path: `/v1/notifications/webhooks/${encodeURIComponent(webhookId)}`,
+    auth: { bearer: token },
+    json: JSON.stringify([{ op: 'replace', path: '/event_types', value: eventTypes.map((name) => ({ name })) }]),
+  });
 }
 
 export async function listWebhooks(env: PaypalEnvironment, token: string): Promise<Array<{ id: string; url: string }>> {
@@ -379,4 +412,144 @@ export async function verifyWebhookSignature(
     json: body,
   });
   return data?.verification_status === 'SUCCESS';
+}
+
+// ---------------------------------------------------------------------------
+// Payments (docs/paypal-payments.md): what the brand's checkout took
+// ---------------------------------------------------------------------------
+
+/** PayPal's timestamps, to the second (Transaction Search refuses
+ *  fractions). */
+export function paypalTime(d: Date): string {
+  return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+/** A webhook event as PayPal sends it, and as the events list returns it. */
+export interface PaypalWebhookEvent {
+  id?: unknown;
+  event_type?: unknown;
+  create_time?: unknown;
+  resource?: Record<string, unknown>;
+}
+
+/** One page of the webhook events PayPal generated for this app
+ *  (GET /v1/notifications/webhooks-events). `next` is the query of
+ *  PayPal's next-page link, sent again to the same path on the same fixed
+ *  host: nothing here follows a URL from a response. */
+export async function listWebhookEvents(
+  env: PaypalEnvironment,
+  token: string,
+  page: { start: Date; end: Date } | { next: string },
+): Promise<{ events: PaypalWebhookEvent[]; next: string | null }> {
+  const query =
+    'next' in page
+      ? page.next
+      : new URLSearchParams({ page_size: '300', start_time: paypalTime(page.start), end_time: paypalTime(page.end) }).toString();
+  const { data } = await call<{ events?: unknown; links?: unknown }>(env, {
+    method: 'GET',
+    path: `/v1/notifications/webhooks-events?${query}`,
+    auth: { bearer: token },
+  });
+  const events = Array.isArray(data?.events) ? (data.events as PaypalWebhookEvent[]) : [];
+  return { events, next: nextQuery(data?.links, '/v1/notifications/webhooks-events') };
+}
+
+function nextQuery(links: unknown, path: string): string | null {
+  if (!Array.isArray(links)) return null;
+  for (const l of links) {
+    const { rel, href } = (l ?? {}) as { rel?: unknown; href?: unknown };
+    if (rel !== 'next' || typeof href !== 'string') continue;
+    try {
+      const u = new URL(href);
+      if (u.pathname === path && u.search.length > 1) return u.search.slice(1);
+    } catch {
+      // Not a URL: no next page.
+    }
+  }
+  return null;
+}
+
+/** Transaction Search's `transaction_info`: the fields the catch-up reads. */
+export interface PaypalTransactionInfo {
+  transaction_id?: string;
+  paypal_reference_id?: string;
+  /** ODR (order), TXN (another transaction), SUB (subscription), PAP. */
+  paypal_reference_id_type?: string;
+  transaction_event_code?: string;
+  transaction_initiation_date?: string;
+  transaction_amount?: { currency_code?: string; value?: string };
+  /** S (success), P (pending), V (reversed), D (denied), F (refunded). */
+  transaction_status?: string;
+  custom_field?: string;
+}
+
+/** One page of Transaction Search (GET /v1/reporting/transactions): at
+ *  most 31 days, up to three hours behind, 500 to a page. A 403 means
+ *  PayPal hasn't given this app Transaction Search. */
+export async function searchTransactions(
+  env: PaypalEnvironment,
+  token: string,
+  window: { start: Date; end: Date },
+  page: number,
+): Promise<{ transactions: PaypalTransactionInfo[]; totalPages: number }> {
+  const query = new URLSearchParams({
+    start_date: paypalTime(window.start),
+    end_date: paypalTime(window.end),
+    fields: 'transaction_info',
+    page_size: '500',
+    page: String(page),
+  });
+  const { data } = await call<{ transaction_details?: Array<{ transaction_info?: PaypalTransactionInfo }>; total_pages?: number }>(env, {
+    method: 'GET',
+    path: `/v1/reporting/transactions?${query.toString()}`,
+    auth: { bearer: token },
+  });
+  const transactions = (data?.transaction_details ?? []).flatMap((d) => (d?.transaction_info ? [d.transaction_info] : []));
+  return { transactions, totalPages: typeof data?.total_pages === 'number' ? data.total_pages : 1 };
+}
+
+export interface PaypalSubscriptionResource {
+  id: string;
+  plan_id?: string;
+  status?: string;
+  custom_id?: string;
+  create_time?: string;
+}
+
+/** GET /v1/billing/subscriptions/{id}; null when this app has no such
+ *  subscription. */
+export async function getSubscription(env: PaypalEnvironment, token: string, subscriptionId: string): Promise<PaypalSubscriptionResource | null> {
+  try {
+    const { data } = await call<PaypalSubscriptionResource>(env, {
+      method: 'GET',
+      path: `/v1/billing/subscriptions/${encodeURIComponent(subscriptionId)}`,
+      auth: { bearer: token },
+    });
+    return data && typeof data.id === 'string' ? data : null;
+  } catch (err) {
+    if (err instanceof PaypalApiError && err.kind === 'http' && err.status === 404) return null;
+    throw err;
+  }
+}
+
+/** The ids of a subscription's transactions between two times
+ *  (GET /v1/billing/subscriptions/{id}/transactions). */
+export async function listSubscriptionTransactionIds(
+  env: PaypalEnvironment,
+  token: string,
+  subscriptionId: string,
+  window: { start: Date; end: Date },
+): Promise<string[]> {
+  const query = new URLSearchParams({ start_time: paypalTime(window.start), end_time: paypalTime(window.end) });
+  try {
+    const { data } = await call<{ transactions?: Array<{ id?: unknown }> }>(env, {
+      method: 'GET',
+      path: `/v1/billing/subscriptions/${encodeURIComponent(subscriptionId)}/transactions?${query.toString()}`,
+      auth: { bearer: token },
+    });
+    return (data?.transactions ?? []).flatMap((t) => (typeof t?.id === 'string' ? [t.id] : []));
+  } catch (err) {
+    if (err instanceof PaypalApiError && err.kind === 'http' && err.status === 404) return [];
+    throw err;
+  }
 }

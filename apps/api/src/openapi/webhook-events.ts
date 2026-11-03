@@ -135,7 +135,7 @@ export const WEBHOOK_PAYLOADS = {
   'commission.reversed': lifecycleBase.extend({
     reason: z.enum(['manual', 'refund', 'chargeback']).openapi({
       description:
-        "`manual` = an admin reversed it; `refund` = a refund (`POST /attribution/refunds`, or Stripe's `charge.refunded` from the self-host Stripe webhook or, on OpenPartner Cloud, the OpenPartner Stripe App); `chargeback` = a chargeback reported to `POST /attribution/refunds`.",
+        "`manual` = an admin reversed it; `refund` = a refund (`POST /attribution/refunds`, or Stripe's `charge.refunded` from the self-host Stripe webhook or, on OpenPartner Cloud, the OpenPartner Stripe App, or a tracked PayPal app's refund); `chargeback` = a chargeback reported to `POST /attribution/refunds`, or a tracked PayPal app's payment PayPal reversed.",
     }),
     refundEventId: id.optional().openapi({ description: 'The refund or chargeback event behind a `refund` / `chargeback` reversal.' }),
     replacementCommissionId: id.optional().openapi({
@@ -234,7 +234,7 @@ const WEBHOOK_DESCRIPTIONS: Record<WebhookEventName, string> = {
   'commission.paid':
     'A commission was included in a payout. For a `manual` payout this fires when the payout is planned, before you have sent the money; `POST /payouts/{id}/confirm` records that you did.',
   'commission.reversed':
-    "A commission was reversed: by an admin, or by a refund or chargeback, reported to `POST /attribution/refunds` or from Stripe's `charge.refunded`. A Stripe dispute reverses nothing until you report the chargeback.",
+    "A commission was reversed: by an admin, or by a refund or chargeback, reported to `POST /attribution/refunds`, from Stripe's `charge.refunded`, or from a tracked PayPal app. A Stripe dispute reverses nothing until you report the chargeback; a PayPal one, until PayPal reverses the payment.",
   'bonus.awarded':
     'A bonus was awarded to a partner: a reward not tied to a sale, paid by an admin or integration (`POST /bonuses`), a performance bounty, or an OpenPartner Network bounty. Bonuses never fire `commission.*` events.',
   'bonus.approved':

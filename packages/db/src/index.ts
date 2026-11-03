@@ -160,6 +160,8 @@ export const TABLES = {
   TenantStripeConnection: 'TenantStripeConnection',
   PaypalConnection: 'PaypalConnection',
   PaypalPayoutBatch: 'PaypalPayoutBatch',
+  PaypalSubscription: 'PaypalSubscription',
+  PaymentEventLog: 'PaymentEventLog',
   StripeWebhookInbox: 'StripeWebhookInbox',
   StripeEventLog: 'StripeEventLog',
   PayoutReversal: 'PayoutReversal',

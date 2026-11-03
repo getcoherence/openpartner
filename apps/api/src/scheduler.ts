@@ -23,6 +23,10 @@
  *                   waiting to go out (or re-sends one whose answer never
  *                   came), and reads PayPal's status for batches it is
  *                   processing (paypal-payouts.ts).
+ *   - paypal-payments-catchup: hourly. Records the PayPal payments a
+ *                   webhook missed, for apps tracking payments
+ *                   (paypal-payments-catchup.ts). Every mode: a self-host
+ *                   PayPal can't post to has only this.
  *   - sanctions-screening: hourly. Screens partners with approved
  *                   commissions against the Consolidated Screening List
  *                   the first time they're payable, and again at most
@@ -205,6 +209,16 @@ const JOBS: ScheduledJob[] = [
     handler: async () => {
       const { runPaypalPayoutsJob } = await import('./paypal-payouts.js');
       return runPaypalPayoutsJob(db);
+    },
+  },
+  {
+    name: 'paypal-payments-catchup',
+    cronExpr: '50 * * * *',
+    description:
+      'For each PayPal app tracking payments, list the webhook events of the last 72 hours and Transaction Search of the last 4 days, and record the payments no webhook delivered (paypal-payments-catchup.ts; hourly at :50)',
+    handler: async () => {
+      const { runPaypalPaymentsCatchup } = await import('./paypal-payments-catchup.js');
+      return runPaypalPaymentsCatchup();
     },
   },
   {
@@ -611,8 +625,11 @@ export const TENANT_PURGE_ORDER = [
   TABLES.HostedBillingState,
   TABLES.StripeEventLog,
   TABLES.TenantStripeConnection,
-  // Before PaypalConnection (PaypalPayoutBatch.connectionId).
+  TABLES.PaymentEventLog,
+  // Before PaypalConnection (PaypalPayoutBatch.connectionId,
+  // PaypalSubscription.connectionId).
   TABLES.PaypalPayoutBatch,
+  TABLES.PaypalSubscription,
   TABLES.PaypalConnection,
   TABLES.PortalCustomDomain,
   // Before Payout (PayoutReversal.payoutId).

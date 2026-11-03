@@ -1158,6 +1158,30 @@ export const PaypalConnection = z
   })
   .openapi('PaypalConnection');
 
+export const PaypalPaymentApp = z
+  .object({
+    id,
+    environment: PaypalEnvironment,
+    purpose: z.enum(['payouts', 'checkout']).openapi({
+      description: '`payouts`: the app Pay with PayPal sends with. `checkout`: an app connected only to report the payments your checkout takes; it never sends.',
+    }),
+    clientIdPreview: z.string().openapi({ description: 'The client id’s first 6 and last 4 characters. The secret is never returned.' }),
+    tracking: z.boolean().openapi({ description: 'Payments this app takes are recorded as conversions when their `custom_id` carries a partner click.' }),
+    trackingSince: tsNullable.openapi({ description: 'When tracking was turned on. Payments from before it are never recorded.' }),
+    webhook: z.object({
+      registered: z.boolean().openapi({ description: 'OpenPartner has a webhook on the app, so payments arrive as PayPal sends them. Otherwise they are read every hour.' }),
+      error: z.string().nullable(),
+    }),
+    lastEventAt: tsNullable.openapi({ description: 'The last payment webhook PayPal delivered from this app.' }),
+    transactionSearch: z.enum(['ok', 'unavailable']).nullable().openapi({
+      description:
+        'Whether PayPal lets the app search its transactions, which the hourly catch-up also reads. `unavailable`: turn Transaction Search on for the app in the PayPal developer dashboard. Null until the catch-up has tried.',
+    }),
+    lastError: z.string().nullable(),
+    lastErrorAt: tsNullable,
+  })
+  .openapi('PaypalPaymentApp');
+
 export const PaypalBatch = z
   .object({
     batchId: id.openapi({ description: 'Also the `sender_batch_id` PayPal shows, and each payout’s `exportId`.' }),

@@ -5,6 +5,7 @@ import { api, currentTenantSlug } from '../../api.js';
 import { alpha, theme } from '../../theme.js';
 import { useBrand } from '../../lib/useBrand.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Textarea } from '../../ui.js';
+import { PaypalPaymentsCard } from './PaypalPaymentsCard.js';
 
 /**
  * Integration API key surface. Mints scoped keys covering the union
@@ -93,6 +94,8 @@ export function AdminIntegrations() {
     >
       <UnmatchedEventTypes />
       <StripeAppCard />
+      <PaypalPaymentsCard />
+      <div style={{ height: 18 }} />
       <WhyCard />
       <div style={{ height: 18 }} />
       <KeysPanel />

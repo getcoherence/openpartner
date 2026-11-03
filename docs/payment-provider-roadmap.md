@@ -1,6 +1,8 @@
 # Roadmap: Stripe-quality conversion data from other payment providers
 
-Status: draft for Keith, Oct 24 2026. Nothing here is built yet.
+Status: draft for Keith, Oct 24 2026. Phase 1 (PayPal through the brand's
+own app) is built, Nov 2 2026: [paypal-payments.md](paypal-payments.md), with
+what still needs a live sandbox check. The rest isn't built yet.
 
 Stripe is the one provider where OpenPartner sees a purchase end to end
 without the brand writing code. This document says what that rests on, which
@@ -108,8 +110,9 @@ a webhook on it** (`paypal-connection.ts`).
 - **Refunds and disputes**: `PAYMENT.CAPTURE.REFUNDED` (partial amounts) and
   `PAYMENT.SALE.REFUNDED` map to refunds, which reverse commissions;
   `CUSTOMER.DISPUTE.CREATED` (its disputed transactions carry the `custom`
-  value) is recorded like a Stripe dispute, without reversing anything until
-  a chargeback is reported.
+  value) is recorded like a Stripe dispute, without reversing anything; a
+  lost one arrives as `PAYMENT.CAPTURE.REVERSED` / `PAYMENT.SALE.REVERSED`,
+  recorded as a chargeback (built Nov 2 2026).
 - **The gotcha: webhooks are per REST app.** Payments made through one app
   never fire webhooks on another. So:
   - If the brand's checkout runs on the app it connected for payouts, we add the

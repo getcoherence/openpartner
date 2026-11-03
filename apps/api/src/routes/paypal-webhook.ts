@@ -1,8 +1,10 @@
 /**
- * POST /webhooks/paypal/:connectionId — PayPal Payouts events from a
- * brand's own PayPal app, delivered to the webhook OpenPartner registered
- * on it when the brand connected (paypal-connection.ts). The URL names
- * the connection; the tenant comes only from that row.
+ * POST /webhooks/paypal/:connectionId — events from a brand's own PayPal
+ * app, delivered to the webhook OpenPartner registered on it when the brand
+ * connected (paypal-connection.ts): Payouts events for Pay with PayPal, and
+ * payment events for an app that tracks payments
+ * (docs/paypal-payments.md). The URL names the connection; the tenant
+ * comes only from that row.
  *
  *   1. The signature is checked by PayPal itself
  *      (verify-webhook-signature, with the brand's token and the webhook
@@ -10,25 +12,36 @@
  *      any other webhook, say one an attacker pointed at this URL from
  *      their own PayPal app, fails, because the webhook id is part of
  *      what PayPal signed. The cert URL is never fetched here.
- *   2. Nothing acts on the payload. A verified event only names the
- *      batch, which is then read back from PayPal (syncBatch) and applied
- *      to that batch's own payouts in that tenant.
+ *   2. A Payouts event only names the batch, which is then read back from
+ *      PayPal (syncBatch) and applied to that batch's own payouts in that
+ *      tenant: nothing acts on its payload.
+ *   3. A payment event is recorded from its payload (paypal-payments.ts),
+ *      which the verification proves is PayPal's, in the connection's
+ *      tenant, and only while that connection tracks payments.
  *
  * Mounted before express.json() (it needs the exact bytes) and before
  * tenantMiddleware (PayPal posts to one URL with no tenant in it). Answers:
  *   - 200 for anything verified, including events it ignores, and for a
  *     connection that is gone, so PayPal stops redelivering;
  *   - 400 for a delivery that fails verification or isn't JSON;
- *   - 503 when PayPal couldn't be asked to verify (PayPal redelivers).
+ *   - 503 when PayPal couldn't be asked to verify (PayPal redelivers);
+ *   - 500 when a payment event couldn't be recorded (a database or PayPal
+ *     read failed): PayPal redelivers, and recording is idempotent.
  */
 
-import { Router, raw } from 'express';
+import { Router, raw, type Response } from 'express';
 import { TABLES, type PaypalConnectionRow, type PaypalPayoutBatchRow } from '@openpartner/db';
 import { db as privilegedDb } from '../db.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
-import { verifyWebhookSignature, type PaypalSignatureHeaders } from '../paypal-api.js';
+import { PAYPAL_PAYMENT_EVENTS, verifyWebhookSignature, type PaypalSignatureHeaders, type PaypalWebhookEvent } from '../paypal-api.js';
 import { PaypalConnectError, openWebhookId, paypalAccessToken } from '../paypal-connection.js';
+import { factFromWebhookEvent, processPaypalFact, type PaypalFactResult } from '../paypal-payments.js';
 import { syncPaypalBatchNow } from '../paypal-payouts.js';
+import { announceRefund } from '../refunds.js';
+import { tenantAcceptsStripeEvents } from '../stripe-app.js';
+import { withTenantTransaction } from '../tenancy.js';
+
+const PAYMENT_EVENTS: ReadonlySet<string> = new Set(PAYPAL_PAYMENT_EVENTS);
 
 export const paypalWebhookRouter = Router();
 
@@ -95,6 +108,8 @@ paypalWebhookRouter.post(
     }
     if (!genuine) return res.status(400).json({ error: 'invalid_signature' });
 
+    if (PAYMENT_EVENTS.has(event.event_type)) return paymentEvent(res, conn, event, event.event_type);
+    if (conn.purpose !== 'payouts') return res.status(200).json({ received: true, skipped: 'event_type' });
     if (!event.event_type.startsWith('PAYMENT.PAYOUTSBATCH.') && !event.event_type.startsWith('PAYMENT.PAYOUTS-ITEM.')) {
       return res.status(200).json({ received: true, skipped: 'event_type' });
     }
@@ -127,3 +142,32 @@ paypalWebhookRouter.post(
     res.status(200).json({ received: true });
   },
 );
+
+/** A verified payment event: recorded in the connection's tenant. */
+async function paymentEvent(res: Response, conn: PaypalConnectionRow, event: PaypalWebhookEvent, type: string) {
+  if (!conn.paymentsSince) return res.status(200).json({ received: true, skipped: 'payments_not_tracked' });
+  if (!(await tenantAcceptsStripeEvents(conn.tenantId))) return res.status(200).json({ received: true, skipped: 'tenant_inactive' });
+  const fact = factFromWebhookEvent(event);
+  // A pending capture, a refund not finished yet: its completion is
+  // another event.
+  if (!fact) return res.status(200).json({ received: true, skipped: 'not_final' });
+
+  // Best effort, for the Integrations card: never fails the delivery.
+  await privilegedDb(TABLES.PaypalConnection)
+    .where({ id: conn.id })
+    .update({ lastPaymentEventAt: new Date() })
+    .catch(() => undefined);
+
+  let result: PaypalFactResult;
+  try {
+    result = await withTenantTransaction(conn.tenantId, (trx) =>
+      processPaypalFact(trx, { conn, via: 'webhook', type, token: () => paypalAccessToken(privilegedDb, conn) }, fact),
+    );
+  } catch (err) {
+    // A constant format: the event id comes from the delivery.
+    console.error('[paypal] payment event %s for connection %s failed', String(event.id ?? ''), conn.id, err instanceof Error ? err.message : err);
+    return res.status(500).json({ error: 'not_recorded' });
+  }
+  for (const r of result.refunds) void announceRefund(conn.tenantId, r.announce, { kind: 'refund', refundEventId: r.refundEventId });
+  return res.status(200).json({ received: true, outcome: result.outcome });
+}

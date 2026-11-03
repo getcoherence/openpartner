@@ -43,6 +43,9 @@
  * action carries no network fee. A Stripe dispute (`dispute_created`) alone
  * changes nothing: a dispute can be won.
  *
+ * A payment from a PayPal sandbox app (metadata.paypalEnvironment
+ * 'sandbox', paypal-payments.ts) is test money and never a conversion here.
+ *
  * Commission status is NOT the refund signal. A paid commission stays
  * `paid` after a refund (it gets a refund_clawback adjustment), and one in
  * a payout in flight is left live until the refund is retried; the refund
@@ -336,6 +339,7 @@ export function conversionSql(o: ConversionOptions): { sql: string; bindings: Kn
           where a."eventId" = e.id
         ) cm on true
         where not (e.type = any(${p(CORRECTIVE_TYPES)}::text[]))
+          and coalesce(e.metadata->>'paypalEnvironment', '') <> 'sandbox'
           and e.ts <= ${p(o.until)}${o.since ? ` and e.ts > ${p(o.since)}` : ''}${tenant('e')}${
             o.attributedAfter ? ` and fa.first > ${p(o.attributedAfter)}` : ''
           }${o.attributedBy ? ` and fa.first <= ${p(o.attributedBy)}` : ''}

@@ -54,6 +54,8 @@ type IssueKind =
   | 'conversion_unknown_click'
   | 'stripe_unknown_click'
   | 'stripe_foreign_reference'
+  | 'paypal_unknown_click'
+  | 'paypal_foreign_reference'
   | 'coupon_unknown_code'
   | 'reward_code_refused';
 
@@ -69,6 +71,15 @@ export interface TrackingHealthReport {
   coupons: { overrodeLink: number };
   codes: Array<{ partnerId: string; partnerName: string; customers: number; codeOnly: number }>;
   stripe: { recovered: number };
+  /** Null while no PayPal app has tracked payments; absent from an API
+   *  before PayPal payments. */
+  paypal?: {
+    payments: number;
+    withClick: number;
+    withoutReference: number;
+    unknownReference: number;
+    recovered: number;
+  } | null;
   issues: Array<{
     kind: IssueKind;
     count: number;
@@ -83,6 +94,7 @@ export interface TrackingHealthReport {
     lastLandingAt: string | null;
     lastStitchAt: string | null;
     lastStripeEventAt: string | null;
+    lastPaypalEventAt?: string | null;
     lastPostbackAt: string | null;
   };
 }
@@ -260,6 +272,14 @@ const ISSUES: Record<IssueKind, { label: string; fix: string }> = {
   stripe_foreign_reference: {
     label: 'Stripe checkout carried your own reference',
     fix: 'Your Checkout Sessions put your own id (an order or user id) in client_reference_id, so partner clicks cannot ride on it. Pass the referral there, or link customers with openpartner_user_id metadata.',
+  },
+  paypal_unknown_click: {
+    label: 'PayPal payment carried an unknown click',
+    fix: "custom_id looked like a click id but isn't one of this program's: a stale referral, or another program's script on the page.",
+  },
+  paypal_foreign_reference: {
+    label: 'PayPal payment carried your own reference',
+    fix: 'custom_id held your own id and no click. Put openpartner.getReferral() in custom_id, after your own value and a | if you need both.',
   },
   coupon_unknown_code: {
     label: 'Coupon redemption with an unknown code',
@@ -528,6 +548,13 @@ export function AdminTrackingHealth() {
               value={data.stripe.recovered.toLocaleString()}
               hint="Recorded by the Stripe catch-up (hosted Stripe connections) after the webhook missed them. Above zero means webhook deliveries are failing."
             />
+            {data.paypal && (
+              <Stat
+                label="PayPal payments with a partner click"
+                value={`${data.paypal.withClick.toLocaleString()} of ${data.paypal.payments.toLocaleString()}`}
+                hint={`${data.paypal.withoutReference.toLocaleString()} came with no click in custom_id, ${data.paypal.unknownReference.toLocaleString()} with one naming no click. ${data.paypal.recovered.toLocaleString()} recorded by the hourly catch-up after the webhook missed them.`}
+              />
+            )}
           </div>
 
           {data.codes.length > 0 && (
@@ -568,7 +595,7 @@ export function AdminTrackingHealth() {
           <Card>
             <div
               className="op-grid-collapse"
-              style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(5, minmax(0, 1fr))', gap: 12 }}
+              style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : `repeat(${data.paypal ? 6 : 5}, minmax(0, 1fr))`, gap: 12 }}
             >
               {(
                 [
@@ -576,6 +603,7 @@ export function AdminTrackingHealth() {
                   ['Landing report', data.signals.lastLandingAt],
                   ['Stitch', data.signals.lastStitchAt],
                   ['Stripe event', data.signals.lastStripeEventAt],
+                  ...(data.paypal ? ([['PayPal payment', data.signals.lastPaypalEventAt ?? null]] as const) : []),
                   ['Postback', data.signals.lastPostbackAt],
                 ] as const
               ).map(([label, at]) => (

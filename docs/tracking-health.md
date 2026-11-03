@@ -66,7 +66,7 @@ link, and follows that click as it travels:
 |---|---|
 | Link opened | the router sent the click to the program's destination, with its click id where a partner's click would carry it (`?cref=`, or your `{click_id}`), and set the same cookie. |
 | Reached the script | the OpenPartner script on the page reported the click landing (`POST /attribution/landing`). Also done when the click was linked without a landing report: your server reads the click another way. *Not needed* when the program sends partners straight to a Stripe-hosted checkout, where no page of yours runs the script. |
-| Linked to a customer | the click was linked to a customer, any of the ways a partner's click is: your site's `identify()` (or `POST /attribution/identify`) at signup or login, a Stripe checkout carrying it in `client_reference_id`, or a conversion call (`POST /attribution/conversions`, `GET /postback`) sending it. Sign up, log in or check out in the tab the link opened; a private window helps if you're already signed in there. |
+| Linked to a customer | the click was linked to a customer, any of the ways a partner's click is: your site's `identify()` (or `POST /attribution/identify`) at signup or login, a Stripe checkout carrying it in `client_reference_id`, a PayPal payment carrying it in `custom_id` (a sandbox app's too, [paypal-payments.md](paypal-payments.md#sandbox)), or a conversion call (`POST /attribution/conversions`, `GET /postback`) sending it. Sign up, log in or check out in the tab the link opened; a private window helps if you're already signed in there. |
 
 The first step that didn't happen says what to fix, in the same words as
 the checks above: after a minute without a landing report, and three
@@ -380,6 +380,8 @@ can recognise your own typo.
 | Conversion or postback named an unknown click | The sender passes something other than the `{click_id}` it received. |
 | Stripe checkout carried an unknown click | `client_reference_id` looks like a click id but isn't one of this program's: a stale link, or another program's script. |
 | Stripe checkout carried your own reference | Your Checkout Sessions put your own order or user id in `client_reference_id`, so partner clicks can't ride on it. Pass the referral there, or link customers with `openpartner_user_id` metadata. |
+| PayPal payment carried an unknown click | A PayPal order's or subscription's `custom_id` looks like a click id but isn't one of this program's ([PayPal payments](paypal-payments.md)). |
+| PayPal payment carried your own reference | `custom_id` held your own id and no click. Put `openpartner.getReferral()` there, after your own value and a `|` if you need both. |
 | Coupon redemption with an unknown code | `POST /coupons/redeem` got a code no partner holds. |
 | Stripe refused a partner code's discount | Your Stripe wouldn't create the promotion code for a partner's code, so customers who enter it pay full price. Stripe's answer is shown under the code, and **Partner codes have their discount** above counts the codes still without one. OpenPartner Cloud retries every hour, so this can count many times a day. |
 
@@ -401,6 +403,14 @@ an export (see [data portability](data-portability.md)).
 - **Stripe events recovered**: Stripe events the catch-up (every six hours,
   hosted Stripe connections) recorded after the webhook missed them. Any
   number above zero means webhook deliveries are failing.
+- **PayPal payments with a partner click** (once a PayPal app records
+  payments, [paypal-payments.md](paypal-payments.md)): the window's PayPal
+  payments, captures and subscription payments, and how many carried a
+  partner click in `custom_id`. The hint splits the rest: no `custom_id` at
+  all (organic buyers, or a checkout that doesn't pass the click), and one
+  naming no click, plus what the hourly catch-up recorded after the webhook
+  missed it. Sandbox apps' payments aren't counted. **Last received** adds
+  the last PayPal payment.
 
 ## Partner codes
 

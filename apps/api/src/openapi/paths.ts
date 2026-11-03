@@ -1384,6 +1384,65 @@ OpenPartner also registers a webhook on the app for the Payouts events, when the
     errors: { 404: ['not_connected'], 409: ['open_batches'] },
   });
 
+  // ------------------------------------------ PayPal payments as conversions
+  const paymentAppResponse = z.object({ app: S.PaypalPaymentApp });
+
+  r.operation({
+    method: 'get',
+    path: '/config/paypal-payments',
+    tag: 'Attribution',
+    operationId: 'listPaypalPaymentApps',
+    summary: 'Your PayPal apps and which report payments',
+    description:
+      'Every connected PayPal app, Pay with PayPal’s and checkout apps, and whether each reports the payments it takes as conversions. See docs/paypal-payments.md.',
+    access: { kind: 'admin' },
+    responses: { 200: { description: 'Apps.', schema: z.object({ apps: z.array(S.PaypalPaymentApp) }) } },
+  });
+
+  r.operation({
+    method: 'post',
+    path: '/config/paypal/:environment/payments',
+    tag: 'Attribution',
+    operationId: 'setPaypalPaymentTracking',
+    summary: 'Record the payments Pay with PayPal’s app takes',
+    description: `With \`tracking: true\`, a payment your checkout takes through this app is recorded as a conversion when its order's \`purchase_units[].custom_id\` (or a subscription's \`custom_id\`) carries the visitor's partner click (\`openpartner.getReferral()\`): an \`invoice_paid\` Event for each capture and subscription payment, \`subscription_created\` when a subscription is approved, refunds through the same path as \`POST /attribution/refunds\`, a payment PayPal reverses (a lost dispute or chargeback) as a \`chargeback\`, and disputes recorded without reversing anything. OpenPartner adds the payment events to the app's webhook, and reads the app's recent payments every hour for any the webhook missed.
+
+Payments from before tracking was turned on are never recorded. A sandbox app's payments are recorded the same way (their Events say \`paypalEnvironment: sandbox\`) and never billed. A payment carrying a test click (\`POST /admin/tracking-health/test-click\`) links the test instead.`,
+    access: { kind: 'admin' },
+    params: paypalEnvironment,
+    body: paypal.paypalPaymentTrackingSchema,
+    responses: { 200: { description: 'The app.', schema: paymentAppResponse } },
+    errors: { 404: ['not_connected'], 409: ['already_tracked'], 422: ['credentials_refused', 'credentials_unreadable'], 502: ['paypal_unreachable'] },
+  });
+
+  r.operation({
+    method: 'post',
+    path: '/config/paypal-payments',
+    tag: 'Attribution',
+    operationId: 'connectPaypalCheckoutApp',
+    summary: 'Connect the PayPal app your checkout runs on',
+    description: `For a checkout that runs on another PayPal app than the one Pay with PayPal sends with: saves that app's client id and secret for one environment, after a token call proves them, sealed and never returned, logged or exported like Pay with PayPal's. The app only reports payments (as \`POST /config/paypal/{environment}/payments\` describes) and never sends any. PayPal sends a webhook only to the app a payment went through, which is why the checkout's own app is needed.
+
+Pay with PayPal's own app is refused (\`409 same_app_as_payouts\`): turn tracking on for it instead. Connecting again replaces that environment's checkout app.`,
+    access: { kind: 'admin' },
+    body: paypal.connectPaypalSchema,
+    responses: { 201: { description: 'Connected and tracking.', schema: paymentAppResponse } },
+    errors: { 409: ['same_app_as_payouts'], 422: ['credentials_refused'], 502: ['paypal_unreachable'] },
+  });
+
+  r.operation({
+    method: 'delete',
+    path: '/config/paypal-payments/:environment',
+    tag: 'Attribution',
+    operationId: 'disconnectPaypalCheckoutApp',
+    summary: 'Disconnect a checkout app',
+    description: 'Removes OpenPartner’s webhook from the app and wipes its saved secret and token. Conversions it recorded stay.',
+    access: { kind: 'admin' },
+    params: paypalEnvironment,
+    responses: { 204: { description: 'Disconnected.' } },
+    errors: { 404: ['not_connected'] },
+  });
+
   r.operation({
     method: 'post',
     path: '/payouts/runs/:runId/paypal-batches',
