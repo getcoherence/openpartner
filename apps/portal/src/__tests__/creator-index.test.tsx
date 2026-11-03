@@ -670,7 +670,7 @@ describe('ops console: creator index settings', () => {
       if (url.endsWith('/creators/b/contact') && method === 'PUT') {
         if (refuse) {
           refuse = false;
-          return { status: 422, body: { error: 'not_on_page' } };
+          return { status: 422, body: { error: 'refuses_unsolicited' } };
         }
         return { status: 200, body: { creator: {} } };
       }
@@ -695,9 +695,9 @@ describe('ops console: creator index settings', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Add address' }));
     fireEvent.change(screen.getByLabelText('Email address'), { target: { value: 'hello@jorivera.co' } });
-    fireEvent.change(screen.getByLabelText('Page it’s published on'), { target: { value: 'https://jorivera.substack.com/about' } });
+    fireEvent.change(screen.getByLabelText('Page you found it on'), { target: { value: 'https://jorivera.substack.com/about' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(await screen.findByText('That address isn’t on that page. Give the page that shows it.')).toBeTruthy();
+    expect(await screen.findByText('That page asks not to be sent unsolicited email, so the address can’t be used.')).toBeTruthy();
     const listReads = calls.filter((c) => c.url.includes('/creator-index/creators?') || c.url.endsWith('/creator-index/creators')).length;
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(screen.queryByLabelText('Email address')).toBeNull());
