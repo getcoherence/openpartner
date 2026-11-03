@@ -23,15 +23,14 @@ export interface PaypalPaymentApp {
 
 const DOCS_URL = 'https://github.com/getcoherence/openpartner/blob/main/docs/paypal-payments.md';
 
-const CLIENT_SNIPPET = `paypal.Buttons({
-  createOrder: (data, actions) =>
-    actions.order.create({
-      purchase_units: [{
-        amount: { currency_code: 'USD', value: '49.00' },
-        custom_id: openpartner.getReferral() ?? undefined,
-      }],
-    }),
-  onApprove: (data, actions) => actions.order.capture(),
+const CLIENT_SNIPPET = `// The page: your server creates and captures the order.
+const post = (path, body) =>
+  fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) })
+    .then((r) => r.json());
+
+paypal.Buttons({
+  createOrder: () => post('/api/orders', { referral: openpartner.getReferral() }).then((order) => order.id),
+  onApprove: (data) => post(\`/api/orders/\${data.orderID}/capture\`),
 }).render('#paypal-button');
 
 // Subscriptions
@@ -43,19 +42,28 @@ paypal.Buttons({
     }),
 }).render('#paypal-subscribe');`;
 
-const SERVER_SNIPPET = `// Your server creates the order. The page sends openpartner.getReferral(),
-// or read the op_ref cookie the script sets.
-const referral = req.body.referral ?? req.cookies.op_ref;
-await fetch('https://api-m.paypal.com/v2/checkout/orders', {
-  method: 'POST',
-  headers: { Authorization: \`Bearer \${accessToken}\`, 'Content-Type': 'application/json' },
-  body: JSON.stringify({
+const SERVER_SNIPPET = `// Your server. The referral comes from the page, or the op_ref cookie the script sets.
+const paypal = (path, body) =>
+  fetch(\`https://api-m.paypal.com\${path}\`, {
+    method: 'POST',
+    headers: { Authorization: \`Bearer \${accessToken}\`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then((r) => r.json());
+
+app.post('/api/orders', async (req, res) => {
+  const referral = req.body.referral ?? req.cookies.op_ref;
+  const order = await paypal('/v2/checkout/orders', {
     intent: 'CAPTURE',
     purchase_units: [{
       amount: { currency_code: 'USD', value: '49.00' },
       custom_id: referral || undefined,
     }],
-  }),
+  });
+  res.json({ id: order.id });
+});
+
+app.post('/api/orders/:id/capture', async (req, res) => {
+  res.json(await paypal(\`/v2/checkout/orders/\${encodeURIComponent(req.params.id)}/capture\`, {}));
 });`;
 
 const preBlock = {

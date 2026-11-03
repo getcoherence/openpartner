@@ -69,7 +69,12 @@ describe('the PayPal payments card', () => {
     fireEvent.click(screen.getByText('Checkout code'));
     expect(text()).toContain('custom_id: openpartner.getReferral() ?? undefined');
     expect(text()).toContain("plan_id: 'P-YOUR-PLAN'");
-    expect(text()).toContain('https://api-m.paypal.com/v2/checkout/orders');
+    // Orders are created and captured on the brand's server: PayPal refused
+    // a page-side capture of a PayPal-account payment in our sandbox check.
+    expect(text()).toContain("post('/api/orders', { referral: openpartner.getReferral() })");
+    expect(text()).toContain('/v2/checkout/orders/${encodeURIComponent(req.params.id)}/capture');
+    expect(text()).not.toContain('actions.order.capture');
+    expect(text()).not.toContain('actions.order.create');
     expect(screen.getByRole('button', { name: 'Stop recording' })).toBeTruthy();
   });
 
