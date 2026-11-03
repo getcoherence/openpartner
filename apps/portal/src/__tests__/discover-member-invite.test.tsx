@@ -140,11 +140,27 @@ describe('inviting an OpenPartner creator', () => {
     expect(button('Invite')?.disabled).toBe(false);
   });
 
+  it('narrows both lists to who you invited with Invited by you, and Reset all clears it', async () => {
+    wrap();
+    await screen.findByText('Member Mo');
+    const chip = screen.getByRole('button', { name: 'Invited by you' });
+    expect(chip.getAttribute('aria-pressed')).toBe('false');
+    fireEvent.click(chip);
+    expect(chip.getAttribute('aria-pressed')).toBe('true');
+    await waitFor(() => {
+      const urls = calls.map((c) => c.url);
+      expect(urls.some((u) => u.startsWith('/api/admin/network/discover/creators?') && new URLSearchParams(u.split('?')[1]).get('invited') === 'true')).toBe(true);
+      expect(urls.some((u) => u.startsWith('/api/admin/network/indexed-creators?') && new URLSearchParams(u.split('?')[1]).get('invited') === '1')).toBe(true);
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Reset all' }));
+    expect(chip.getAttribute('aria-pressed')).toBe('false');
+  });
+
   it('says nothing when they haven’t been invited', async () => {
     wrap();
     await screen.findByText('Member Mo');
     await waitFor(() => expect(calls.some((c) => c.url.includes('/admin/network/offerings'))).toBe(true));
-    expect(screen.queryByText(/^Invited|^Applied|^Invite to/)).toBeNull();
+    expect(screen.queryByText(/^(Invited to|Applied|Invite to)/)).toBeNull();
   });
 
   it('marks the offerings they’re already invited to and picks the one left', async () => {
