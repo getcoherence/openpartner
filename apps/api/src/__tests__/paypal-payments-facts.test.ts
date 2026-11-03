@@ -98,6 +98,52 @@ describe('webhook events', () => {
     expect(factKey(activated!)).toBe('subscription_activated:I-1');
     expect(factFromWebhookEvent({ event_type: 'PAYMENT.PAYOUTSBATCH.SUCCESS', resource: {} })).toBeNull();
   });
+
+  it('reads a resolved dispute: outcome, who was debited, the refunds PayPal made', () => {
+    // The sandbox's resource for a claim the brand accepted (Nov 2026).
+    const resource = {
+      dispute_id: 'PP-R-FHY-10196127',
+      create_time: '2026-11-03T08:37:25.205Z',
+      update_time: '2026-11-03T09:22:33.539Z',
+      status: 'RESOLVED',
+      disputed_transactions: [{ seller_transaction_id: '0RR9227931213815V', gross_amount: { currency_code: 'USD', value: '10.00' } }],
+      dispute_outcome: { outcome_code: 'RESOLVED_BUYER_FAVOUR', outcome_reason: 'SELLER_ISSUED_REFUND', amount_refunded: { currency_code: 'USD', value: '10.00' } },
+      refund_details: {
+        allowed_refund_amount: { currency_code: 'USD', value: '10.00' },
+        transactions: [{ id: '3DJ589347X025604V', gross_amount: { currency_code: 'USD', value: '10.00' }, create_time: '2026-11-03T09:20:53.000Z' }],
+      },
+      fund_movements: [
+        { party: 'RECEIVER', amount: { currency_code: 'USD', value: '9.16' }, type: 'DEBIT', reason: 'HOLD_PLACED' },
+        { party: 'BUYER', amount: { currency_code: 'USD', value: '10.00' }, type: 'CREDIT', reason: 'DISPUTE_SETTLEMENT' },
+        { party: 'SELLER', amount: { currency_code: 'USD', value: '10.00' }, type: 'DEBIT', reason: 'DISPUTE_SETTLEMENT' },
+      ],
+      money_movements: [{ affected_party: 'SELLER', amount: { currency_code: 'USD', value: '0.84' }, type: 'DEBIT', reason: 'DISPUTE_SETTLEMENT_FEE' }],
+    };
+    const fact = factFromWebhookEvent({ event_type: 'CUSTOMER.DISPUTE.RESOLVED', create_time: '2026-11-03T09:23:00Z', resource });
+    expect(fact).toMatchObject({
+      kind: 'dispute_resolved',
+      id: 'PP-R-FHY-10196127',
+      buyerWon: true,
+      sellerDebited: true,
+      sellerRefunded: true,
+      transactionIds: ['0RR9227931213815V'],
+      refunds: [{ id: '3DJ589347X025604V', amount: { value: '10.00', currency: 'USD' }, at: new Date('2026-11-03T09:20:53.000Z') }],
+    });
+    // An appeal resolves it again: another fact.
+    expect(factKey(fact!)).toBe('dispute_resolved:PP-R-FHY-10196127:2026-11-03T09:22:33.539Z');
+
+    const read = (r: Record<string, unknown>) => factFromWebhookEvent({ event_type: 'CUSTOMER.DISPUTE.RESOLVED', resource: { ...resource, ...r } });
+    expect(read({ dispute_outcome: { outcome_code: 'RESOLVED_BUYER_FAVOR' } })).toMatchObject({ buyerWon: true, sellerRefunded: false });
+    expect(read({ dispute_outcome: { outcome_code: 'RESOLVED_SELLER_FAVOUR' } })).toMatchObject({ buyerWon: false });
+    // fund_movements is what's read when PayPal sends it; a fee alone isn't a settlement.
+    expect(read({ fund_movements: [] })).toMatchObject({ sellerDebited: false });
+    expect(read({ fund_movements: undefined })).toMatchObject({ sellerDebited: false });
+    expect(
+      read({ fund_movements: undefined, money_movements: [{ affected_party: 'SELLER', type: 'DEBIT', reason: 'DISPUTE_SETTLEMENT', amount: { currency_code: 'USD', value: '10.00' } }] }),
+    ).toMatchObject({ sellerDebited: true });
+    expect(read({ refund_details: { allowed_refund_amount: { currency_code: 'USD', value: '0.00' } } })).toMatchObject({ refunds: [] });
+    expect(factFromWebhookEvent({ event_type: 'CUSTOMER.DISPUTE.RESOLVED', resource: {} })).toBeNull();
+  });
 });
 
 describe('Transaction Search rows', () => {

@@ -46,8 +46,8 @@ export const PAYPAL_WEBHOOK_EVENTS = [
 /** The payment events a connection tracking payments subscribes to
  *  (docs/paypal-payments.md, paypal-payments.ts): checkout captures,
  *  subscription payments (the v1 sale events PayPal still sends for
- *  them), refunds, reversals (PayPal taking a payment back: a lost
- *  dispute or chargeback), new subscriptions and disputes. */
+ *  them), refunds, reversals (PayPal taking a payment back, for example a
+ *  card chargeback), new subscriptions, and disputes opened and resolved. */
 export const PAYPAL_PAYMENT_EVENTS = [
   'PAYMENT.CAPTURE.COMPLETED',
   'PAYMENT.CAPTURE.REFUNDED',
@@ -58,6 +58,7 @@ export const PAYPAL_PAYMENT_EVENTS = [
   'BILLING.SUBSCRIPTION.CREATED',
   'BILLING.SUBSCRIPTION.ACTIVATED',
   'CUSTOMER.DISPUTE.CREATED',
+  'CUSTOMER.DISPUTE.RESOLVED',
 ] as const;
 
 /** Wall-clock limit on one call. A POST that times out may still have

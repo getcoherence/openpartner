@@ -382,6 +382,7 @@ can recognise your own typo.
 | Stripe checkout carried your own reference | Your Checkout Sessions put your own order or user id in `client_reference_id`, so partner clicks can't ride on it. Pass the referral there, or link customers with `openpartner_user_id` metadata. |
 | PayPal payment carried an unknown click | A PayPal order's or subscription's `custom_id` looks like a click id but isn't one of this program's ([PayPal payments](paypal-payments.md)). |
 | PayPal payment carried your own reference | `custom_id` held your own id and no click. Put `openpartner.getReferral()` there, after your own value and a `|` if you need both. |
+| PayPal dispute lost, commission not adjusted | PayPal resolved a dispute against you and took the money, but didn't name the refund for one payment ([PayPal payments](paypal-payments.md#refunds-and-disputes)). The sample is the dispute id: check the partner's commission on that payment. |
 | Coupon redemption with an unknown code | `POST /coupons/redeem` got a code no partner holds. |
 | Stripe refused a partner code's discount | Your Stripe wouldn't create the promotion code for a partner's code, so customers who enter it pay full price. Stripe's answer is shown under the code, and **Partner codes have their discount** above counts the codes still without one. OpenPartner Cloud retries every hour, so this can count many times a day. |
 

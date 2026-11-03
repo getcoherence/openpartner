@@ -28,13 +28,27 @@
  *                  amount, so partial refunds add up and the commissions
  *                  are reduced, reversed or clawed back by the share
  *                  refunded so far. A reversal (PayPal took the payment
- *                  back: a lost dispute, a chargeback) is the same, as a
+ *                  back, for example a card chargeback) is the same, as a
  *                  `chargeback`.
  *   subscription   CREATED stores the custom_id; ACTIVATED (the buyer
  *                  approved it) records `subscription_created`.
  *   dispute        `dispute_created` under the payment's user, reversing
- *                  nothing: disputes can be won. A lost one comes back as
- *                  a reversal.
+ *                  nothing: disputes can be won.
+ *   dispute_resolved
+ *                  a dispute decided for the buyer with the seller debited
+ *                  the settlement: each refund transaction PayPal lists on
+ *                  it (refund_details) is settled as a refund fact under
+ *                  its own id, the key the refund's webhook and Transaction
+ *                  Search use, so the same money counts once whichever
+ *                  arrives first. No seller debit (PayPal covered it, or
+ *                  the brand won) reverses nothing; fees never do. A loss
+ *                  that lists no refund, or spans several payments, is
+ *                  counted for Tracking health (paypal_dispute_unmatched)
+ *                  instead of guessed at.
+ *
+ * A refund, dispute or resolution that arrives before its payment is
+ * recorded (that payment's webhook came late) is left unsettled while the
+ * catch-up still lists it, so a later run settles it after the payment.
  *
  * Settling a fact writes a PaymentEventLog row with what became of it, in
  * the same transaction, so the webhook, its redeliveries and the catch-up
@@ -87,7 +101,24 @@ export type PaypalFact =
       activated: boolean;
       at: Date;
     }
-  | { kind: 'dispute'; id: string; amount: PaypalAmount | null; transactionIds: string[]; reason: string | null; status: string | null; at: Date };
+  | { kind: 'dispute'; id: string; amount: PaypalAmount | null; transactionIds: string[]; reason: string | null; status: string | null; at: Date }
+  | {
+      kind: 'dispute_resolved';
+      id: string;
+      /** PayPal's update_time: a later resolution (an appeal) is another fact. */
+      version: string;
+      /** Decided for the buyer (RESOLVED_BUYER_FAVOUR, or PayPal's FAVOR spelling). */
+      buyerWon: boolean;
+      /** The seller was debited the settlement, so the brand lost the money. */
+      sellerDebited: boolean;
+      /** The brand refunded (accepted the claim) rather than PayPal deciding. */
+      sellerRefunded: boolean;
+      /** refund_details.transactions: the money PayPal moved for it. */
+      refunds: Array<{ id: string; amount: PaypalAmount | null; at: Date }>;
+      /** The disputed payments (seller_transaction_id). */
+      transactionIds: string[];
+      at: Date;
+    };
 
 /** What became of a fact, as PaymentEventLog keeps it. */
 export type PaypalOutcome =
@@ -100,6 +131,8 @@ export type PaypalOutcome =
   | 'test_click'
   /** A refund or dispute of a payment OpenPartner didn't record. */
   | 'not_tracked'
+  /** A lost dispute whose money couldn't be matched to one payment. */
+  | 'unmatched'
   | 'ignored';
 
 export interface PaypalFactResult {
@@ -123,6 +156,10 @@ export interface PaypalSource {
 
 /** Subscriptions a renewal without its subscription id is looked for in. */
 const ORPHAN_SALE_CANDIDATES = 20;
+/** How long a refund, dispute or resolution of a payment not recorded yet
+ *  is left for a later pass: the catch-up's events list goes back as far
+ *  (paypal-payments-catchup.ts EVENTS_LOOKBACK_HOURS). */
+export const UNRECORDED_PAYMENT_RETRY_HOURS = 72;
 const ENDED_SUBSCRIPTION = ['CANCELLED', 'EXPIRED'];
 
 // ---------------------------------------------------------------------------
@@ -245,9 +282,43 @@ export function factFromWebhookEvent(event: PaypalWebhookEvent): PaypalFact | nu
         at,
       };
     }
+    case 'CUSTOMER.DISPUTE.RESOLVED': {
+      const id = str(r.dispute_id);
+      if (!id) return null;
+      const outcome = (r.dispute_outcome ?? {}) as { outcome_code?: unknown; outcome_reason?: unknown };
+      const code = str(outcome.outcome_code)?.toUpperCase() ?? '';
+      const disputed = Array.isArray(r.disputed_transactions) ? (r.disputed_transactions as Array<Record<string, unknown>>) : [];
+      const listed = (r.refund_details as { transactions?: unknown } | undefined)?.transactions;
+      return {
+        kind: 'dispute_resolved',
+        id,
+        version: str(r.update_time) ?? str(event.create_time) ?? '',
+        buyerWon: code === 'RESOLVED_BUYER_FAVOUR' || code === 'RESOLVED_BUYER_FAVOR',
+        sellerDebited: sellerSettlementDebited(r),
+        sellerRefunded: str(outcome.outcome_reason)?.toUpperCase() === 'SELLER_ISSUED_REFUND',
+        refunds: (Array.isArray(listed) ? (listed as Array<Record<string, unknown>>) : []).flatMap((t) => {
+          const tid = str(t.id);
+          const gross = t.gross_amount as { value?: unknown; currency_code?: unknown } | undefined;
+          return tid ? [{ id: tid, amount: amountOf(gross?.value, gross?.currency_code), at: date(t.create_time, r.update_time, event.create_time) }] : [];
+        }),
+        transactionIds: disputed.flatMap((t) => (str(t.seller_transaction_id) ? [String(t.seller_transaction_id)] : [])),
+        at: date(r.update_time, event.create_time),
+      };
+    }
     default:
       return null;
   }
+}
+
+/** The seller was debited a dispute's settlement (fees aside): from
+ *  fund_movements, or the deprecated money_movements when PayPal sends only
+ *  that, never both added up. */
+function sellerSettlementDebited(r: Record<string, unknown>): boolean {
+  const current = Array.isArray(r.fund_movements);
+  const movements = (current ? r.fund_movements : Array.isArray(r.money_movements) ? r.money_movements : []) as Array<Record<string, unknown>>;
+  return movements.some(
+    (m) => (current ? m.party : m.affected_party) === 'SELLER' && m.type === 'DEBIT' && m.reason === 'DISPUTE_SETTLEMENT',
+  );
 }
 
 /**
@@ -283,6 +354,7 @@ export function factFromTransaction(t: PaypalTransactionInfo): PaypalFact | null
 /** PaymentEventLog's key for a fact: its kind and PayPal's id for it. */
 export function factKey(fact: PaypalFact): string {
   if (fact.kind === 'subscription') return `${fact.activated ? 'subscription_activated' : 'subscription'}:${fact.id}`;
+  if (fact.kind === 'dispute_resolved') return `dispute_resolved:${fact.id}:${fact.version}`.slice(0, 160);
   return `${fact.kind}:${fact.id}`;
 }
 
@@ -373,6 +445,8 @@ async function settle(trx: Knex.Transaction, source: PaypalSource, fact: PaypalF
       return settleSubscription(trx, source, fact);
     case 'dispute':
       return settleDispute(trx, source, fact);
+    case 'dispute_resolved':
+      return settleDisputeResolved(trx, source, fact);
   }
 }
 
@@ -594,10 +668,18 @@ async function paymentEvent(trx: Knex, tenantId: string, paymentId: string): Pro
   return ((await trx<EventRow>(TABLES.Event).where({ tenantId, externalEventId: paymentId, type: 'invoice_paid' }).first()) as EventRow | undefined) ?? null;
 }
 
+/** A refund, dispute or resolution of a payment not recorded: left for a
+ *  later pass while the catch-up still lists it (the payment's own webhook
+ *  may only be late), then not tracked. */
+function paymentNotRecorded(fact: { at: Date }): PaypalFactResult {
+  if (Date.now() - fact.at.getTime() < UNRECORDED_PAYMENT_RETRY_HOURS * 3_600_000) return { outcome: 'unresolved', eventIds: [], refunds: [] };
+  return done('not_tracked');
+}
+
 async function settleRefund(trx: Knex.Transaction, source: PaypalSource, fact: Extract<PaypalFact, { kind: 'refund' }>): Promise<PaypalFactResult> {
   const tenantId = source.conn.tenantId;
   const conversion = fact.paymentId ? await paymentEvent(trx, tenantId, fact.paymentId) : null;
-  if (!conversion) return done('not_tracked');
+  if (!conversion) return fact.paymentId ? paymentNotRecorded(fact) : done('not_tracked');
 
   const paymentKey = conversion.metadata?.paypalSaleId != null ? 'paypalSaleId' : 'paypalCaptureId';
   const input: RecordRefundInput = {
@@ -639,7 +721,7 @@ async function settleDispute(trx: Knex.Transaction, source: PaypalSource, fact: 
     if (e) disputed.push(e);
   }
   const first = disputed[0];
-  if (!first) return done('not_tracked');
+  if (!first) return fact.transactionIds.length > 0 ? paymentNotRecorded(fact) : done('not_tracked');
   const [event] = (await trx<EventRow>(TABLES.Event)
     .insert({
       id: ulid(),
@@ -662,4 +744,40 @@ async function settleDispute(trx: Knex.Transaction, source: PaypalSource, fact: 
     .ignore()
     .returning('id')) as Array<{ id: string }>;
   return done('recorded', event ? [event.id] : []);
+}
+
+/**
+ * A resolved dispute. Lost with the seller debited: each refund PayPal
+ * lists settles as a refund fact under its own id (one the refund's
+ * webhook or Transaction Search may already have settled, or will), against
+ * the one disputed payment. A refund when the brand refunded, else a
+ * chargeback.
+ */
+async function settleDisputeResolved(
+  trx: Knex.Transaction,
+  source: PaypalSource,
+  fact: Extract<PaypalFact, { kind: 'dispute_resolved' }>,
+): Promise<PaypalFactResult> {
+  // Won, or PayPal covered it: the brand kept the money, so the partner
+  // keeps the commission.
+  if (!fact.buyerWon || !fact.sellerDebited) return done('ignored');
+  const tenantId = source.conn.tenantId;
+  const recorded: string[] = [];
+  for (const id of fact.transactionIds) if (await paymentEvent(trx, tenantId, id)) recorded.push(id);
+  if (recorded.length === 0) return fact.transactionIds.length > 0 ? paymentNotRecorded(fact) : done('not_tracked');
+
+  // Which payment a refund came off isn't guessed: one disputed payment,
+  // and the refunds PayPal names, or an admin looks.
+  const refunds = fact.refunds.filter((t): t is { id: string; amount: PaypalAmount; at: Date } => t.amount != null);
+  if (fact.transactionIds.length !== 1 || refunds.length === 0) {
+    if (!sandbox(source)) await noteTrackingIssue(trx, tenantId, 'paypal_dispute_unmatched', fact.id);
+    return done('unmatched');
+  }
+  const out: PaypalFactResult = { outcome: 'recorded', eventIds: [], refunds: [] };
+  for (const t of refunds) {
+    const r = await processPaypalFact(trx, source, { kind: 'refund', id: t.id, amount: t.amount, paymentId: recorded[0]!, reversal: !fact.sellerRefunded, at: t.at });
+    out.eventIds.push(...r.eventIds);
+    out.refunds.push(...r.refunds);
+  }
+  return out;
 }
