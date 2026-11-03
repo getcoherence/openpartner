@@ -200,12 +200,14 @@ A refund is recorded with `recordRefund`, the code behind
   refunds what's left, marked `cappedToRemaining`;
 - a refund of a payment OpenPartner never recorded is left alone.
 
-A dispute is recorded and reverses nothing: disputes can be won. When PayPal
-takes the payment back (`PAYMENT.CAPTURE.REVERSED` / `PAYMENT.SALE.REVERSED`:
-a dispute lost, a card chargeback), that is recorded through the same path
-as a `chargeback`, so the commission is reduced, reversed or clawed back by
-the share taken. A reversal PayPal later undoes (the brand won on appeal) is
-not restored automatically: an admin re-credits the partner.
+A dispute is recorded and reverses nothing: disputes can be won. A dispute
+the brand settles by accepting the claim arrives as an ordinary refund. When
+PayPal takes the payment back itself (`PAYMENT.CAPTURE.REVERSED` /
+`PAYMENT.SALE.REVERSED`, for example a card chargeback), that is recorded
+through the same path as a `chargeback`, so the commission is reduced,
+reversed or clawed back by the share taken. A reversal PayPal later undoes
+(the brand won on appeal) is not restored automatically: an admin re-credits
+the partner.
 
 ## Sandbox
 
@@ -363,19 +365,20 @@ Only the webhook needs to be public: the checkout page can run on
 8. **Subscriptions.** Through `/?mode=subscription`, subscribe with the
    sandbox buyer: `subscription_created` at approval and an `invoice_paid`
    for the first payment, under the same partner.
-9. **A dispute, then a reversal.** Pay again through the partner's link.
-   In your own terminal, start PayPal's sandbox-only settle with the app's
-   credentials:
+9. **A dispute.** Pay again through the partner's link. In your own
+   terminal, start the sandbox settle script with the app's credentials:
    ```bash
    PAYPAL_CLIENT_ID=… PAYPAL_CLIENT_SECRET=… node examples/paypal-checkout/sandbox-dispute.mjs
    ```
    Then, as the sandbox buyer, open a dispute on that payment
    (sandbox.paypal.com/disputes, item not received): a `dispute_created` is
    recorded and the commission stays. The script picks the dispute up and
-   settles it for the buyer as soon as PayPal offers to. Don't escalate or
-   answer it first: PayPal never offered to settle a claim that had been.
-   PayPal reverses the payment: a `chargeback` is recorded and the
-   commission is reversed.
+   settles it for the buyer: PayPal's sandbox-only adjudicate if PayPal
+   offers it, otherwise by accepting the claim. Accepting refunds the buyer:
+   a `refund` is recorded and the commission is reversed. In our checks
+   (Nov 2026) PayPal never offered adjudicate, whether the dispute was
+   escalated, answered or left alone, so a reversal couldn't be produced in
+   the sandbox. Its parsing is covered by tests only.
 10. **Transaction Search.** After the next hourly catch-up (at :50) the card
    shows no Transaction Search warning. Payments appear there up to three
    hours late, as do any the webhook missed.
@@ -384,6 +387,10 @@ Only the webhook needs to be public: the checkout page can run on
 
 - **Reversals undone**: a reversal PayPal undoes later (`T1202`, a
   chargeback reversed for the merchant) isn't re-credited automatically.
+- **Disputes PayPal decides**: PayPal doesn't document which payment event,
+  if any, a dispute it decides against the brand sends. OpenPartner reads
+  reversals and refunds, not `CUSTOMER.DISPUTE.RESOLVED`, and a reversal
+  hasn't been seen live yet.
 - **Repeat buyers without a click**: a later purchase by the same PayPal
   payer whose browser lost the referral isn't credited. The payer id is on
   the order, not the capture, so it would cost a read per payment.
