@@ -286,7 +286,10 @@ credentials:
    `T1201` (a card chargeback) rows chargebacks; payouts sent, holds and
    fees are skipped. PayPal turns Transaction Search on per app: an app it
    refuses (403) shows **Turn on Transaction Search** on its card and is
-   asked again a day later.
+   asked again a day later. It isn't searched in the first three hours of
+   tracking: PayPal refuses a window that starts after its newest data
+   ("Data for the given start date is not available"), and a later run
+   searches from when tracking began.
 
 Both sources turn into the same facts the webhook settles. Each fact
 (`capture:<id>`, `sale:<id>`, `refund:<id>`, `subscription:<id>`,

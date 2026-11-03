@@ -16,7 +16,9 @@
  *      most 31 days. It runs three hours behind but needs no webhook, so
  *      it is the only source for a deployment PayPal can't post to, and
  *      it names the subscription of every renewal. An app it refuses
- *      (403) is marked `unavailable` and asked again a day later.
+ *      (403) is marked `unavailable` and asked again a day later. Not
+ *      searched until tracking is SEARCH_LAG_HOURS old: PayPal refuses a
+ *      window that starts after its newest data.
  *
  * Both turn into the same facts the webhook settles (paypal-payments.ts),
  * so a payment found twice, or found while its webhook arrives, is settled
@@ -54,6 +56,9 @@ export const EVENTS_SETTLE_MINUTES = 30;
 /** Transaction Search lags up to three hours; four days covers a long
  *  outage with room to spare. */
 export const SEARCH_LOOKBACK_HOURS = 96;
+/** How far behind Transaction Search runs: it refuses a window that starts
+ *  later than its newest data. */
+export const SEARCH_LAG_HOURS = 3;
 /** An app without Transaction Search is asked again after this long. */
 export const SEARCH_RECHECK_HOURS = 24;
 export const MAX_FACTS_PER_RUN = 1000;
@@ -177,7 +182,11 @@ async function catchUpConnection(
     }
 
     const checkedAt = conn.transactionSearchCheckedAt ? new Date(conn.transactionSearchCheckedAt).getTime() : 0;
-    if (conn.transactionSearch !== 'unavailable' || now.getTime() - checkedAt >= SEARCH_RECHECK_HOURS * 3_600_000) {
+    // Tracking that began inside PayPal's lag has nothing to search yet, and
+    // PayPal refuses the window ("Data for the given start date is not
+    // available"); a later run searches from when it began.
+    const searchable = since <= now.getTime() - SEARCH_LAG_HOURS * 3_600_000;
+    if (searchable && (conn.transactionSearch !== 'unavailable' || now.getTime() - checkedAt >= SEARCH_RECHECK_HOURS * 3_600_000)) {
       const searched = await searchFacts(conn, token, now, since, found, pages);
       out.transactionSearch = searched.status;
       if (searched.truncated) out.truncated = true;
