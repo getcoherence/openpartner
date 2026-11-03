@@ -9,6 +9,7 @@ import { NetworkSettingsSection } from './NetworkSettingsSection.js';
 import { PaypalPayoutsCard } from './PaypalPayoutsCard.js';
 import { ReferralStagesSection } from './ReferralStagesSection.js';
 import { SettingsSections, type SettingsSection } from './SettingsSections.js';
+import { useViewOnly, ViewOnlyFieldset } from '../../lib/viewOnly.js';
 
 type PayoutRail = 'auto' | 'stripe_connect' | 'manual';
 type PayoutCadence = 'weekly' | 'biweekly' | 'monthly' | 'manual';
@@ -89,6 +90,7 @@ export function AdminSettings() {
   // White-label workspaces are isolated from the Network, so it has no
   // section there.
   const { whiteLabel } = useBrand();
+  const viewOnly = useViewOnly();
   const sections: SettingsSection[] = [
     { id: 'brand', group: 'Brand', label: 'Brand info', content: <ProgramSection /> },
     { id: 'resources', group: 'Brand', label: 'Brand resources', content: <BrandResourcesSection /> },
@@ -102,11 +104,14 @@ export function AdminSettings() {
     { id: 'statements', group: 'Payouts', label: 'Payout statements', content: <PayoutStatementsSection /> },
     { id: 'paypal', group: 'Payouts', label: 'Pay with PayPal', content: <PaypalPayoutsCard /> },
     { id: 'email', group: 'Workspace', label: 'Email delivery', content: <MailSection /> },
-    { id: 'danger', group: 'Workspace', label: 'Danger zone', content: <DangerZone /> },
+    ...(viewOnly ? [] : [{ id: 'danger', group: 'Workspace', label: 'Danger zone', content: <DangerZone /> }]),
   ];
   return (
     <Page title="Settings" subtitle="How the partner portal identifies your brand, sends mail, and pays partners.">
-      <SettingsSections sections={sections} />
+      {/* A view-only seat sees every setting, with the forms disabled. */}
+      <SettingsSections
+        sections={viewOnly ? sections.map((x) => ({ ...x, content: <ViewOnlyFieldset>{x.content}</ViewOnlyFieldset> })) : sections}
+      />
     </Page>
   );
 }

@@ -112,8 +112,10 @@ async function loadCandidates(
   const terms = new Map(
     ((await db<HostedFeeTermsRow>(TABLES.HostedFeeTerms).whereIn('tenantId', ids)) as HostedFeeTermsRow[]).map((r) => [r.tenantId, r]),
   );
+  // Full admins: a view-only seat isn't who agreed the fee.
   const admins = (await db<AdminRow>(TABLES.Admin)
     .whereIn('tenantId', ids)
+    .where({ role: 'admin' })
     .whereNull('revokedAt')
     .whereNotNull('activatedAt')
     .orderBy('activatedAt', 'asc')

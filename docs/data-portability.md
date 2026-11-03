@@ -711,7 +711,10 @@ attribution data, and a self-hosted install doesn't use them.
 
 `Admin` is the consequential one: it is authentication data, so it stays
 out — which is exactly why `HostedFundingAuthorization` (whose `adminId`
-is an FK to it) can't simply be added to the bundle. Credential *columns*
+is an FK to it) can't simply be added to the bundle. Each admin's `role`
+(full or view only, [view-only-seats.md](view-only-seats.md)) stays out
+with it: on a restored instance the admin who installed it invites the
+rest again, each with their role. Credential *columns*
 of exported tables, and the `Config` keys that aren't settings, are listed
 under [Credentials](#credentials) and [Settings](#settings-config).
 

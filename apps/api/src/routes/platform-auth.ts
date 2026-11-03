@@ -12,7 +12,7 @@
 import { Router, type Request } from 'express';
 import { z } from '../zod.js';
 import { ulid } from 'ulid';
-import { TABLES, type AdminRow, type PlatformSessionRow, type TenantRow } from '@openpartner/db';
+import { TABLES, type AdminRole, type AdminRow, type PlatformSessionRow, type TenantRow } from '@openpartner/db';
 import { db, appDb } from '../db.js';
 import { clearSessionCookie, consumeMagicLink, createSession, SESSION_COOKIE_NAME, sessionCookieOptions } from '../auth-sessions.js';
 import { RESERVED_SLUGS, getTenancyMode } from '../tenancy.js';
@@ -157,6 +157,8 @@ interface Workspace {
   tenantDisplayName: string;
   adminId: string;
   activated: boolean;
+  /** 'viewer' = a view-only seat in that brand. */
+  role: AdminRole;
 }
 
 function readPlatformCookie(req: Request): string | null {
@@ -181,13 +183,15 @@ platformAuthRouter.get('/me/workspaces', async (req, res) => {
       `${TABLES.Tenant}.displayName as tenantDisplayName`,
       `${TABLES.Admin}.id as adminId`,
       `${TABLES.Admin}.activatedAt as activatedAt`,
-    )) as Array<{ tenantSlug: string; tenantDisplayName: string; adminId: string; activatedAt: Date | null }>;
+      `${TABLES.Admin}.role as role`,
+    )) as Array<{ tenantSlug: string; tenantDisplayName: string; adminId: string; activatedAt: Date | null; role: AdminRole }>;
 
   const workspaces: Workspace[] = rows.map((r) => ({
     tenantSlug: r.tenantSlug,
     tenantDisplayName: r.tenantDisplayName,
     adminId: r.adminId,
     activated: !!r.activatedAt,
+    role: r.role,
   }));
 
   res.json({
@@ -286,11 +290,13 @@ platformAuthRouter.post('/me/brands', addBrandLimit, async (req, res) => {
   // Trust heuristic: an operator who ALREADY runs an approved brand has
   // cleared review once — auto-approve their next brand so returning
   // customers aren't re-queued. A first-time add (no approved brand yet)
-  // still goes through review, same as public signup.
+  // still goes through review, same as public signup. A view-only seat
+  // isn't running a brand, so it doesn't count.
   const hasApprovedBrand = await db(TABLES.Admin)
     .join(TABLES.Tenant, `${TABLES.Tenant}.id`, `${TABLES.Admin}.tenantId`)
     .where(`${TABLES.Admin}.email`, email)
     .whereNull(`${TABLES.Admin}.revokedAt`)
+    .andWhere(`${TABLES.Admin}.role`, 'admin')
     .andWhere(`${TABLES.Tenant}.approvalStatus`, 'approved')
     .andWhere(`${TABLES.Tenant}.status`, 'active')
     .first(`${TABLES.Tenant}.id`);

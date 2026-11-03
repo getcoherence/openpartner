@@ -280,3 +280,13 @@ a:focus-visible {
 .op-msg:focus-within .op-msg-time {
   opacity: 1;
 }
+
+/* A view-only seat's forms (lib/viewOnly.tsx ViewOnlyFieldset): disabled,
+ * and looking it. !important beats the controls' inline styles. */
+.op-view-only button,
+.op-view-only input,
+.op-view-only select,
+.op-view-only textarea {
+  cursor: not-allowed !important;
+  opacity: 0.6 !important;
+}

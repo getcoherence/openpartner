@@ -75,7 +75,8 @@ export async function findBlockingEntry(
  * True when this address may not create a brand: it's at a free mail
  * provider and ops require a work email (PlatformSetting brandSignup).
  * Someone who already admins an approved, active brand cleared review once,
- * so they may add another from the same address. Unlike the blocklist this
+ * so they may add another from the same address. A view-only seat on one
+ * doesn't count: being shown a brand isn't running it. Unlike the blocklist this
  * refusal is specific (work_email_required): it isn't a ban.
  */
 export async function workEmailRequiredFor(db: Knex, email: string): Promise<boolean> {
@@ -86,6 +87,7 @@ export async function workEmailRequiredFor(db: Knex, email: string): Promise<boo
     .join(TABLES.Tenant, `${TABLES.Tenant}.id`, `${TABLES.Admin}.tenantId`)
     .whereRaw(`lower("${TABLES.Admin}"."email") = ?`, [normalized])
     .whereNull(`${TABLES.Admin}.revokedAt`)
+    .andWhere(`${TABLES.Admin}.role`, 'admin')
     .andWhere(`${TABLES.Tenant}.approvalStatus`, 'approved')
     .andWhere(`${TABLES.Tenant}.status`, 'active')
     .first(`${TABLES.Tenant}.id`);
@@ -182,12 +184,12 @@ async function notifyOpsDecision(
 // Brand-facing notifications
 // --------------------------------------------------------------------------
 
-/** Oldest non-revoked admin for a tenant — our canonical "primary contact"
- *  (same convention as campaign-end-notifications). Null when the brand has
- *  no admin (shouldn't happen post-signup). */
+/** Oldest non-revoked full admin for a tenant — our canonical "primary
+ *  contact" (same convention as campaign-end-notifications). Null when the
+ *  brand has no admin (shouldn't happen post-signup). */
 async function primaryAdmin(db: Knex, tenantId: string): Promise<AdminRow | null> {
   const row = await db<AdminRow>(TABLES.Admin)
-    .where({ tenantId })
+    .where({ tenantId, role: 'admin' })
     .whereNull('revokedAt')
     .orderBy('createdAt', 'asc')
     .first();

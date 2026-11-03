@@ -20,6 +20,7 @@ interface NetworkBilling {
 export function AdminNetworkBilling() {
   return (
     <Page
+      edits
       title="Network billing"
       subtitle="$29/mo + 3% on Network-originated payouts. Self-hosted vendors only — hosted plans bundle Network access."
     >

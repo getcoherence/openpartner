@@ -5,6 +5,7 @@
  * templating engine.
  */
 
+import type { AdminRole } from '@openpartner/db';
 import { getPortalBaseUrl, type PortalLinkTenant } from './portal-url.js';
 
 /**
@@ -127,13 +128,22 @@ export function partnerSigninEmail(name: string, link: string, brandName: string
   return { subject, text, html: wrap(text, link, 'Sign in') };
 }
 
-export function adminInviteEmail(name: string, link: string, programName: string | null): EmailTemplate {
+/** `role` 'viewer': a view-only seat (docs/view-only-seats.md). */
+export function adminInviteEmail(
+  name: string,
+  link: string,
+  programName: string | null,
+  role: AdminRole = 'admin',
+): EmailTemplate {
   const brand = programName || 'your partner program';
-  const subject = `You've been invited to administer ${brand}`;
+  const viewer = role === 'viewer';
+  const subject = viewer ? `You've been invited to view ${brand}` : `You've been invited to administer ${brand}`;
   const text = [
     `Hi ${name},`,
     ``,
-    `You've been invited as an administrator for ${brand}. Click the link below`,
+    viewer
+      ? `You've been given view-only access to ${brand}. Click the link below`
+      : `You've been invited as an administrator for ${brand}. Click the link below`,
     `to accept the invitation and sign in:`,
     ``,
     link,

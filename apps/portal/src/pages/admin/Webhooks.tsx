@@ -73,6 +73,7 @@ export function WebhooksPage() {
 
   return (
     <Page
+      edits
       title="Webhooks"
       subtitle="Subscribe to attribution, commission, payout, and partnership events."
       actions={<Button icon={<Plus size={14} />} onClick={() => setShowCreate(true)}>New endpoint</Button>}

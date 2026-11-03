@@ -162,8 +162,9 @@ async function notifyAdminsOfApplication(
   reviewUrl: string,
   application: PartnerApplication,
 ): Promise<void> {
+  // Full admins: a view-only seat can't approve the application.
   const admins = (await db<AdminRow>(TABLES.Admin)
-    .where({ tenantId })
+    .where({ tenantId, role: 'admin' })
     .whereNotNull('activatedAt')
     .whereNull('revokedAt')
     .select('id', 'email')) as Array<Pick<AdminRow, 'id' | 'email'>>;

@@ -37,6 +37,7 @@ import { useShareUrlRoot } from '../../lib/shareUrl.js';
 import { useIsMobile } from '../../lib/useMediaQuery.js';
 import { Button, Card, ErrorBanner, Page, SectionHeading, Select, Stat, Table, formatDate, money } from '../../ui.js';
 import { TenantLink } from '../../tenant-link.js';
+import { useViewOnly } from '../../lib/viewOnly.js';
 
 interface FunnelCounts {
   clicks: number;
@@ -696,6 +697,7 @@ function SetupChecksSection() {
     queryKey: ['tracking-alerts'],
     queryFn: () => api<{ email: boolean }>('/config/tracking-alerts'),
   });
+  const viewOnly = useViewOnly();
   const save = useMutation({
     mutationFn: (email: boolean) => api<{ email: boolean }>('/config/tracking-alerts', { method: 'POST', body: { email } }),
     onSuccess: (next) => qc.setQueryData(['tracking-alerts'], next),
@@ -754,7 +756,7 @@ function SetupChecksSection() {
       <SectionHeading
         actions={
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-            {alerts.data && (
+            {alerts.data && !viewOnly && (
               <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, color: theme.textMuted, cursor: 'pointer' }}>
                 <input
                   type="checkbox"
@@ -802,7 +804,7 @@ function SetupChecksSection() {
                 <div style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                   {g.name}
                 </div>
-                {g.programId && (
+                {g.programId && !viewOnly && (
                   <span title={testRoot ? undefined : 'Set your router’s public URL in Settings first.'}>
                     <Button
                       variant="secondary"

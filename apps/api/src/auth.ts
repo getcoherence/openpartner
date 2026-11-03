@@ -21,14 +21,16 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import type { Knex } from 'knex';
 import { ulid } from 'ulid';
-import { TABLES, type ApiKeyRow, type PartnerRow } from '@openpartner/db';
+import { TABLES, type AdminRole, type ApiKeyRow, type PartnerRow } from '@openpartner/db';
+import { viewerRefusal } from './view-only.js';
 
 export type ApiKeyPrincipal =
   | { role: 'admin'; source: 'env' }
   // `scopes` is set when grantScope admitted a scoped key: the key's own
   // scopes, for the few handlers that narrow what one scope may do.
   | { role: 'admin'; source: 'db'; apiKeyId: string; scopes?: string[] }
-  | { role: 'admin'; source: 'session'; sessionId: string; adminId: string }
+  // `adminRole` 'viewer' = a view-only seat (view-only.ts).
+  | { role: 'admin'; source: 'session'; sessionId: string; adminId: string; adminRole: AdminRole }
   | { role: 'partner'; source: 'db'; apiKeyId: string; partnerId: string }
   | { role: 'partner'; source: 'session'; sessionId: string; partnerId: string }
   | { role: 'scoped'; source: 'db'; apiKeyId: string; scopes: string[] };
@@ -91,7 +93,21 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     return;
   }
   req.principal = principal;
+  // A view-only seat (docs/view-only-seats.md): every route a viewer's
+  // session can act on passes here, whatever guard follows.
+  if (isViewer(principal)) {
+    const refusal = viewerRefusal(req);
+    if (refusal) {
+      res.status(403).json({ error: refusal });
+      return;
+    }
+  }
   next();
+}
+
+/** A signed-in admin on a view-only seat. Keys are never viewers. */
+export function isViewer(p: ApiKeyPrincipal | undefined): boolean {
+  return p?.role === 'admin' && p.source === 'session' && p.adminRole === 'viewer';
 }
 
 export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
@@ -145,7 +161,14 @@ async function resolvePrincipal(req: Request): Promise<ApiKeyPrincipal | null> {
     const session = await resolveSession(db, cookie, tenantId);
     if (!session) return null;
     if (session.principalKind === 'admin') {
-      return { role: 'admin', source: 'session', sessionId: session.id, adminId: session.principalId };
+      return {
+        role: 'admin',
+        source: 'session',
+        sessionId: session.id,
+        adminId: session.principalId,
+        // Fail closed: a role that didn't read back is a viewer's.
+        adminRole: session.adminRole ?? 'viewer',
+      };
     }
     return { role: 'partner', source: 'session', sessionId: session.id, partnerId: session.principalId };
   }

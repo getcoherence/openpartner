@@ -44,6 +44,7 @@ import {
   useIndexedCreators,
   type ExternalFilters,
 } from './NetworkIndexedCreators.js';
+import { useViewOnly } from '../../lib/viewOnly.js';
 
 interface PlatformRow {
   id: string;
@@ -739,6 +740,7 @@ interface OfferingOption {
 /** Book one of the creator's storefront packages as a tracked deal. */
 function BookButton({ creator }: { creator: DirectoryRow }) {
   const [open, setOpen] = useState(false);
+  if (useViewOnly()) return null;
   return (
     <>
       <Button size="sm" variant="secondary" onClick={() => setOpen(true)}>
@@ -751,6 +753,7 @@ function BookButton({ creator }: { creator: DirectoryRow }) {
 
 function InviteButton({ creator }: { creator: DirectoryRow }) {
   const [open, setOpen] = useState(false);
+  if (useViewOnly()) return null;
   return (
     <>
       <Button size="sm" onClick={() => setOpen(true)}>

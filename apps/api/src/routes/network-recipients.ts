@@ -9,9 +9,10 @@
  * here whether that address (and the brand's Network contact) still
  * belongs to an active admin, so someone removed from the brand stops
  * getting its correspondence. `active` is the subset of `emails` that are
- * activated, unrevoked admins here; `fallback` is the longest-standing such
- * admin, given only when none of `emails` is, so the mail still reaches
- * someone at the brand.
+ * activated, unrevoked full admins here; `fallback` is the longest-standing
+ * such admin, given only when none of `emails` is, so the mail still reaches
+ * someone at the brand. A view-only seat can't answer a creator or act on a
+ * booking, so it isn't a recipient.
  *
  * Called with the Network's federation key (NETWORK_FEDERATION_SCOPES);
  * `partners:read` admits it, like the other reads the Network makes.
@@ -34,7 +35,7 @@ networkRecipientsRouter.post('/network/notify-recipients', requireAuth, grantSco
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
   const { db, tenantId } = tenantOf(req);
   const admins = (await db<AdminRow>(TABLES.Admin)
-    .where({ tenantId })
+    .where({ tenantId, role: 'admin' })
     .whereNull('revokedAt')
     .whereNotNull('activatedAt')
     .orderBy('createdAt', 'asc')

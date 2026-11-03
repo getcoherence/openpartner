@@ -21,6 +21,7 @@ import { useTenantBase } from '../tenant-base.js';
 import { TenantLink } from '../tenant-link.js';
 import { alpha, theme } from '../theme.js';
 import { useBrand, useConnectPayouts, useDefaultCurrency } from '../lib/useBrand.js';
+import { EditOnly } from '../lib/viewOnly.js';
 import {
   Avatar,
   Button,
@@ -525,8 +526,11 @@ function AdminDashboard() {
       }
     >
       <ErrorBanner error={error} />
-      <PendingApprovalsBanner />
-      <BrandOnboarding />
+      {/* Setup asks; a view-only seat can't act on them. */}
+      <EditOnly>
+        <PendingApprovalsBanner />
+        <BrandOnboarding />
+      </EditOnly>
       {isLoading || !totals ? (
         <Card>Loading…</Card>
       ) : (

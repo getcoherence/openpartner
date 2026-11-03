@@ -275,6 +275,7 @@ export function PayoutDetailsPage({ principal }: { principal: Principal }) {
 
   return (
     <Page
+      edits
       title="Payout details"
       subtitle={isAdmin ? 'Where this partner wants their payouts sent.' : `Where ${programName} sends your payouts.`}
     >

@@ -33,6 +33,7 @@ import { FlatCards, SectionCard, useFlatCards } from '../../lib/Surface.js';
 import { ListingBanner } from '../creator/ListingBanner.js';
 import { CreatorRow, PanelBar, RowFigure } from './CreatorRow.js';
 import { TRACKING_NOT_VERIFIED_TEXT } from './BookCreatorDialog.js';
+import { useViewOnly } from '../../lib/viewOnly.js';
 
 interface IndexedPlatform {
   platform: string;
@@ -239,6 +240,7 @@ function OpenBadge() {
 
 export function ExternalRow({ creator, selected, onSelect }: { creator: IndexedCreator; selected: boolean; onSelect?: () => void }) {
   const [open, setOpen] = useState(false);
+  const viewOnly = useViewOnly();
   const signals = creator.partnershipSignals ?? [];
   return (
     <>
@@ -279,7 +281,7 @@ export function ExternalRow({ creator, selected, onSelect }: { creator: IndexedC
           </>
         }
         actions={
-          !creator.invite && creator.invitable ? (
+          !creator.invite && creator.invitable && !viewOnly ? (
             <Button size="sm" onClick={() => setOpen(true)}>
               Invite
             </Button>
@@ -398,6 +400,7 @@ export function IndexedCreatorPanel({ id }: { id: string }) {
  *  its title. */
 function IndexedCreatorBody({ c, named = false }: { c: IndexedCreatorProfile; named?: boolean }) {
   const [inviting, setInviting] = useState(false);
+  const viewOnly = useViewOnly();
   const signals = c.partnershipSignals ?? [];
   const flat = useFlatCards();
   const badges = (
@@ -418,7 +421,7 @@ function IndexedCreatorBody({ c, named = false }: { c: IndexedCreatorProfile; na
   );
   const inviteControl = c.invite ? (
     <div style={{ fontSize: 13, color: c.invite.status === 'claimed' ? theme.success : theme.textMuted }}>{INVITE_STATUS[c.invite.status] ?? 'Invited.'}</div>
-  ) : c.invitable ? (
+  ) : c.invitable && !viewOnly ? (
     <Button onClick={() => setInviting(true)} style={{ width: '100%' }}>
       Invite to collaborate
     </Button>
