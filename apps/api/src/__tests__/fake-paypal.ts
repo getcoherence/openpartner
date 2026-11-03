@@ -338,9 +338,25 @@ export class FakePaypal {
     }
 
     if (path === '/v1/notifications/webhooks-events' && init.method === 'GET') {
+      // As the sandbox answers (checked Nov 3 2026): at most 100 a page, and
+      // times to the second.
+      const size = Number(u.searchParams.get('page_size') ?? '10');
+      if (size > 100) {
+        return res(400, {
+          name: 'INVALID_REQUEST',
+          message: 'Request is not well-formed, syntactically incorrect, or violates schema.',
+          debug_id: 'dbgpage',
+          details: [{ field: 'page_size', value: String(size), location: 'query', issue: 'must be less than or equal to 100' }],
+        });
+      }
+      for (const name of ['start_time', 'end_time']) {
+        const v = u.searchParams.get(name);
+        if (v != null && !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(v)) {
+          return res(400, { name: 'VALIDATION_ERROR', message: 'Invalid data provided', details: [{ field: name, issue: 'Datetime needs to be in the ISO 8601 format specified in RFC 3339 section 5.6' }] });
+        }
+      }
       const start = new Date(u.searchParams.get('start_time') ?? 0).getTime();
       const end = new Date(u.searchParams.get('end_time') ?? '2100-01-01').getTime();
-      const size = Number(u.searchParams.get('page_size') ?? '10');
       const offset = Number(u.searchParams.get('page_token') ?? '0');
       const all = this.events
         .filter((e) => e.account === account)
