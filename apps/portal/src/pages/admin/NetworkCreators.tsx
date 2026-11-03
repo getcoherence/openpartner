@@ -147,6 +147,8 @@ export function AdminNetworkCreators() {
   /** Percent. */
   const [minEngagement, setMinEngagement] = useState<Count>('');
   const [openOnly, setOpenOnly] = useState(false);
+  /** Only creators the brand invited, OpenPartner's and external. */
+  const [invitedOnly, setInvitedOnly] = useState(false);
   const [sort, setSort] = useState<SortKey>('followers');
 
   // One list: OpenPartner's creators first, then external creators the
@@ -206,10 +208,11 @@ export function AdminNetworkCreators() {
     if (minFollowers !== '' && minFollowers > 0) p.set('minFollowers', String(minFollowers));
     if (maxFollowers !== '') p.set('maxFollowers', String(maxFollowers));
     if (minEngagement !== '' && minEngagement > 0) p.set('minEngagement', String(minEngagement));
+    if (invitedOnly) p.set('invited', 'true');
     // The Network's own default is newest.
     if (sort !== 'newest') p.set('sort', sort);
     return p.toString();
-  }, [debouncedQ, categories, platforms, verifiedOnly, locations, minFollowers, maxFollowers, minEngagement, sort]);
+  }, [debouncedQ, categories, platforms, verifiedOnly, locations, minFollowers, maxFollowers, minEngagement, invitedOnly, sort]);
 
   const list = useQuery({
     queryKey: ['admin-discover-creators', qs],
@@ -233,9 +236,10 @@ export function AdminNetworkCreators() {
       maxFollowers: maxFollowers === '' ? undefined : maxFollowers,
       openToPartnerships: openOnly,
       minEngagement: minEngagement === '' ? undefined : minEngagement,
+      invited: invitedOnly,
       sort: sort === 'newest' || sort === 'engagement' ? sort : 'reach',
     }),
-    [debouncedQ, categories, platforms, minFollowers, maxFollowers, openOnly, minEngagement, sort],
+    [debouncedQ, categories, platforms, minFollowers, maxFollowers, openOnly, minEngagement, invitedOnly, sort],
   );
 
   const filtered =
@@ -247,7 +251,8 @@ export function AdminNetworkCreators() {
     maxFollowers !== '' ||
     minEngagement !== '' ||
     locations.length > 0 ||
-    openOnly;
+    openOnly ||
+    invitedOnly;
   const resetAll = () => {
     setQ('');
     setCategories([]);
@@ -258,6 +263,7 @@ export function AdminNetworkCreators() {
     setMinEngagement('');
     setLocations([]);
     setOpenOnly(false);
+    setInvitedOnly(false);
   };
 
   const detail =
@@ -461,6 +467,9 @@ export function AdminNetworkCreators() {
           </FilterMenu>
           <ToggleChip on={openOnly} onClick={() => setOpenOnly(!openOnly)} title="External creators who already take brand partnerships">
             Open to partnerships
+          </ToggleChip>
+          <ToggleChip on={invitedOnly} onClick={() => setInvitedOnly(!invitedOnly)}>
+            Invited by you
           </ToggleChip>
           {filtered && (
             <button
