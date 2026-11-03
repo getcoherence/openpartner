@@ -40,21 +40,60 @@ the buyer is needed or read.
 
 ### The checkout code
 
-Client-side, with PayPal's JS SDK and the OpenPartner script on the page:
+The brand's server creates and captures the order (PayPal's standard
+integration, and what the [sample page](../examples/paypal-checkout/README.md)
+does). Don't create or capture orders in the page
+(`actions.order.create` / `actions.order.capture`): in our sandbox check
+PayPal refused a page-side capture of a payment made with a PayPal account
+(`permission_denied`).
+
+The page, with PayPal's JS SDK and the OpenPartner script on it, sends
+`openpartner.getReferral()` with the order request:
 
 ```js
-paypal.Buttons({
-  createOrder: (data, actions) =>
-    actions.order.create({
-      purchase_units: [{
-        amount: { currency_code: 'USD', value: '49.00' },
-        custom_id: openpartner.getReferral() ?? undefined,
-      }],
-    }),
-  onApprove: (data, actions) => actions.order.capture(),
-}).render('#paypal-button');
+const post = (path, body) =>
+  fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) })
+    .then((r) => r.json());
 
-// Subscriptions
+paypal.Buttons({
+  createOrder: () => post('/api/orders', { referral: openpartner.getReferral() }).then((order) => order.id),
+  onApprove: (data) => post(`/api/orders/${data.orderID}/capture`),
+}).render('#paypal-button');
+```
+
+The server puts it in `custom_id`, or reads the `op_ref` cookie the script
+sets (`referralCookieHeader` in `@openpartner/sdk/server` writes one Safari
+keeps):
+
+```js
+const paypal = (path, body) =>
+  fetch(`https://api-m.paypal.com${path}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then((r) => r.json());
+
+app.post('/api/orders', async (req, res) => {
+  const referral = req.body.referral ?? req.cookies.op_ref;
+  const order = await paypal('/v2/checkout/orders', {
+    intent: 'CAPTURE',
+    purchase_units: [{
+      amount: { currency_code: 'USD', value: '49.00' },
+      custom_id: referral || undefined,
+    }],
+  });
+  res.json({ id: order.id });
+});
+
+app.post('/api/orders/:id/capture', async (req, res) => {
+  res.json(await paypal(`/v2/checkout/orders/${encodeURIComponent(req.params.id)}/capture`, {}));
+});
+```
+
+Subscriptions are created in the page, PayPal's usual subscription
+integration:
+
+```js
 paypal.Buttons({
   createSubscription: (data, actions) =>
     actions.subscription.create({
@@ -64,29 +103,7 @@ paypal.Buttons({
 }).render('#paypal-subscribe');
 ```
 
-Server-side (PayPal's standard integration, and what the sample page does;
-in our sandbox check PayPal refused a client-side capture with
-`permission_denied`): the page
-sends `openpartner.getReferral()` with its request, or the server reads the
-`op_ref` cookie the script sets (`referralCookieHeader` in
-`@openpartner/sdk/server` writes one Safari keeps).
-
-```js
-const referral = req.body.referral ?? req.cookies.op_ref;
-await fetch('https://api-m.paypal.com/v2/checkout/orders', {
-  method: 'POST',
-  headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    intent: 'CAPTURE',
-    purchase_units: [{
-      amount: { currency_code: 'USD', value: '49.00' },
-      custom_id: referral || undefined,
-    }],
-  }),
-});
-```
-
-For a subscription, the same `custom_id` goes in the
+Or on the server: the same `custom_id` goes in the
 `POST /v1/billing/subscriptions` body.
 
 ## Connecting (Admin → Integrations → PayPal)
