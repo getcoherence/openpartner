@@ -58,6 +58,8 @@ let youtubeAnswer: { status: number; body: unknown } = { status: 200, body: {} }
 let youtubeGate: Promise<void> | null = null;
 /** A save (PATCH) waits for this, if set. */
 let saveGate: Promise<void> | null = null;
+/** What PUT …/platforms/:platform answers, if set. */
+let putAnswer: { status: number; body: unknown } | null = null;
 
 const COPY_URL = 'https://cdn.example.com/creators/crt_1/youtube/banner.jpg';
 const CHANNEL_SOURCE = { platform: 'youtube', url: 'https://www.youtube.com/channel/UC_pat' };
@@ -80,11 +82,13 @@ beforeEach(() => {
   youtubeAnswer = { status: 200, body: { coverImageUrl: COPY_URL, coverSource: CHANNEL_SOURCE } };
   youtubeGate = null;
   saveGate = null;
+  putAnswer = null;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = init?.method ?? 'GET';
     calls.push({ method, url, body: typeof init?.body === 'string' ? JSON.parse(init.body) : null });
     if (method === 'PATCH' && saveGate) await saveGate;
+    if (method === 'PUT' && putAnswer) return json(putAnswer.status, putAnswer.body);
     if (url.endsWith('/platforms') && method === 'GET') return json(200, { platforms });
     if (url.endsWith('/cover/youtube')) {
       if (youtubeGate) await youtubeGate;
@@ -171,6 +175,43 @@ describe('creator profile page (same editor, creator endpoints)', () => {
     await waitFor(() => expect(calls.some((c) => c.method === 'PATCH')).toBe(true));
     expect(calls.find((c) => c.method === 'PATCH')!.url).toBe('/api/creator-api/creators/me');
     expect(calls.some((c) => c.url === '/api/creator-api/creators/me/platforms')).toBe(true);
+  });
+
+  it('a pasted profile link comes back as the handle the Network saved', async () => {
+    const linkedin = { id: 'cpf_2', platform: 'linkedin', handle: 'pat', profileUrl: 'https://www.linkedin.com/in/pat', followerCount: 300, verified: false };
+    platforms = [linkedin];
+    putAnswer = { status: 200, body: linkedin };
+    const page = renderWith(<CreatorMyProfilePage />, 'creator-my-profile');
+    const row = (await waitFor(() => page.getByLabelText('LinkedIn followers'))).parentElement!;
+    const input = row.querySelector('input')!;
+    fireEvent.change(input, { target: { value: 'https://www.linkedin.com/in/pat?utm_source=share_via' } });
+    fireEvent.click(page.getByRole('button', { name: 'Update' }));
+    await waitFor(() => expect(input.value).toBe('pat'));
+    expect(calls.find((c) => c.method === 'PUT')!.body).toEqual({ handle: 'https://www.linkedin.com/in/pat?utm_source=share_via', followerCount: 300 });
+  });
+
+  it('says why the Network refused a handle', async () => {
+    putAnswer = { status: 400, body: { error: 'handle_wrong_platform', platform: 'linkedin' } };
+    const page = renderWith(<CreatorMyProfilePage />, 'creator-my-profile');
+    const picker = await waitFor(() => page.getByLabelText('Platform to add'));
+    fireEvent.change(picker, { target: { value: 'twitter' } });
+    const row = page.getByLabelText('Platform to add').parentElement!;
+    fireEvent.change(row.querySelector('input')!, { target: { value: 'https://www.linkedin.com/in/pat' } });
+    fireEvent.click(page.getByRole('button', { name: 'Add' }));
+    expect((await page.findByRole('alert')).textContent).toBe('That’s a LinkedIn link, not X / Twitter.');
+  });
+});
+
+describe('partner profile page, refused handle through the brand proxy', () => {
+  it('unwraps the Network’s answer', async () => {
+    putAnswer = { status: 400, body: { error: 'network_call_failed', detail: JSON.stringify({ error: 'invalid_handle' }) } };
+    const page = renderWith(<MyProfilePage />, 'network-my-profile');
+    const picker = await waitFor(() => page.getByLabelText('Platform to add'));
+    fireEvent.change(picker, { target: { value: 'linkedin' } });
+    const row = page.getByLabelText('Platform to add').parentElement!;
+    fireEvent.change(row.querySelector('input')!, { target: { value: 'Pat Smith' } });
+    fireEvent.click(page.getByRole('button', { name: 'Add' }));
+    expect((await page.findByRole('alert')).textContent).toBe('Enter your LinkedIn handle or profile link.');
   });
 
   async function savedBody(page: ReturnType<typeof renderWith>): Promise<Record<string, unknown>> {
