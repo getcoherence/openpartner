@@ -51,8 +51,8 @@
  *                many carried a partner click, how many came with no click
  *                reference or one naming no click, and how many the
  *                catch-up recorded after the webhook missed them. From
- *                PaymentEventLog, a delivery log (sandbox apps' rehearsals
- *                left out). Null while no app has ever tracked payments.
+ *                PaymentEventLog, a delivery log (test clicks left out).
+ *                Null while no app has ever tracked payments.
  *   issues       input OpenPartner dropped (tracking-issues.ts).
  *   signals      when each integration last delivered anything.
  */
@@ -513,7 +513,7 @@ async function paypalHealth(db: Knex, tenantId: string, since: Date): Promise<Pa
     .where({ tenantId, provider: 'paypal' })
     .andWhere('receivedAt', '>=', since)
     .andWhere((q) => q.where('eventKey', 'like', 'capture:%').orWhere('eventKey', 'like', 'sale:%'))
-    .whereNotIn('outcome', ['sandbox', 'test_click'])
+    .whereNot('outcome', 'test_click')
     .groupBy('outcome')
     .select('outcome')
     .count({ n: '*' })) as Array<{ outcome: string; n: string | number }>;

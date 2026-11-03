@@ -69,7 +69,24 @@ describe('webhook events', () => {
     ).toMatchObject({ kind: 'refund', paymentId: '2GG279541U471931P' });
     expect(
       factFromWebhookEvent({ event_type: 'PAYMENT.SALE.REFUNDED', resource: { id: 'R1', state: 'completed', sale_id: 'S1', amount: { total: '1.00', currency: 'USD' } } }),
-    ).toMatchObject({ kind: 'refund', paymentId: 'S1' });
+    ).toMatchObject({ kind: 'refund', paymentId: 'S1', reversal: false });
+    expect(
+      factFromWebhookEvent({
+        event_type: 'PAYMENT.CAPTURE.REVERSED',
+        resource: {
+          id: '09E71677NS257044M',
+          status: 'COMPLETED',
+          amount: { value: '2.51', currency_code: 'USD' },
+          links: [{ rel: 'up', href: 'https://api.paypal.com/v2/payments/captures/4L335234718889942', method: 'GET' }],
+        },
+      }),
+    ).toMatchObject({ kind: 'refund', paymentId: '4L335234718889942', reversal: true, amount: { value: '2.51' } });
+    expect(
+      factFromWebhookEvent({
+        event_type: 'PAYMENT.SALE.REVERSED',
+        resource: { id: 'R2', state: 'completed', amount: { total: '-0.49', currency: 'USD' }, links: [{ rel: 'sale', href: 'https://api.paypal.com/v1/payments/sale/S2' }] },
+      }),
+    ).toMatchObject({ kind: 'refund', paymentId: 'S2', reversal: true, amount: { value: '0.49' } });
     expect(
       factFromWebhookEvent({
         event_type: 'CUSTOMER.DISPUTE.CREATED',
@@ -92,7 +109,7 @@ describe('Transaction Search rows', () => {
     ...o,
   });
 
-  it('reads payments received, subscription payments and refunds; skips the rest', () => {
+  it('reads payments received, subscription payments, refunds and reversals; skips the rest', () => {
     expect(factFromTransaction(row({ transaction_event_code: 'T0006', custom_field: 'abc', paypal_reference_id: 'O1', paypal_reference_id_type: 'ODR' }))).toMatchObject({
       kind: 'capture',
       customId: 'abc',
@@ -104,7 +121,14 @@ describe('Transaction Search rows', () => {
     });
     expect(
       factFromTransaction(row({ transaction_event_code: 'T1107', transaction_amount: { currency_code: 'USD', value: '-4.00' }, paypal_reference_id: 'T0', paypal_reference_id_type: 'TXN' })),
-    ).toMatchObject({ kind: 'refund', paymentId: 'T0', amount: { value: '4.00' } });
+    ).toMatchObject({ kind: 'refund', paymentId: 'T0', amount: { value: '4.00' }, reversal: false });
+    for (const code of ['T1106', 'T1201']) {
+      expect(
+        factFromTransaction(row({ transaction_event_code: code, transaction_amount: { currency_code: 'USD', value: '-10.00' }, paypal_reference_id: 'T0', paypal_reference_id_type: 'TXN' })),
+      ).toMatchObject({ kind: 'refund', paymentId: 'T0', reversal: true });
+    }
+    // A hold while a dispute is looked into takes nothing back yet.
+    expect(factFromTransaction(row({ transaction_event_code: 'T1110', transaction_amount: { currency_code: 'USD', value: '-10.00' }, paypal_reference_id: 'T0' }))).toBeNull();
     expect(factFromTransaction(row({ transaction_event_code: 'T0006', transaction_status: 'P' }))).toBeNull();
     expect(factFromTransaction(row({ transaction_event_code: 'T0001', transaction_amount: { currency_code: 'USD', value: '-10.00' } }))).toBeNull();
     expect(factFromTransaction(row({ transaction_event_code: 'T0400' }))).toBeNull();

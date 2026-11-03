@@ -46,12 +46,15 @@ export const PAYPAL_WEBHOOK_EVENTS = [
 /** The payment events a connection tracking payments subscribes to
  *  (docs/paypal-payments.md, paypal-payments.ts): checkout captures,
  *  subscription payments (the v1 sale events PayPal still sends for
- *  them), refunds, new subscriptions and disputes. */
+ *  them), refunds, reversals (PayPal taking a payment back: a lost
+ *  dispute or chargeback), new subscriptions and disputes. */
 export const PAYPAL_PAYMENT_EVENTS = [
   'PAYMENT.CAPTURE.COMPLETED',
   'PAYMENT.CAPTURE.REFUNDED',
+  'PAYMENT.CAPTURE.REVERSED',
   'PAYMENT.SALE.COMPLETED',
   'PAYMENT.SALE.REFUNDED',
+  'PAYMENT.SALE.REVERSED',
   'BILLING.SUBSCRIPTION.CREATED',
   'BILLING.SUBSCRIPTION.ACTIVATED',
   'CUSTOMER.DISPUTE.CREATED',

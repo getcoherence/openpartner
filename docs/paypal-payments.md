@@ -138,11 +138,13 @@ renewals stay with the partner.
 | `BILLING.SUBSCRIPTION.ACTIVATED` | `subscription_created`, keyed on the subscription id, attributed (the buyer approved it). |
 | `PAYMENT.SALE.COMPLETED` | `invoice_paid` for a subscription payment, the first and every renewal, keyed on the sale id, joined to its subscription. |
 | `PAYMENT.CAPTURE.REFUNDED`, `PAYMENT.SALE.REFUNDED` | A `refund` against the payment's Event, through `POST /attribution/refunds`' own path. |
+| `PAYMENT.CAPTURE.REVERSED`, `PAYMENT.SALE.REVERSED` | A `chargeback` against the payment's Event, the same path: PayPal took the payment back. |
 | `CUSTOMER.DISPUTE.CREATED` | `dispute_created` under the disputed payment's user. Reverses nothing. |
 
 Events carry `metadata.via: "paypal"`, the PayPal event type and PayPal's
 own ids (`paypalCaptureId`, `paypalOrderId`, `paypalSaleId`,
-`paypalSubscriptionId`, `paypalRefundId`, `paypalDisputeId`) and the raw
+`paypalSubscriptionId`, `paypalRefundId`, `paypalReversalId`,
+`paypalDisputeId`), `paypalEnvironment` (`live` or `sandbox`) and the raw
 `custom_id` (`paypalCustomId`). A pending capture or refund records nothing
 until PayPal sends its completion. A payment of zero is skipped.
 
@@ -196,21 +198,26 @@ A refund is recorded with `recordRefund`, the code behind
   refunds what's left, marked `cappedToRemaining`;
 - a refund of a payment OpenPartner never recorded is left alone.
 
-A dispute is recorded and reverses nothing, as for Stripe: disputes can be
-won. When one is lost, report the chargeback (`POST /attribution/refunds`
-with `kind: "chargeback"`), or reverse the commission in the review queue.
-PayPal's `PAYMENT.CAPTURE.REVERSED` / `PAYMENT.SALE.REVERSED` are not
-subscribed to yet (see [Not yet](#not-yet)).
+A dispute is recorded and reverses nothing: disputes can be won. When PayPal
+takes the payment back (`PAYMENT.CAPTURE.REVERSED` / `PAYMENT.SALE.REVERSED`:
+a dispute lost, a card chargeback), that is recorded through the same path
+as a `chargeback`, so the commission is reduced, reversed or clawed back by
+the share taken. A reversal PayPal later undoes (the brand won on appeal) is
+not restored automatically: an admin re-credits the partner.
 
 ## Sandbox
 
-A sandbox app is a rehearsal, as for Pay with PayPal: PayPal's sandbox moves
-test money, so its payments record no Event, commission or fee. A sandbox
-payment (or subscription) whose `custom_id` carries an admin's
-[test click](tracking-health.md#send-a-test-click) links the test ("A PayPal
-payment carried it"), which proves the checkout passes the click, and
-passes the brand's tracking test. Everything else a sandbox app sends is
-logged as `sandbox` and counted nowhere.
+A sandbox app's payments are recorded exactly like a live app's: Events,
+attribution, commissions, refunds, reversals and disputes. That is what lets
+a test workspace run the whole flow on PayPal's test money. Their Events say
+`metadata.paypalEnvironment: "sandbox"`, and the platform fee never bills
+them (usage-ledger.ts). Don't track a sandbox app in a workspace with real
+partners: their clicks would earn commissions on test money.
+
+A payment (or subscription) from either app whose `custom_id` carries an
+admin's [test click](tracking-health.md#send-a-test-click) links the test
+("A PayPal payment carried it") and records nothing else: test clicks are
+never Clicks.
 
 ## Missed webhooks: the catch-up
 
@@ -228,7 +235,8 @@ credentials:
    needs no webhook, so it is the only source for a deployment PayPal can't
    post to, and it names every subscription payment's subscription
    (`paypal_reference_id_type: SUB`). Payments received (`T00xx`, positive)
-   become captures or sales, `T1107` rows refunds; payouts sent, holds and
+   become captures or sales, `T1107` rows refunds, `T1106` (a reversal) and
+   `T1201` (a card chargeback) rows chargebacks; payouts sent, holds and
    fees are skipped. PayPal turns Transaction Search on per app: an app it
    refuses (403) shows **Turn on Transaction Search** on its card and is
    asked again a day later.
@@ -238,7 +246,7 @@ Both sources turn into the same facts the webhook settles. Each fact
 `subscription_activated:<id>`, `dispute:<id>`) is settled once, under an
 advisory lock, and logged in `PaymentEventLog` with what became of it
 (`recorded`, `linked`, `no_reference`, `unknown_click`,
-`foreign_reference`, `test_click`, `sandbox`, `not_tracked`, `ignored`), so
+`foreign_reference`, `test_click`, `not_tracked`, `ignored`), so
 a webhook, its redeliveries and the catch-up never settle it twice. Oldest
 first, so a subscription is stored before its renewals. Bounded per app per
 run (1,000 facts, 40 pages); what a run leaves is still in the window next
@@ -306,7 +314,11 @@ payloads. What still needs PayPal itself:
   ids;
 - the events list's retention and next-page link;
 - a v2 refund's `up` link names the capture, and a `T1107` row's
-  `paypal_reference_id` is the refunded payment.
+  `paypal_reference_id` is the refunded payment;
+- a reversal's resource is a refund naming the capture (v2) or the sale
+  (`sale_id`, or a `/v1/payments/sale/` link), and its `T1106` row carries
+  the same id as the webhook's (otherwise a partial reversal could be
+  counted twice; a full one can't, there's nothing left).
 
 **Where to run it.** PayPal posts webhooks only to public https addresses.
 Run the check **after deploying, in a test workspace on the hosted app**:
@@ -334,31 +346,39 @@ Only the webhook needs to be public: the checkout page can run on
    ([examples/paypal-checkout](../examples/paypal-checkout/README.md)) with
    the app's client id. Add `PAYPAL_PLAN_ID` (a sandbox plan of the same app)
    to test subscriptions.
-5. **The webhook and `custom_id`.** Tracking health → **Send a test click**
-   on the program. The tab lands on the page, which shows the partner click.
-   Pay with the sandbox buyer. Within a minute the test's last step reads
-   "A PayPal payment carried it". A second test click through
-   `/?mode=subscription` proves the subscription's `custom_id` the same way.
-6. **Transaction Search.** After the next hourly catch-up (at :50) the card
+5. **The test click.** Tracking health → **Send a test click** on the
+   program. The tab lands on the page, which shows the click. Pay with the
+   sandbox buyer. Within a minute the test's last step reads "A PayPal
+   payment carried it", and nothing is recorded.
+6. **Conversion and commission.** Click the partner's link in a private
+   window and pay with the sandbox buyer (the page's `AMOUNT`). Within a
+   minute Admin → Commissions shows an `invoice_paid` under the partner with
+   its commission, and Tracking health counts a PayPal payment with a click.
+7. **Refunds.** In the sandbox merchant account (sandbox.paypal.com, the
+   app's Business account): Activity → the payment → Refund part of it. The
+   commission drops to the share kept. Refund the rest: it is reversed.
+8. **Subscriptions.** Through `/?mode=subscription`, subscribe with the
+   sandbox buyer: `subscription_created` at approval and an `invoice_paid`
+   for the first payment, under the same partner.
+9. **A dispute, then a reversal.** Pay again through the partner's link.
+   As the sandbox buyer, open a dispute on that payment (Resolution Center,
+   item not received): a `dispute_created` is recorded and the commission
+   stays. Then settle it for the buyer with PayPal's sandbox-only calls,
+   from your own terminal, with the app's credentials:
+   ```bash
+   PAYPAL_CLIENT_ID=… PAYPAL_CLIENT_SECRET=… node examples/paypal-checkout/sandbox-dispute.mjs PP-D-…
+   ```
+   It escalates the dispute to a claim and settles it in the buyer's favour.
+   PayPal reverses the payment: a `chargeback` is recorded and the
+   commission is reversed.
+10. **Transaction Search.** After the next hourly catch-up (at :50) the card
    shows no Transaction Search warning. Payments appear there up to three
-   hours late.
-7. **Conversion, commission and refund.** A sandbox app records no
-   conversion by design ([Sandbox](#sandbox)), so steps 5 and 6 are what a
-   sandbox can prove. For the rest, connect the **live** app in the same
-   test workspace the same way, click the partner's link in a private
-   window, and pay a small amount with a real PayPal account (the page's
-   `AMOUNT`). Expect an `invoice_paid` under the partner in Admin →
-   Commissions within a minute, with its commission. Refund part of it in
-   PayPal (Activity → the payment → Refund): the commission drops to the
-   share kept. Refund the rest: it is reversed. A subscription through
-   `/?mode=subscription` records `subscription_created` and an
-   `invoice_paid` for its first payment.
+   hours late, as do any the webhook missed.
 
 ## Not yet
 
-- **Reversals**: `PAYMENT.CAPTURE.REVERSED` and `PAYMENT.SALE.REVERSED` (a
-  chargeback PayPal settled for the buyer) could be recorded as a
-  `chargeback` automatically. Today the brand reports it, as for Stripe.
+- **Reversals undone**: a reversal PayPal undoes later (`T1202`, a
+  chargeback reversed for the merchant) isn't re-credited automatically.
 - **Repeat buyers without a click**: a later purchase by the same PayPal
   payer whose browser lost the referral isn't credited. The payer id is on
   the order, not the capture, so it would cost a read per payment.

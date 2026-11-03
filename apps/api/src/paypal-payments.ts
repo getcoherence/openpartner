@@ -27,12 +27,14 @@
  *                  against the payment's Event: each refund its own
  *                  amount, so partial refunds add up and the commissions
  *                  are reduced, reversed or clawed back by the share
- *                  refunded so far.
+ *                  refunded so far. A reversal (PayPal took the payment
+ *                  back: a lost dispute, a chargeback) is the same, as a
+ *                  `chargeback`.
  *   subscription   CREATED stores the custom_id; ACTIVATED (the buyer
  *                  approved it) records `subscription_created`.
  *   dispute        `dispute_created` under the payment's user, reversing
- *                  nothing: disputes can be won. A lost one is reported as
- *                  a chargeback (POST /attribution/refunds), as for Stripe.
+ *                  nothing: disputes can be won. A lost one comes back as
+ *                  a reversal.
  *
  * Settling a fact writes a PaymentEventLog row with what became of it, in
  * the same transaction, so the webhook, its redeliveries and the catch-up
@@ -41,10 +43,11 @@
  * second guard, and keeps a conversion the brand also forwarded under the
  * PayPal transaction id from counting twice.
  *
- * A sandbox app is a rehearsal, as for Pay with PayPal: its payments record
- * no Event. One that carries an admin's test click links the test
- * (test-clicks.ts), which is how a brand proves its checkout passes the
- * click without paying anything real.
+ * A sandbox app's payments are recorded like a live app's, so a test
+ * workspace can run the whole flow on PayPal's test money; their Events say
+ * `paypalEnvironment: 'sandbox'`, and the platform fee never bills them
+ * (usage-ledger.ts). A payment carrying an admin's test click, from either
+ * app, links the test (test-clicks.ts) instead.
  */
 
 import type { Knex } from 'knex';
@@ -72,7 +75,8 @@ export interface PaypalAmount {
 export type PaypalFact =
   | { kind: 'capture'; id: string; amount: PaypalAmount; customId: string | null; orderId: string | null; at: Date }
   | { kind: 'sale'; id: string; amount: PaypalAmount; subscriptionId: string | null; custom: string | null; at: Date }
-  | { kind: 'refund'; id: string; amount: PaypalAmount; paymentId: string | null; at: Date }
+  /** `reversal`: PayPal took the payment back, recorded as a chargeback. */
+  | { kind: 'refund'; id: string; amount: PaypalAmount; paymentId: string | null; reversal: boolean; at: Date }
   | {
       kind: 'subscription';
       id: string;
@@ -94,8 +98,6 @@ export type PaypalOutcome =
   | 'unknown_click'
   | 'foreign_reference'
   | 'test_click'
-  /** A sandbox app's: never recorded. */
-  | 'sandbox'
   /** A refund or dispute of a payment OpenPartner didn't record. */
   | 'not_tracked'
   | 'ignored';
@@ -159,6 +161,19 @@ function capturedBy(links: unknown): string | null {
   return null;
 }
 
+/** The sale a v1 refund or reversal belongs to, when it doesn't say
+ *  `sale_id`: a link names it. */
+function saleOf(links: unknown): string | null {
+  if (!Array.isArray(links)) return null;
+  for (const l of links) {
+    const { href } = (l ?? {}) as { href?: unknown };
+    if (typeof href !== 'string') continue;
+    const m = /\/v1\/payments\/sale\/([A-Za-z0-9]{1,64})(?:[/?#]|$)/.exec(href);
+    if (m) return m[1]!;
+  }
+  return null;
+}
+
 /** The fact a webhook event (or an events-list entry) reports, or null for
  *  one this doesn't record (a pending capture, a refund not yet done). */
 export function factFromWebhookEvent(event: PaypalWebhookEvent): PaypalFact | null {
@@ -181,19 +196,24 @@ export function factFromWebhookEvent(event: PaypalWebhookEvent): PaypalFact | nu
       const agreement = str(r.billing_agreement_id);
       return { kind: 'sale', id, amount: a, subscriptionId: agreement, custom: str(r.custom), at };
     }
-    case 'PAYMENT.CAPTURE.REFUNDED': {
+    // A reversal's resource is a refund of the capture, as a refund's is.
+    case 'PAYMENT.CAPTURE.REFUNDED':
+    case 'PAYMENT.CAPTURE.REVERSED': {
       const id = str(r.id);
       const amount = r.amount as { value?: unknown; currency_code?: unknown } | undefined;
       const a = amountOf(amount?.value, amount?.currency_code);
       if (!id || !a || (r.status != null && r.status !== 'COMPLETED')) return null;
-      return { kind: 'refund', id, amount: a, paymentId: capturedBy(r.links), at };
+      const reversal = event.event_type === 'PAYMENT.CAPTURE.REVERSED';
+      return { kind: 'refund', id, amount: a, paymentId: capturedBy(r.links), reversal, at };
     }
-    case 'PAYMENT.SALE.REFUNDED': {
+    case 'PAYMENT.SALE.REFUNDED':
+    case 'PAYMENT.SALE.REVERSED': {
       const id = str(r.id);
       const amount = r.amount as { total?: unknown; currency?: unknown } | undefined;
       const a = amountOf(amount?.total, amount?.currency);
       if (!id || !a || (r.state != null && String(r.state).toLowerCase() !== 'completed')) return null;
-      return { kind: 'refund', id, amount: a, paymentId: str(r.sale_id), at };
+      const reversal = event.event_type === 'PAYMENT.SALE.REVERSED';
+      return { kind: 'refund', id, amount: a, paymentId: str(r.sale_id) ?? saleOf(r.links), reversal, at };
     }
     case 'BILLING.SUBSCRIPTION.CREATED':
     case 'BILLING.SUBSCRIPTION.ACTIVATED': {
@@ -233,11 +253,15 @@ export function factFromWebhookEvent(event: PaypalWebhookEvent): PaypalFact | nu
 /**
  * The fact a Transaction Search row reports. Only finished ones (status S):
  *   T1107        a refund; paypal_reference_id is the refunded payment.
+ *   T1106, T1201 a reversal (PayPal took the payment back) or a card
+ *                chargeback, naming the payment the same way.
  *   T00xx, > 0   a payment received. One whose reference is a
  *                subscription (SUB), or a subscription payment (T0002),
  *                is a sale; any other is a capture.
  * Everything else (payouts sent, holds, fees, transfers) is skipped.
  */
+const REVERSAL_CODES: ReadonlySet<string> = new Set(['T1106', 'T1201']);
+
 export function factFromTransaction(t: PaypalTransactionInfo): PaypalFact | null {
   const id = str(t.transaction_id);
   const code = str(t.transaction_event_code);
@@ -246,7 +270,9 @@ export function factFromTransaction(t: PaypalTransactionInfo): PaypalFact | null
   const negative = String(t.transaction_amount?.value ?? '').startsWith('-');
   const ref = str(t.paypal_reference_id);
   const at = date(t.transaction_initiation_date);
-  if (code === 'T1107') return negative && ref ? { kind: 'refund', id, amount: a, paymentId: ref, at } : null;
+  if (code === 'T1107' || REVERSAL_CODES.has(code)) {
+    return negative && ref ? { kind: 'refund', id, amount: a, paymentId: ref, reversal: code !== 'T1107', at } : null;
+  }
   if (!/^T00\d\d$/.test(code) || negative || Number(a.value) <= 0) return null;
   if (t.paypal_reference_id_type === 'SUB' || code === 'T0002') {
     return { kind: 'sale', id, amount: a, subscriptionId: t.paypal_reference_id_type === 'SUB' ? ref : null, custom: str(t.custom_field), at };
@@ -289,7 +315,7 @@ type Reference =
  * The click a custom_id names in this tenant. A test click is linked here
  * (the first time), and an unknown one counted for Tracking health when
  * `note` is set: once per payment, never again for a subscription's
- * renewals, and never for a sandbox app, which has no real clicks.
+ * renewals, and never for a sandbox app's test payments.
  */
 async function resolveReference(trx: Knex, tenantId: string, customId: string | null, note: boolean): Promise<Reference> {
   if (!customId) return { kind: 'no_reference' };
@@ -355,6 +381,7 @@ function eventMetadata(source: PaypalSource, extra: Record<string, unknown>): Re
     // `via`, as the Stripe App's Events carry it: metadata.source is how a
     // conversion was attributed ('coupon').
     via: 'paypal',
+    paypalEnvironment: source.conn.environment,
     paypalEventType: source.type,
     ...extra,
     ...(source.via === 'catchup' ? { recoveredBy: 'paypal_catchup' } : {}),
@@ -374,7 +401,6 @@ async function settlePayment(
 ): Promise<PaypalFactResult> {
   const tenantId = source.conn.tenantId;
   const ref = await resolveReference(trx, tenantId, customId, note && !sandbox(source));
-  if (sandbox(source)) return done(ref.kind === 'test_click' ? 'test_click' : 'sandbox');
   if (ref.kind !== 'click') return done(ref.kind);
   const value = Number(fact.amount.value);
   if (!(value > 0)) return done('ignored');
@@ -535,7 +561,6 @@ async function settleSubscription(
       createdAt: fact.createdAt,
     });
   }
-  if (sandbox(source)) return done(ref.kind === 'test_click' ? 'test_click' : 'sandbox');
   if (ref.kind !== 'click') return done(ref.kind);
   if (!fact.activated) return done('linked');
 
@@ -570,7 +595,6 @@ async function paymentEvent(trx: Knex, tenantId: string, paymentId: string): Pro
 }
 
 async function settleRefund(trx: Knex.Transaction, source: PaypalSource, fact: Extract<PaypalFact, { kind: 'refund' }>): Promise<PaypalFactResult> {
-  if (sandbox(source)) return done('sandbox');
   const tenantId = source.conn.tenantId;
   const conversion = fact.paymentId ? await paymentEvent(trx, tenantId, fact.paymentId) : null;
   if (!conversion) return done('not_tracked');
@@ -580,10 +604,10 @@ async function settleRefund(trx: Knex.Transaction, source: PaypalSource, fact: E
     conversionEventId: conversion.id,
     amount: Number(fact.amount.value),
     currency: fact.amount.currency,
-    kind: 'refund',
+    kind: fact.reversal ? 'chargeback' : 'refund',
     externalEventId: fact.id,
     ts: fact.at,
-    metadata: eventMetadata(source, { paypalRefundId: fact.id, [paymentKey]: fact.paymentId }),
+    metadata: eventMetadata(source, { [fact.reversal ? 'paypalReversalId' : 'paypalRefundId']: fact.id, [paymentKey]: fact.paymentId }),
   };
   // A redelivery repeats exactly what was recorded, so the refund finishes
   // anything it left held in transfer instead of conflicting with itself.
@@ -600,7 +624,7 @@ async function settleRefund(trx: Knex.Transaction, source: PaypalSource, fact: E
   }
   if (!result.ok) {
     if (result.error !== 'nothing_to_refund') {
-      console.warn('[paypal-payments] refund not applied', { tenantId, paypalRefundId: fact.id, error: result.error });
+      console.warn('[paypal-payments] refund not applied', { tenantId, paypalRefundId: fact.id, reversal: fact.reversal, error: result.error });
     }
     return done('ignored');
   }
@@ -608,7 +632,6 @@ async function settleRefund(trx: Knex.Transaction, source: PaypalSource, fact: E
 }
 
 async function settleDispute(trx: Knex.Transaction, source: PaypalSource, fact: Extract<PaypalFact, { kind: 'dispute' }>): Promise<PaypalFactResult> {
-  if (sandbox(source)) return done('sandbox');
   const tenantId = source.conn.tenantId;
   const disputed: EventRow[] = [];
   for (const id of fact.transactionIds) {

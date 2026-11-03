@@ -194,7 +194,7 @@ function AppRow({
         <>
           <div style={note}>
             {app.lastEventAt ? `Last payment ${formatDate(app.lastEventAt, { relative: true })}` : 'No payments yet'}
-            {app.environment === 'sandbox' && ' · Sandbox payments record nothing; a test click in one passes the test'}
+            {app.environment === 'sandbox' && ' · Test money: never billed'}
           </div>
           {!app.webhook.registered && (
             // Pay with PayPal's app's error speaks of batches; a checkout

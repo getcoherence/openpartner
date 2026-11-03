@@ -9,13 +9,14 @@
  *   - a capture whose custom_id names a click records one attributed
  *     invoice_paid under the click's user, whatever redelivers it; no
  *     reference, a foreign one or an unknown click records nothing and is
- *     counted; a sandbox app records nothing but links a test click;
+ *     counted; a sandbox app's payments are recorded the same way and
+ *     never billed; a test click is linked instead;
  *   - subscriptions: the custom_id is stored at CREATED, ACTIVATED records
  *     subscription_created, each renewal joins on billing_agreement_id (or
  *     the subscription's transactions, or PayPal's read of it), and
  *     renewals follow Program.renewalsStayWithPartner;
  *   - refunds go through POST /attribution/refunds' path (partials add up),
- *     disputes reverse nothing;
+ *     a reversal is a chargeback, disputes reverse nothing;
  *   - the catch-up records what no webhook delivered, from the events list
  *     and from Transaction Search, once, never before tracking began;
  *   - Tracking health counts PayPal payments by what became of them.
@@ -38,6 +39,7 @@ const { createApp } = await import('../app.js');
 const { __setMailerForTests } = await import('../mailer.js');
 const { __setPaypalFetchForTests, PAYPAL_PAYMENT_EVENTS, PAYPAL_WEBHOOK_EVENTS } = await import('../paypal-api.js');
 const { runPaypalPaymentsCatchup, SEARCH_RECHECK_HOURS } = await import('../paypal-payments-catchup.js');
+const { sumBillableBasis } = await import('../usage-ledger.js');
 
 const T = DEFAULT_TENANT_ID;
 const OTHER = 'paypal-payments-other';
@@ -168,10 +170,10 @@ function subscriptionEvent(type: 'CREATED' | 'ACTIVATED', id: string, customId: 
   };
 }
 
-function captureRefund(captureId: string, value: string, o: { id?: string; at?: string } = {}) {
+function captureRefund(captureId: string, value: string, o: { id?: string; at?: string; reversed?: boolean } = {}) {
   return {
     id: `WH-${ulid()}`,
-    event_type: 'PAYMENT.CAPTURE.REFUNDED',
+    event_type: o.reversed ? 'PAYMENT.CAPTURE.REVERSED' : 'PAYMENT.CAPTURE.REFUNDED',
     create_time: o.at ?? iso(),
     resource_type: 'refund',
     resource: {
@@ -438,17 +440,26 @@ describe.skipIf(skipIntegration)('captures', () => {
     expect((await deliver(conn, pending)).body).toMatchObject({ skipped: 'not_final' });
   });
 
-  it('a sandbox app records nothing, and links an admin’s test click', async () => {
-    const res = await admin.post('/config/paypal', { environment: 'sandbox', clientId: CLIENT_ID, clientSecret: SECRET });
-    await admin.post('/config/paypal/sandbox/payments', { tracking: true });
-    const hook = fake.webhookAt(`https://portal.brand.example/api/webhooks/paypal/${res.body.connection.id}`)!;
-    const conn = { id: res.body.connection.id as string, webhookId: hook.id };
+  it('records a sandbox app’s payments the same way, never billed, and links an admin’s test click', async () => {
+    const conn = await connect('sandbox');
     const programId = await program();
     const { clickId } = await click(programId);
 
-    const real = capture({ customId: clickId });
-    expect((await deliver(conn, real)).body.outcome).toBe('sandbox');
-    expect(await eventsOf(real.resource.id)).toHaveLength(0);
+    const paid = capture({ customId: clickId, value: '100.00' });
+    expect((await deliver(conn, paid)).body.outcome).toBe('recorded');
+    const [conversion] = await eventsOf(paid.resource.id);
+    expect(conversion).toMatchObject({ type: 'invoice_paid', value: '100.00' });
+    expect(conversion.metadata).toMatchObject({ via: 'paypal', paypalEnvironment: 'sandbox' });
+    expect((await commissionsOf(conversion.id)).map((c) => [c.status, c.amount])).toEqual([['accrued', '20.00']]);
+    expect((await deliver(conn, captureRefund(paid.resource.id, '50.00'))).body.outcome).toBe('recorded');
+    expect((await commissionsOf(conversion.id)).filter((c) => c.status !== 'reversed').map((c) => c.amount)).toEqual(['10.00']);
+    // Test money: the platform fee's basis leaves it out, and a live
+    // payment still counts.
+    expect(await sumBillableBasis(db, T, null, new Date())).toEqual({});
+    const live = await connect('live');
+    const { clickId: liveClick } = await click(programId);
+    await deliver(live, capture({ customId: liveClick, value: '40.00' }));
+    expect(await sumBillableBasis(db, T, null, new Date())).toEqual({ USD: 40 });
 
     const testId = ulid();
     const testClickId = ulid();
@@ -608,6 +619,44 @@ describe.skipIf(skipIntegration)('refunds and disputes', () => {
 
     expect((await deliver(conn, captureRefund('CAPNEVERSEEN0001', '5.00'))).body.outcome).toBe('not_tracked');
   });
+
+  it('records a payment PayPal reverses as a chargeback, reversing its commission', async () => {
+    const conn = await connect();
+    const { clickId } = await click(await program());
+    const paid = capture({ customId: clickId, value: '100.00' });
+    await deliver(conn, paid);
+    const [conversion] = await eventsOf(paid.resource.id);
+
+    const reversed = captureRefund(paid.resource.id, '100.00', { reversed: true });
+    expect((await deliver(conn, reversed)).body.outcome).toBe('recorded');
+    const [chargeback] = await eventsOf(reversed.resource.id);
+    expect(chargeback).toMatchObject({ type: 'chargeback', value: '-100.00', userId: conversion.userId });
+    expect(chargeback.metadata).toMatchObject({ conversionEventId: conversion.id, paypalReversalId: reversed.resource.id, paypalCaptureId: paid.resource.id });
+    expect((await commissionsOf(conversion.id)).map((c) => c.status)).toEqual(['reversed']);
+    expect((await deliver(conn, { ...reversed, id: `WH-${ulid()}` })).body.outcome).toBe('duplicate');
+
+    // A renewal's reversal, naming its sale only in a link.
+    const subId = `I-${ulid().slice(0, 12)}`;
+    await deliver(conn, subscriptionEvent('CREATED', subId, clickId));
+    const renewal = sale({ subscriptionId: subId });
+    await deliver(conn, renewal);
+    const saleReversal = {
+      id: `WH-${ulid()}`,
+      event_type: 'PAYMENT.SALE.REVERSED',
+      create_time: iso(),
+      resource_type: 'refund',
+      resource: {
+        id: `SRV${ulid().slice(0, 14)}`,
+        state: 'completed',
+        amount: { total: '-49.00', currency: 'USD' },
+        links: [{ href: `https://api.paypal.com/v1/payments/sale/${renewal.resource.id}`, rel: 'sale', method: 'GET' }],
+      },
+    };
+    expect((await deliver(conn, saleReversal)).body.outcome).toBe('recorded');
+    const [renewalEvent] = await eventsOf(renewal.resource.id);
+    expect((await eventsOf(saleReversal.resource.id))[0]).toMatchObject({ type: 'chargeback', value: '-49.00' });
+    expect((await commissionsOf(renewalEvent.id)).map((c) => c.status)).toEqual(['reversed']);
+  });
 });
 
 describe.skipIf(skipIntegration)('catch-up', () => {
@@ -649,16 +698,22 @@ describe.skipIf(skipIntegration)('catch-up', () => {
     txn({ transaction_id: capId, transaction_event_code: 'T0006', transaction_initiation_date: iso(6 * 3_600_000), transaction_amount: { currency_code: 'USD', value: '80.00' }, custom_field: clickId, paypal_reference_id: 'ORDER1', paypal_reference_id_type: 'ODR' });
     txn({ transaction_id: saleId, transaction_event_code: 'T0002', transaction_initiation_date: iso(5 * 3_600_000), transaction_amount: { currency_code: 'USD', value: '49.00' }, paypal_reference_id: subId, paypal_reference_id_type: 'SUB' });
     txn({ transaction_id: refundId, transaction_event_code: 'T1107', transaction_initiation_date: iso(4 * 3_600_000), transaction_amount: { currency_code: 'USD', value: '-80.00' }, paypal_reference_id: capId, paypal_reference_id_type: 'TXN' });
+    // PayPal took the renewal back.
+    const reversalId = `REV${ulid().slice(0, 14)}`;
+    txn({ transaction_id: reversalId, transaction_event_code: 'T1106', transaction_initiation_date: iso(3.5 * 3_600_000), transaction_amount: { currency_code: 'USD', value: '-49.00' }, paypal_reference_id: saleId, paypal_reference_id_type: 'TXN' });
     // A payout the brand sent, and one from before tracking: skipped.
     txn({ transaction_id: 'PAYOUT1', transaction_event_code: 'T0000', transaction_initiation_date: iso(3 * 3_600_000), transaction_amount: { currency_code: 'USD', value: '-10.00' } });
     txn({ transaction_id: 'OLD1', transaction_event_code: 'T0006', transaction_initiation_date: iso(2 * DAY), transaction_amount: { currency_code: 'USD', value: '10.00' }, custom_field: clickId });
 
     const run = await runPaypalPaymentsCatchup();
-    expect(run.connections.find((c) => c.connectionId === conn.id)).toMatchObject({ recovered: 3, transactionSearch: 'ok' });
+    expect(run.connections.find((c) => c.connectionId === conn.id)).toMatchObject({ recovered: 4, transactionSearch: 'ok' });
     const [cap] = await eventsOf(capId);
     expect(cap).toMatchObject({ type: 'invoice_paid', value: '80.00', userId: `click:${clickId}` });
     expect((await commissionsOf(cap.id)).map((c) => c.status)).toEqual(['reversed']);
-    expect((await eventsOf(saleId))[0].metadata).toMatchObject({ paypalSubscriptionId: subId, recoveredBy: 'paypal_catchup' });
+    const [renewal] = await eventsOf(saleId);
+    expect(renewal.metadata).toMatchObject({ paypalSubscriptionId: subId, recoveredBy: 'paypal_catchup' });
+    expect((await eventsOf(reversalId))[0]).toMatchObject({ type: 'chargeback', value: '-49.00' });
+    expect((await commissionsOf(renewal.id)).map((c) => c.status)).toEqual(['reversed']);
     expect(await eventsOf('OLD1')).toHaveLength(0);
     expect((await db(TABLES.PaypalConnection).where({ id: conn.id }).first()).transactionSearch).toBe('ok');
   });

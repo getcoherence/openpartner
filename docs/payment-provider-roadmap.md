@@ -110,8 +110,9 @@ a webhook on it** (`paypal-connection.ts`).
 - **Refunds and disputes**: `PAYMENT.CAPTURE.REFUNDED` (partial amounts) and
   `PAYMENT.SALE.REFUNDED` map to refunds, which reverse commissions;
   `CUSTOMER.DISPUTE.CREATED` (its disputed transactions carry the `custom`
-  value) is recorded like a Stripe dispute, without reversing anything until
-  a chargeback is reported.
+  value) is recorded like a Stripe dispute, without reversing anything; a
+  lost one arrives as `PAYMENT.CAPTURE.REVERSED` / `PAYMENT.SALE.REVERSED`,
+  recorded as a chargeback (built Nov 2 2026).
 - **The gotcha: webhooks are per REST app.** Payments made through one app
   never fire webhooks on another. So:
   - If the brand's checkout runs on the app it connected for payouts, we add the
