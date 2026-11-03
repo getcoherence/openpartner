@@ -3,12 +3,14 @@ import { Link, useNavigate } from 'react-router';
 import { theme } from '../theme.js';
 import { useNextPath, withNext } from '../lib/signin-next.js';
 import { Logo } from './auth/Shared.js';
+import { ViewOnlyBadge } from '../lib/viewOnly.js';
 
 interface Workspace {
   tenantSlug: string;
   tenantDisplayName: string;
   adminId: string;
   activated: boolean;
+  role?: 'admin' | 'viewer';
 }
 
 interface WorkspacesResponse {
@@ -124,7 +126,10 @@ export function WorkspacesPage() {
               }}
             >
               <div>
-                <div style={{ fontWeight: 600, fontSize: 14 }}>{w.tenantDisplayName}</div>
+                <div style={{ fontWeight: 600, fontSize: 14, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {w.tenantDisplayName}
+                  {w.role === 'viewer' && <ViewOnlyBadge />}
+                </div>
                 <div style={{ color: theme.textMuted, fontSize: 12, marginTop: 2 }}>
                   /t/{w.tenantSlug}/{!w.activated && ' · activates on entry'}
                 </div>

@@ -95,6 +95,7 @@ export function AdminBilling() {
 
   return (
     <Page
+      edits
       title="Billing"
       subtitle="Manage your subscription, payment method, and invoices."
     >

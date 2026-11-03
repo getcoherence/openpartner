@@ -21,6 +21,7 @@ import type { Knex } from 'knex';
 import { ulid } from 'ulid';
 import {
   TABLES,
+  type AdminRole,
   type MagicLinkTokenRow,
   type MagicLinkPurpose,
   type PrincipalKind,
@@ -130,6 +131,10 @@ export async function createSession(
   return { plaintext, id, expiresAt };
 }
 
+/** A live session, with its admin's role read fresh from the Admin row
+ *  (null for a partner's): a role change applies on the next request. */
+export type ResolvedSession = SessionRow & { adminRole: AdminRole | null };
+
 /**
  * Resolve a session cookie.
  *
@@ -151,7 +156,7 @@ export async function resolveSession(
   db: Knex,
   plaintext: string,
   expectTenantId: string | null,
-): Promise<SessionRow | null> {
+): Promise<ResolvedSession | null> {
   if (!plaintext || plaintext.length < TOKEN_PREFIX_LEN) return null;
   const prefix = plaintext.slice(0, TOKEN_PREFIX_LEN);
   const tokenHash = hash(plaintext);
@@ -163,6 +168,7 @@ export async function resolveSession(
   if (expectTenantId !== null) q.andWhere({ tenantId: expectTenantId });
   const row = await q.first();
   if (!row) return null;
+  let adminRole: AdminRole | null = null;
 
   // Defense-in-depth: if the principal was revoked but somehow a session
   // slipped through, reject here too.
@@ -179,12 +185,13 @@ export async function resolveSession(
   } else if (row.principalKind === 'admin') {
     const admin = (await db('Admin')
       .where({ id: row.principalId, tenantId: row.tenantId })
-      .first()) as { revokedAt: Date | null; activatedAt: Date | null } | undefined;
+      .first()) as { revokedAt: Date | null; activatedAt: Date | null; role: AdminRole } | undefined;
     if (!admin || admin.revokedAt || !admin.activatedAt) return null;
+    adminRole = admin.role;
   }
 
   void db<SessionRow>(TABLES.Session).where({ id: row.id }).update({ lastSeenAt: now });
-  return row;
+  return { ...row, adminRole };
 }
 
 export async function revokeSession(db: Knex, id: string): Promise<void> {

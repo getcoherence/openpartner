@@ -646,14 +646,14 @@ function invoiceView(inv: Stripe.Invoice) {
 }
 
 /** Where Stripe emails a tenant's invoices: the signed-in admin, else the
- *  brand's first admin. */
+ *  brand's first full admin. */
 async function adminEmail(db: Knex, tenantId: string, principal: ApiKeyPrincipal | undefined): Promise<string | null> {
   if (principal?.role === 'admin' && principal.source === 'session') {
     const me = await db<AdminRow>(TABLES.Admin).where({ id: principal.adminId, tenantId }).first(['email']);
     if (me) return me.email;
   }
   const first = await db<AdminRow>(TABLES.Admin)
-    .where({ tenantId })
+    .where({ tenantId, role: 'admin' })
     .whereNull('revokedAt')
     .orderBy('createdAt', 'asc')
     .first(['email']);

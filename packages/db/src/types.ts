@@ -576,11 +576,18 @@ export interface PlatformSessionBundleRow {
   lastUsedAt: Date;
 }
 
+/** 'viewer' sees the admin portal and changes nothing
+ *  (docs/view-only-seats.md). */
+export type AdminRole = 'admin' | 'viewer';
+
+export const ADMIN_ROLES = ['admin', 'viewer'] as const satisfies readonly AdminRole[];
+
 export interface AdminRow {
   id: string;
   tenantId: string;
   email: string;
   name: string;
+  role: AdminRole;
   activatedAt: Date | null;
   revokedAt: Date | null;
   revokeReason: string | null;

@@ -12,10 +12,14 @@ import { theme } from '../../theme.js';
 import { TenantLink } from '../../tenant-link.js';
 import { BookingReportView, SHARE_LABELS, type BookingReport, type CreatorShare } from '../../lib/BookingReport.js';
 import { ReportShares, type ReportShare } from '../../lib/ReportShares.js';
+import { useViewOnly } from '../../lib/viewOnly.js';
 
 export function AdminNetworkBookingReport() {
   const { id = '' } = useParams();
   const qc = useQueryClient();
+  // A view-only seat reads the report; refreshing it, share links and the
+  // creator's sharing level are edits.
+  const viewOnly = useViewOnly();
   const key = ['admin-network-booking-report', id];
   const report = useQuery({ queryKey: key, queryFn: () => api<{ report: BookingReport }>(`/admin/network/bookings/${id}/report`), retry: false });
   const refresh = useMutation({
@@ -48,9 +52,11 @@ export function AdminNetworkBookingReport() {
               report={r}
               actions={
                 <>
-                  <Button size="sm" variant="secondary" onClick={() => refresh.mutate()} disabled={refresh.isPending}>
-                    {refresh.isPending ? 'Refreshing…' : 'Refresh'}
-                  </Button>
+                  {!viewOnly && (
+                    <Button size="sm" variant="secondary" onClick={() => refresh.mutate()} disabled={refresh.isPending}>
+                      {refresh.isPending ? 'Refreshing…' : 'Refresh'}
+                    </Button>
+                  )}
                   <Button size="sm" variant="secondary" onClick={() => window.print()}>
                     Print / Save as PDF
                   </Button>
@@ -58,6 +64,7 @@ export function AdminNetworkBookingReport() {
               }
             />
           </Card>
+          {!viewOnly && (
           <div className="op-report-noprint" style={{ display: 'grid', gap: 12, marginTop: 12 }}>
             <Card>
               <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>Share</div>
@@ -96,6 +103,7 @@ export function AdminNetworkBookingReport() {
               </Card>
             )}
           </div>
+          )}
         </>
       ) : null}
     </Page>

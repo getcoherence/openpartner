@@ -24,6 +24,7 @@ import {
 } from '../ui.js';
 import { renderCommissionSummary } from '../lib/commission-summary.js';
 import { CompoundRuleEditor, ruleEventTypeMissing, ruleSlabProblem, type CommissionSubRule } from '../lib/CompoundRuleEditor.js';
+import { EditOnly, useViewOnly } from '../lib/viewOnly.js';
 import { PROGRAM_CATEGORIES, clickDestinationProblem, clickDestinationWarning, parseVideoUrl } from '@openpartner/db';
 
 interface CustomerReward {
@@ -103,6 +104,7 @@ export function AdminPrograms() {
   const defaultCurrency = useDefaultCurrency();
   const [showCreate, setShowCreate] = useState(false);
   const [editing, setEditing] = useState<Program | null>(null);
+  const viewOnly = useViewOnly();
   const campaigns = useQuery({
     queryKey: ['campaigns'],
     queryFn: () => api<{ programs: Program[]; customerRewardDelivery?: CustomerRewardDelivery }>('/programs'),
@@ -127,9 +129,11 @@ export function AdminPrograms() {
       title="Programs"
       subtitle="Commission rules, attribution windows, and models applied to partner clicks."
       actions={
-        <Button icon={<Plus size={14} />} onClick={() => setShowCreate(true)}>
-          New campaign
-        </Button>
+        <EditOnly>
+          <Button icon={<Plus size={14} />} onClick={() => setShowCreate(true)}>
+            New campaign
+          </Button>
+        </EditOnly>
       }
     >
       <ErrorBanner error={campaigns.error ?? endNow.error} />
@@ -184,20 +188,22 @@ export function AdminPrograms() {
               <code style={{ color: theme.accentText, fontSize: 12 }}>{c.attributionModel}</code>,
               <span style={{ color: theme.textMuted }}>{formatDate(c.createdAt, { relative: true })}</span>,
               <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                <button
-                  type="button"
-                  onClick={() => setEditing(c)}
-                  style={smallActionStyle(theme.textMuted)}
-                >
-                  Edit
-                </button>
+                {!viewOnly && (
+                  <button
+                    type="button"
+                    onClick={() => setEditing(c)}
+                    style={smallActionStyle(theme.textMuted)}
+                  >
+                    Edit
+                  </button>
+                )}
                 <TenantLink
                   to={`/admin/programs/${c.id}/bounties`}
                   style={{ ...smallActionStyle(theme.textMuted), border: `1px solid ${alpha(theme.textMuted, 0.333)}`, textDecoration: 'none' }}
                 >
                   Bounties
                 </TenantLink>
-                {status !== 'ended' && (
+                {status !== 'ended' && !viewOnly && (
                   <button
                     type="button"
                     onClick={() => {

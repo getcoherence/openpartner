@@ -23,6 +23,7 @@ export function AdminNetwork() {
 
   return (
     <Page
+      edits
       title="Network"
       subtitle="List your brand on the OpenPartner Network so creators can find and apply to your programs."
     >

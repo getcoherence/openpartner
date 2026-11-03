@@ -99,6 +99,7 @@ export function AdminPartnerCoupons({ ownPartnerId }: { ownPartnerId?: string } 
 
   return (
     <Page
+      edits
       title={selfService ? 'Your coupon codes' : `Coupons · ${partnerName}`}
       subtitle={selfService
         ? 'Share your codes with your audience. Your brand sets the discount; you choose the code when customization is enabled. Existing codes remain active until you deactivate them.'

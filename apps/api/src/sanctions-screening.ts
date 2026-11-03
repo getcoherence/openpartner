@@ -380,12 +380,13 @@ function screenableAdminName(admin: Pick<AdminRow, 'name' | 'email'> | undefined
   return name && name.toLowerCase() !== admin.email.split('@')[0]!.toLowerCase() ? name : null;
 }
 
-/** Primary (oldest live) admin per tenant. */
+/** Primary (oldest live full) admin per tenant. */
 async function primaryAdmins(db: Knex, tenantIds: string[]): Promise<Map<string, Pick<AdminRow, 'name' | 'email'>>> {
   const out = new Map<string, Pick<AdminRow, 'name' | 'email'>>();
   if (tenantIds.length === 0) return out;
   const admins = await db<AdminRow>(TABLES.Admin)
     .whereIn('tenantId', tenantIds)
+    .where({ role: 'admin' })
     .whereNull('revokedAt')
     .orderBy('createdAt', 'asc')
     .select('tenantId', 'name', 'email');

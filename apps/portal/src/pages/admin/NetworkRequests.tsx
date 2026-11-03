@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../../api.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
 import { theme } from '../../theme.js';
+import { useViewOnly } from '../../lib/viewOnly.js';
 
 interface PartnershipRequest {
   id: string;
@@ -104,7 +105,9 @@ function RequestRow({
   busy: boolean;
 }) {
   const [note, setNote] = useState('');
-  const isPending = request.status === 'pending';
+  // A view-only seat sees the request; the decision is an edit.
+  const viewOnly = useViewOnly();
+  const isPending = request.status === 'pending' && !viewOnly;
   return (
     <Card>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>

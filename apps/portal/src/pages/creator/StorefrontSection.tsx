@@ -7,6 +7,7 @@
  *   .tsx). The buttons book the package as a tracked deal.
  * - `preview`: the creator's own editor and setup flow. The buttons are
  *   inert.
+ * Neither (a view-only seat's view of a creator): no buttons.
  *
  * Visitors without an account see the storefront, with its request form,
  * on the public site (lib/public-site.ts).
@@ -47,6 +48,7 @@ export function StorefrontSection({
   const book = (pkg: StorefrontPackage | null) => {
     if (!preview) onBook?.(pkg);
   };
+  const canBook = preview || !!onBook;
 
   return (
     <>
@@ -74,7 +76,7 @@ export function StorefrontSection({
               {g.packages.length > 0 && (
                 <div style={{ display: 'grid', gap: 8, marginTop: g.channel ? 10 : 0 }}>
                   {g.packages.map((p) => (
-                    <PackageRow key={p.id} pkg={p} action={preview ? 'Request →' : 'Book →'} onAction={() => book(p)} />
+                    <PackageRow key={p.id} pkg={p} action={canBook ? (preview ? 'Request →' : 'Book →') : null} onAction={() => book(p)} />
                   ))}
                 </div>
               )}
@@ -93,9 +95,11 @@ export function StorefrontSection({
           <span style={{ flex: 1, fontSize: 13, color: theme.textMuted }}>
             {packages.length > 0 ? 'Looking for something custom?' : `${firstName} takes collaboration requests.`}
           </span>
-          <Button size="sm" variant="secondary" onClick={() => book(null)}>
-            {preview ? 'Get in touch' : 'Book a custom deal'}
-          </Button>
+          {canBook && (
+            <Button size="sm" variant="secondary" onClick={() => book(null)}>
+              {preview ? 'Get in touch' : 'Book a custom deal'}
+            </Button>
+          )}
         </div>
       </SectionCard>
     </>
@@ -199,7 +203,7 @@ export function ChannelHeader({ channel }: { channel: StorefrontChannel }) {
   );
 }
 
-function PackageRow({ pkg, action, onAction }: { pkg: StorefrontPackage; action: string; onAction: () => void }) {
+function PackageRow({ pkg, action, onAction }: { pkg: StorefrontPackage; action: string | null; onAction: () => void }) {
   return (
     <div
       style={{
@@ -218,9 +222,11 @@ function PackageRow({ pkg, action, onAction }: { pkg: StorefrontPackage; action:
           {pkg.description}
         </div>
       )}
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
-        <Button size="sm" onClick={onAction}>{action}</Button>
-      </div>
+      {action && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
+          <Button size="sm" onClick={onAction}>{action}</Button>
+        </div>
+      )}
     </div>
   );
 }

@@ -85,10 +85,10 @@ async function notifyOne(campaign: ProgramRow): Promise<void> {
     const tenant = await trx<TenantRow>(TABLES.Tenant).where({ id: campaign.tenantId }).first();
     const brandName = await resolveBrandName(trx, campaign.tenantId);
 
-    // Brand admin: pick the oldest activated admin to avoid spamming
+    // Brand admin: pick the oldest activated full admin to avoid spamming
     // every co-admin. They can forward internally if needed.
     const admin = await trx<AdminRow>(TABLES.Admin)
-      .where({ tenantId: campaign.tenantId })
+      .where({ tenantId: campaign.tenantId, role: 'admin' })
       .whereNotNull('activatedAt')
       .whereNull('revokedAt')
       .orderBy('activatedAt', 'asc')

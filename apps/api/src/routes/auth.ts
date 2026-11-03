@@ -16,6 +16,10 @@ authRouter.get('/auth/introspect', requireAuth, async (req, res) => {
     return res.json({ role: 'scoped', scopes: p.scopes });
   }
   if (p.role === 'admin') {
+    // A view-only seat's session (view-only.ts) is an admin that can't write.
+    if (p.source === 'session' && p.adminRole === 'viewer') {
+      return res.json({ role: 'admin', unrestricted: false, viewOnly: true });
+    }
     return res.json({ role: 'admin', unrestricted: true });
   }
   if (p.role === 'partner') {
@@ -36,7 +40,8 @@ authRouter.get('/auth/whoami', requireAuth, async (req, res) => {
       return res.json({
         role: 'admin',
         source: 'session',
-        admin: admin ? { id: admin.id, email: admin.email, name: admin.name } : null,
+        // `role` from the session, as the gate reads it: 'viewer' = view only.
+        admin: admin ? { id: admin.id, email: admin.email, name: admin.name, role: p.adminRole } : null,
       });
     }
     return res.json({ role: 'admin', source: p.source });

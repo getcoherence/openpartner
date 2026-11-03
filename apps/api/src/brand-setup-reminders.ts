@@ -90,9 +90,10 @@ async function loadCandidates(db: Knex, tenantIds?: string[]): Promise<Candidate
   if (tenants.length === 0) return [];
   const ids = tenants.map((t) => t.id);
 
-  // Primary admin = the oldest one who has actually signed in.
+  // Primary admin = the oldest full admin who has actually signed in.
   const admins = (await db<AdminRow>(TABLES.Admin)
     .whereIn('tenantId', ids)
+    .where({ role: 'admin' })
     .whereNull('revokedAt')
     .whereNotNull('activatedAt')
     .orderBy('activatedAt', 'asc')
@@ -198,7 +199,7 @@ export async function remindBrandNow(db: Knex, tenantId: string, operatorEmail: 
   const [c] = await loadCandidates(db, [tenantId]);
   if (!c) {
     const anyAdmin = await db<AdminRow>(TABLES.Admin)
-      .where({ tenantId })
+      .where({ tenantId, role: 'admin' })
       .whereNull('revokedAt')
       .whereNotNull('activatedAt')
       .first('id');

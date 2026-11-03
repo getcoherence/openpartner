@@ -53,6 +53,7 @@ import {
 import { ClaimError, fetchClaimPreview } from '../creator/BookingConfirm.js';
 import { BookCreatorDialog, networkErrorCode, TRACKING_NOT_VERIFIED_TEXT } from './BookCreatorDialog.js';
 import { DeliveryChecksPanel, type DeliveryChecks } from './DeliveryChecks.js';
+import { useViewOnly } from '../../lib/viewOnly.js';
 
 interface CreatorFace {
   id: string;
@@ -253,16 +254,21 @@ function BrandThread({ id }: { id: string }) {
   const [olderHasMore, setOlderHasMore] = useState<boolean | null>(null);
   const [booking, setBooking] = useState(false);
   const [returned, setReturned] = useState<string | null>(null);
+  const viewOnly = useViewOnly();
 
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: ['admin-network-thread', id] });
     void qc.invalidateQueries({ queryKey: ['admin-network-conversations'] });
   };
-  // Live: the creator's presence and typing, and new messages at once.
+  // Live: the creator's presence and typing, and new messages at once. A
+  // view-only seat can't open the socket (its ticket is a write), so the
+  // thread polls instead.
   const live = useConversationLive(
     id,
     'vendor',
-    () => api<LiveTicket>(`/admin/network/conversations/${encodeURIComponent(id)}/realtime`, { method: 'POST', body: {} }),
+    viewOnly
+      ? async () => ({ ticket: '', url: null })
+      : () => api<LiveTicket>(`/admin/network/conversations/${encodeURIComponent(id)}/realtime`, { method: 'POST', body: {} }),
     refresh,
   );
   const thread = useQuery({
@@ -280,7 +286,7 @@ function BrandThread({ id }: { id: string }) {
     next.delete('booking');
     next.delete('checkout');
     setParams(next, { replace: true });
-    if (outcome !== 'success') return;
+    if (outcome !== 'success' || viewOnly) return;
     setReturned(bookingId);
     void api(`/admin/network/bookings/${encodeURIComponent(bookingId)}/sync`, { method: 'POST', body: {} })
       .catch(() => undefined)
@@ -368,7 +374,7 @@ function BrandThread({ id }: { id: string }) {
                 </Button>
               </TenantLink>
             )}
-            {t.conversation.canBook && creator?.handle && (
+            {t.conversation.canBook && creator?.handle && !viewOnly && (
               <Button size="sm" onClick={() => setBooking(true)}>
                 Request a booking
               </Button>
@@ -405,7 +411,13 @@ function BrandThread({ id }: { id: string }) {
               onSend={(m) => send.mutateAsync(m)}
               onUpload={uploadImage}
               pending={send.isPending}
-              disabledReason={t.conversation.canWrite ? null : CANNOT_WRITE[t.conversation.cannotWriteReason ?? ''] ?? 'You can’t write here.'}
+              disabledReason={
+                viewOnly
+                  ? 'View only'
+                  : t.conversation.canWrite
+                    ? null
+                    : CANNOT_WRITE[t.conversation.cannotWriteReason ?? ''] ?? 'You can’t write here.'
+              }
               placeholder={`Message ${names.creator}`}
               onTyping={live.setTyping}
             />
@@ -458,6 +470,7 @@ function VendorBookingCard({
   onChanged: () => void;
 }) {
   const base = useTenantBase();
+  const viewOnly = useViewOnly();
   const act = useMutation({
     mutationFn: (action: 'cancel' | 'recheck') =>
       api(`/admin/network/bookings/${encodeURIComponent(b.id)}/${action}`, { method: 'POST', body: {} }),
@@ -541,12 +554,12 @@ function VendorBookingCard({
       </div>
 
       <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-        {b.status === 'awaiting_payment' && !b.paymentProcessing && (
+        {!viewOnly && b.status === 'awaiting_payment' && !b.paymentProcessing && (
           <Button onClick={() => pay.mutate()} disabled={pay.isPending || pay.isSuccess}>
             {pay.isPending || pay.isSuccess ? 'Opening Checkout…' : `Pay ${lines?.total ?? ''}`.trim()}
           </Button>
         )}
-        {b.status === 'delivered' &&
+        {!viewOnly && b.status === 'delivered' &&
           (approving ? (
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', width: '100%' }}>
               <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
@@ -570,7 +583,7 @@ function VendorBookingCard({
           ) : (
             <Button onClick={() => setApproving(true)}>Approve</Button>
           ))}
-        {(b.status === 'pending' || (b.status === 'awaiting_payment' && !b.paymentProcessing)) && (
+        {!viewOnly && (b.status === 'pending' || (b.status === 'awaiting_payment' && !b.paymentProcessing)) && (
           <Button
             variant="secondary"
             disabled={act.isPending}
@@ -594,6 +607,7 @@ function VendorBookingCard({
           </TenantLink>
         ) : (
           canTrack &&
+          !viewOnly &&
           ['awaiting_payment', 'paid', 'delivered'].includes(b.status) && <TrackControl booking={b} onTracked={onChanged} billingHref={`${base}/admin/billing`} />
         )}
       </div>

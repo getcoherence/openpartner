@@ -1,20 +1,26 @@
 /**
- * Admin persona management — list, invite, revoke, reinstate.
+ * Admin persona management — list, invite, change role, revoke, reinstate.
+ *
+ * Roles (docs/view-only-seats.md): 'admin' manages everything, 'viewer'
+ * sees everything and changes nothing. A viewer reaches none of the writes
+ * below: requireAuth refuses them (view-only.ts).
  *
  * Guard rails:
- *   - Can't revoke the last active admin (would lock everyone out)
- *   - Can't revoke yourself (session-sourced admins only; env-sourced
- *     admins can revoke anyone since they're a fallback root)
+ *   - Can't revoke or demote the last active full admin (would leave
+ *     nobody able to manage the brand; viewers don't count)
+ *   - Can't revoke yourself or change your own role (session-sourced
+ *     admins only; env-sourced admins can act on anyone since they're a
+ *     fallback root)
  *
  * The ADMIN_API_KEY env stays valid alongside admin personas as a
  * bootstrap / headless path — think `doctl` or CI running migrations.
  */
 
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import type { Knex } from 'knex';
 import { z } from '../zod.js';
 import { ulid } from 'ulid';
-import { TABLES, type AdminRow, type ConfigRow, type SessionRow } from '@openpartner/db';
+import { ADMIN_ROLES, TABLES, type AdminRow, type ConfigRow, type SessionRow } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { issueMagicLink } from '../auth-sessions.js';
 import { getMailer } from '../mailer.js';
@@ -27,7 +33,10 @@ export const adminsRouter = Router();
 const inviteSchema = z.object({
   email: z.string().email(),
   name: z.string().min(1).max(120),
+  role: z.enum(ADMIN_ROLES).default('admin'),
 });
+
+const roleSchema = z.object({ role: z.enum(ADMIN_ROLES) });
 
 const revokeSchema = z.object({
   reason: z.string().max(500).optional(),
@@ -47,7 +56,12 @@ async function sendInvite(db: Knex, tenantId: string, admin: AdminRow, linkTenan
     principalKind: 'admin',
     principalId: admin.id,
   });
-  const tmpl = adminInviteEmail(admin.name, buildMagicLinkUrl(issued.plaintext, linkTenant), await getProgramName(db, tenantId));
+  const tmpl = adminInviteEmail(
+    admin.name,
+    buildMagicLinkUrl(issued.plaintext, linkTenant),
+    await getProgramName(db, tenantId),
+    admin.role,
+  );
   await getMailer().send({ db, tenantId }, {
     to: admin.email,
     subject: tmpl.subject,
@@ -84,7 +98,7 @@ adminsRouter.post('/admins', requireAuth, requireAdmin, async (req, res) => {
 
   const id = ulid();
   const [admin] = await db<AdminRow>(TABLES.Admin)
-    .insert({ id, tenantId, email, name: body.data.name, activatedAt: null })
+    .insert({ id, tenantId, email, name: body.data.name, role: body.data.role, activatedAt: null })
     .returning('*');
   await sendInvite(db, tenantId, admin as AdminRow, linkTenantOf(req));
   res.status(201).json(admin);
@@ -102,20 +116,69 @@ adminsRouter.post('/admins/:id/invite', requireAuth, requireAdmin, async (req, r
   res.json({ ok: true });
 });
 
-// -------- Revoke --------
-
 class RevokeGuardError extends Error {
   constructor(public code: string) {
     super(code);
   }
 }
 
+/** True when `req` is that admin's own session. */
+function isSelf(req: Request, admin: AdminRow): boolean {
+  const caller = req.principal;
+  return caller?.role === 'admin' && caller.source === 'session' && caller.adminId === admin.id;
+}
+
+/** Lock the tenant's active full admins FOR UPDATE and say whether
+ *  `admin` is the only one, so two concurrent removals of the last two
+ *  serialize instead of both passing. Viewers don't count: they can't
+ *  manage the brand. */
+async function isLastActiveFullAdmin(db: Knex, tenantId: string, admin: AdminRow): Promise<boolean> {
+  const actives = await db<AdminRow>(TABLES.Admin)
+    .where({ tenantId, role: 'admin' })
+    .whereNotNull('activatedAt')
+    .whereNull('revokedAt')
+    .forUpdate();
+  const counts = admin.role === 'admin' && !!admin.activatedAt && !admin.revokedAt;
+  return counts && actives.length <= 1;
+}
+
+// -------- Change role --------
+
+adminsRouter.patch('/admins/:id', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const body = roleSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+
+  try {
+    const admin = await db<AdminRow>(TABLES.Admin).where({ id: req.params.id, tenantId }).forUpdate().first();
+    if (!admin) throw new RevokeGuardError('not_found');
+    if (admin.role !== body.data.role) {
+      if (isSelf(req, admin)) throw new RevokeGuardError('cannot_change_own_role');
+      if (body.data.role === 'viewer' && (await isLastActiveFullAdmin(db, tenantId, admin))) {
+        throw new RevokeGuardError('cannot_demote_last_active_admin');
+      }
+      await db<AdminRow>(TABLES.Admin)
+        .where({ id: admin.id, tenantId })
+        .update({ role: body.data.role, updatedAt: new Date() });
+    }
+    const updated = await db<AdminRow>(TABLES.Admin).where({ id: admin.id, tenantId }).first();
+    res.json(updated);
+  } catch (err) {
+    if (err instanceof RevokeGuardError) {
+      const status = err.code === 'not_found' ? 404 : 409;
+      return res.status(status).json({ error: err.code });
+    }
+    throw err;
+  }
+});
+
+// -------- Revoke --------
+
 adminsRouter.post('/admins/:id/revoke', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const body = revokeSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-  const caller = req.principal;
   const now = new Date();
 
   try {
@@ -132,19 +195,11 @@ adminsRouter.post('/admins/:id/revoke', requireAuth, requireAdmin, async (req, r
 
     // Can't revoke yourself (session-sourced admins only — env-bearer
     // callers are a headless / emergency path and can revoke anyone).
-    if (caller?.role === 'admin' && caller.source === 'session' && caller.adminId === admin.id) {
-      throw new RevokeGuardError('cannot_revoke_self');
-    }
+    if (isSelf(req, admin)) throw new RevokeGuardError('cannot_revoke_self');
 
-    // Last-active-admin guard inside the same tx. Count active admins
-    // under FOR UPDATE so the count is stable through commit.
-    const actives = await db<AdminRow>(TABLES.Admin)
-      .where({ tenantId })
-      .whereNotNull('activatedAt')
-      .whereNull('revokedAt')
-      .forUpdate();
-    const willRemove = admin.activatedAt && !admin.revokedAt;
-    if (willRemove && actives.length <= 1) {
+    // Last-active-admin guard inside the same tx, counted under FOR
+    // UPDATE so the count is stable through commit.
+    if (await isLastActiveFullAdmin(db, tenantId, admin)) {
       throw new RevokeGuardError('cannot_revoke_last_active_admin');
     }
 

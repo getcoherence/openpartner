@@ -38,6 +38,7 @@ export function FraudReviewPage() {
 
   return (
     <Page
+      edits
       title="Fraud review"
       subtitle={`${rows.length} flagged click${rows.length === 1 ? '' : 's'} — attribution skips these until you un-flag.`}
     >

@@ -96,8 +96,9 @@ export async function sweepTenantTrackingAlerts(
   opts: { now?: Date } = {},
 ): Promise<TrackingAlertSweep> {
   if (!(await readTrackingAlertSettings(db, tenantId)).email) return { skipped: 'disabled' };
+  // Full admins: a view-only seat can't fix what a flag says.
   const admins = await db<AdminRow>(TABLES.Admin)
-    .where({ tenantId })
+    .where({ tenantId, role: 'admin' })
     .whereNotNull('activatedAt')
     .whereNull('revokedAt')
     .orderBy('activatedAt', 'asc')

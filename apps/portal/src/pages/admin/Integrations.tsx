@@ -88,6 +88,7 @@ export function AdminIntegrations() {
   const { programName } = useBrand();
   return (
     <Page
+      edits
       title="Integrations"
       subtitle={`Pipe conversions from your CRM, lender systems or affiliate networks into ${programName} so partners get attributed for full-funnel deals, not just self-serve signups.`}
     >

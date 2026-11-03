@@ -1,6 +1,7 @@
 import type { CSSProperties, ReactNode } from 'react';
 import { alpha, theme } from './theme.js';
 import { useIsMobile } from './lib/useMediaQuery.js';
+import { useViewOnly, ViewOnlyFieldset } from './lib/viewOnly.js';
 
 // ---------------- Layout ----------------
 
@@ -9,6 +10,7 @@ export function Page({
   subtitle,
   back,
   actions,
+  edits,
   children,
 }: {
   title: string;
@@ -16,9 +18,13 @@ export function Page({
   /** A link back to the parent page, shown above the title. */
   back?: ReactNode;
   actions?: ReactNode;
+  /** A page of edits (forms, connections): on a view-only seat its
+   *  actions are hidden and its controls disabled (lib/viewOnly.tsx). */
+  edits?: boolean;
   children: ReactNode;
 }) {
   const isMobile = useIsMobile();
+  const locked = useViewOnly() && !!edits;
   return (
     <div style={{ padding: isMobile ? '20px 16px' : '32px 40px', maxWidth: 1280, margin: '0 auto' }}>
       <header
@@ -40,9 +46,9 @@ export function Page({
             <div style={{ color: theme.textMuted, fontSize: 14, marginTop: 4 }}>{subtitle}</div>
           )}
         </div>
-        {actions && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>{actions}</div>}
+        {actions && !locked && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>{actions}</div>}
       </header>
-      {children}
+      {locked ? <ViewOnlyFieldset>{children}</ViewOnlyFieldset> : children}
     </div>
   );
 }

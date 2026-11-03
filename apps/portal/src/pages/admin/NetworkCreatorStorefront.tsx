@@ -24,12 +24,14 @@ import { FlatCards, useFlatCards } from '../../lib/Surface.js';
 import { BookCreatorDialog } from './BookCreatorDialog.js';
 import { PanelBar } from './CreatorRow.js';
 import { MessageCreatorDialog } from './NetworkMessages.js';
+import { useViewOnly } from '../../lib/viewOnly.js';
 
 export function NetworkCreatorStorefrontPage() {
   const { handle } = useParams<{ handle: string }>();
   const { data, isLoading, error } = useCreatorProfile(handle);
   // undefined = closed; null = a custom deal; else the package's id.
   const [booking, setBooking] = useState<string | null | undefined>(undefined);
+  const viewOnly = useViewOnly();
   const [messaging, setMessaging] = useState(false);
 
   const back = (
@@ -62,7 +64,7 @@ export function NetworkCreatorStorefrontPage() {
       title={data.name}
       back={back}
       actions={
-        data.bookingsOpen && (
+        data.bookingsOpen && !viewOnly && (
           <Button variant="secondary" onClick={() => setMessaging(true)}>
             Message
           </Button>
@@ -97,6 +99,7 @@ export function NetworkCreatorStorefrontPage() {
 export function NetworkCreatorStorefrontPanel({ handle }: { handle: string }) {
   const { data, isLoading, error } = useCreatorProfile(handle);
   const [booking, setBooking] = useState<string | null | undefined>(undefined);
+  const viewOnly = useViewOnly();
   const [messaging, setMessaging] = useState(false);
 
   if (error instanceof ApiError && error.status === 404) {
@@ -116,7 +119,7 @@ export function NetworkCreatorStorefrontPanel({ handle }: { handle: string }) {
         to={`/admin/network/creators/${encodeURIComponent(data.handle)}`}
         note={!data.bookingsOpen && 'Not taking bookings right now. You can still invite them to your program.'}
       >
-        {data.bookingsOpen && (
+        {data.bookingsOpen && !viewOnly && (
           <Button size="sm" variant="secondary" onClick={() => setMessaging(true)}>
             Message
           </Button>
@@ -136,6 +139,7 @@ export function NetworkCreatorStorefrontPanel({ handle }: { handle: string }) {
 /** The profile and storefront; a package's Request opens `onBook` (null:
  *  a custom deal). */
 function StorefrontBody({ data, onBook }: { data: PublicProfile; onBook: (packageId: string | null) => void }) {
+  const viewOnly = useViewOnly();
   // The side panel says this in its bar.
   const flat = useFlatCards();
   return (
@@ -163,7 +167,7 @@ function StorefrontBody({ data, onBook }: { data: PublicProfile; onBook: (packag
             creatorName={data.name}
             packages={data.packages ?? []}
             channels={data.platforms}
-            onBook={(pkg: StorefrontPackage | null) => onBook(pkg?.id ?? null)}
+            onBook={viewOnly ? undefined : (pkg: StorefrontPackage | null) => onBook(pkg?.id ?? null)}
           />
         }
       />
