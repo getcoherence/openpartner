@@ -123,7 +123,7 @@ beforeAll(async () => {
             return json(200, { contact: { address: 'hello@jorivera.co', foundOn: 'https://jorivera.substack.com/about', verified: true } });
           }
           if (path === '/admin/creator-index/creators/ixc_1/contact' && req.method === 'PUT') {
-            if (body?.sourceUrl === 'https://elsewhere.test/') return json(422, { error: 'not_on_page' });
+            if (body?.sourceUrl === 'https://elsewhere.test/') return json(422, { error: 'refuses_unsolicited' });
             return json(200, { creator: { id: 'ixc_1', contact: { masked: 'h••••@jorivera.co', foundOn: body?.sourceUrl, verified: true } } });
           }
           if (path === '/admin/creator-index/creators/ixc_1/location' && req.method === 'PUT') {
@@ -476,7 +476,7 @@ describe.skipIf(skipIntegration)('creator index: addresses', () => {
     expect(JSON.stringify(audit.detail)).not.toContain('hello@jorivera');
 
     const refused = await request(app).put('/platform-admin/creator-index/creators/ixc_1/contact').set('Cookie', admin).send({ email: 'hello@jorivera.co', sourceUrl: 'https://elsewhere.test/' });
-    expect([refused.status, refused.body]).toEqual([422, { error: 'not_on_page' }]);
+    expect([refused.status, refused.body]).toEqual([422, { error: 'refuses_unsolicited' }]);
     expect((await request(app).put('/platform-admin/creator-index/creators/ixc_1/contact').set('Cookie', admin).send({ email: 'hello@jorivera.co' })).status).toBe(400);
   });
 

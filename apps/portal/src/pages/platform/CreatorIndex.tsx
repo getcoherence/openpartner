@@ -396,8 +396,6 @@ const isNew = (at: string) => Date.now() - Date.parse(at) < 86_400_000;
 
 /** Why an address couldn't be set, in ops' terms. */
 const ADDRESS_ERRORS: Record<string, string> = {
-  not_on_page: 'That address isn’t on that page. Give the page that shows it.',
-  source_unreadable: 'We couldn’t read that page. It may need a sign-in (LinkedIn’s do): give a public page that shows the address.',
   refuses_unsolicited: 'That page asks not to be sent unsolicited email, so the address can’t be used.',
   suppressed: 'Whoever owns this address asked to be removed from the index.',
   undeliverable: 'That address doesn’t accept mail.',
@@ -468,9 +466,9 @@ function AddressCell({ creator, canWrite, onSaved }: { creator: OpsCreator; canW
           style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}
         >
           <Input type="email" aria-label="Email address" placeholder="name@example.com" value={email} onChange={(e) => setEmail(e.target.value)} />
-          <Input aria-label="Page it’s published on" placeholder="Page it’s on (https://…)" value={page} onChange={(e) => setPage(e.target.value)} />
+          <Input aria-label="Page you found it on" placeholder="Page you found it on (https://…)" value={page} onChange={(e) => setPage(e.target.value)} />
           <div style={{ fontSize: 12, color: theme.textMuted }}>
-            We read the page to check the address is on it, then verify it. The invite tells them we found it on that page.
+            The invite tells them we found it on this page.
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
             <Button type="submit" size="sm" disabled={save.isPending || !email.trim() || !page.trim()}>

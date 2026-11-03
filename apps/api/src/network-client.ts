@@ -1673,8 +1673,8 @@ export async function adminGetIndexedCreatorContact(networkUrl: string, id: stri
   return callNetworkAdmin(networkUrl, 'GET', `/admin/creator-index/creators/${encodeURIComponent(id)}/contact`);
 }
 
-/** Set an address ops found published on `sourceUrl`; the Network reads the
- *  page and verifies the address first. */
+/** Set an address ops found published on `sourceUrl`; the Network takes ops'
+ *  word for the page and verifies the address first. */
 export async function adminSetIndexedCreatorContact(
   networkUrl: string,
   id: string,
