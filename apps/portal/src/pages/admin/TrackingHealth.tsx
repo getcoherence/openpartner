@@ -56,6 +56,7 @@ type IssueKind =
   | 'stripe_foreign_reference'
   | 'paypal_unknown_click'
   | 'paypal_foreign_reference'
+  | 'paypal_dispute_unmatched'
   | 'coupon_unknown_code'
   | 'reward_code_refused';
 
@@ -280,6 +281,10 @@ const ISSUES: Record<IssueKind, { label: string; fix: string }> = {
   paypal_foreign_reference: {
     label: 'PayPal payment carried your own reference',
     fix: 'custom_id held your own id and no click. Put openpartner.getReferral() in custom_id, after your own value and a | if you need both.',
+  },
+  paypal_dispute_unmatched: {
+    label: 'PayPal dispute lost, commission not adjusted',
+    fix: "PayPal took the money back but didn't name the refund for one payment. Check the partner's commission on it under Commissions.",
   },
   coupon_unknown_code: {
     label: 'Coupon redemption with an unknown code',

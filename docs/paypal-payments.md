@@ -142,6 +142,7 @@ renewals stay with the partner.
 | `PAYMENT.CAPTURE.REFUNDED`, `PAYMENT.SALE.REFUNDED` | A `refund` against the payment's Event, through `POST /attribution/refunds`' own path. |
 | `PAYMENT.CAPTURE.REVERSED`, `PAYMENT.SALE.REVERSED` | A `chargeback` against the payment's Event, the same path: PayPal took the payment back. |
 | `CUSTOMER.DISPUTE.CREATED` | `dispute_created` under the disputed payment's user. Reverses nothing. |
+| `CUSTOMER.DISPUTE.RESOLVED` | Decided for the buyer with the brand debited: each refund PayPal lists on the dispute, recorded as that refund (see below). Otherwise nothing. |
 
 Events carry `metadata.via: "paypal"`, the PayPal event type and PayPal's
 own ids (`paypalCaptureId`, `paypalOrderId`, `paypalSaleId`,
@@ -198,16 +199,41 @@ A refund is recorded with `recordRefund`, the code behind
   payout in flight held;
 - a refund larger than what's left (other refunds reported through the API)
   refunds what's left, marked `cappedToRemaining`;
-- a refund of a payment OpenPartner never recorded is left alone.
+- a refund of a payment OpenPartner hasn't recorded waits for it: the
+  payment's own webhook may only be late, so the catch-up tries the refund
+  again while PayPal still lists it (three days). After that it is left
+  alone (`not_tracked`). Disputes and their resolutions wait the same way.
 
-A dispute is recorded and reverses nothing: disputes can be won. A dispute
-the brand settles by accepting the claim arrives as an ordinary refund. When
-PayPal takes the payment back itself (`PAYMENT.CAPTURE.REVERSED` /
+When PayPal takes the payment back itself (`PAYMENT.CAPTURE.REVERSED` /
 `PAYMENT.SALE.REVERSED`, for example a card chargeback), that is recorded
 through the same path as a `chargeback`, so the commission is reduced,
-reversed or clawed back by the share taken. A reversal PayPal later undoes
-(the brand won on appeal) is not restored automatically: an admin re-credits
-the partner.
+reversed or clawed back by the share taken.
+
+A dispute is recorded and reverses nothing: disputes can be won. Its
+resolution (`CUSTOMER.DISPUTE.RESOLVED`) decides what happens to the
+commission:
+
+- **Decided for the buyer, and the brand was debited the settlement**
+  (the dispute's `fund_movements`, or the older `money_movements`: the
+  seller's `DEBIT` for `DISPUTE_SETTLEMENT`): each refund PayPal lists on
+  the dispute (`refund_details.transactions`) is recorded against the
+  disputed payment, as a `refund` when the brand refunded (accepted the
+  claim) and a `chargeback` when PayPal decided. It is keyed on the refund's
+  own id, the one its `PAYMENT.CAPTURE.REFUNDED` / `REVERSED` webhook and
+  Transaction Search use, so the same money counts once, whichever arrives
+  first.
+- **Decided for the brand, or PayPal covered it** (seller protection: no
+  settlement debit): nothing is reversed. The brand kept the money.
+- **Fees** (`DISPUTE_SETTLEMENT_FEE` and the like) are the brand's cost and
+  never touch the commission.
+- **A loss PayPal doesn't tie to one payment's refund** (no refund listed,
+  or several disputed payments) isn't guessed at: it is counted on Tracking
+  health as **PayPal dispute lost, commission not adjusted**, with the
+  dispute id, for an admin to check.
+
+A resolution PayPal changes later (an appeal) is read again. A reversal
+PayPal undoes (the brand won on appeal) is not restored automatically: an
+admin re-credits the partner.
 
 ## Sandbox
 
@@ -247,12 +273,15 @@ credentials:
 
 Both sources turn into the same facts the webhook settles. Each fact
 (`capture:<id>`, `sale:<id>`, `refund:<id>`, `subscription:<id>`,
-`subscription_activated:<id>`, `dispute:<id>`) is settled once, under an
-advisory lock, and logged in `PaymentEventLog` with what became of it
-(`recorded`, `linked`, `no_reference`, `unknown_click`,
-`foreign_reference`, `test_click`, `not_tracked`, `ignored`), so
-a webhook, its redeliveries and the catch-up never settle it twice. Oldest
-first, so a subscription is stored before its renewals. Bounded per app per
+`subscription_activated:<id>`, `dispute:<id>`,
+`dispute_resolved:<id>:<update_time>`) is settled once, under an advisory
+lock, and logged in `PaymentEventLog` with what became of it (`recorded`,
+`linked`, `no_reference`, `unknown_click`, `foreign_reference`,
+`test_click`, `not_tracked`, `unmatched`, `ignored`), so a webhook, its
+redeliveries and the catch-up never settle it twice. A refund, dispute or
+resolution of a payment not recorded yet isn't logged, so a later run
+settles it. Oldest first, so a subscription is stored before its renewals
+and a payment before its refunds. Bounded per app per
 run (1,000 facts, 40 pages); what a run leaves is still in the window next
 hour. Events it records carry `metadata.recoveredBy: "paypal_catchup"`.
 
@@ -271,7 +300,8 @@ payments with a partner click**: of the window's PayPal payments, how many
 carried a click, how many came with no `custom_id`, how many with one
 naming no click, and how many the catch-up recorded after the webhook
 missed them; and **Last received → PayPal payment**. The unknown-click and
-own-reference counts appear under **Dropped by OpenPartner**
+own-reference counts, and lost disputes the commission couldn't follow,
+appear under **Dropped by OpenPartner**
 ([tracking-health.md](tracking-health.md)).
 
 ## Portability
@@ -308,7 +338,7 @@ payloads. What still needs PayPal itself:
 
 - a payment through the connected app fires the webhook with `custom_id`,
   and PayPal accepts the PATCH that adds the payment events to an existing
-  webhook (and `CUSTOMER.DISPUTE.CREATED` on a merchant's own app);
+  webhook (and the dispute events on a merchant's own app);
 - Transaction Search works on the brand's own credentials, takes the date
   format (`2026-11-02T10:00:00Z`), and its ids match the webhook's (a
   capture's `transaction_id` is the capture id, a subscription payment's the
@@ -322,7 +352,18 @@ payloads. What still needs PayPal itself:
 - a reversal's resource is a refund naming the capture (v2) or the sale
   (`sale_id`, or a `/v1/payments/sale/` link), and its `T1106` row carries
   the same id as the webhook's (otherwise a partial reversal could be
-  counted twice; a full one can't, there's nothing left).
+  counted twice; a full one can't, there's nothing left);
+- a dispute PayPal decides lists its refund in `refund_details` under the
+  id the refund's own events carry.
+
+Checked on a sandbox app (Nov 2026): payments by card and by PayPal
+account, refunds (a `T1107` row's `transaction_id` is the refund id the
+webhook sends, and its `paypal_reference_id` the capture), disputes opened,
+and a claim the brand accepted (its `PAYMENT.CAPTURE.REFUNDED`, then the
+resolution listing that refund's id). The events list takes at most 100
+events a page and times to the second. The sandbox never offered its
+settle call (`adjudicate`), so a dispute PayPal decides, and the reversal
+events, haven't been seen live.
 
 **Where to run it.** PayPal posts webhooks only to public https addresses.
 Run the check **after deploying, in a test workspace on the hosted app**:
@@ -387,10 +428,8 @@ Only the webhook needs to be public: the checkout page can run on
 
 - **Reversals undone**: a reversal PayPal undoes later (`T1202`, a
   chargeback reversed for the merchant) isn't re-credited automatically.
-- **Disputes PayPal decides**: PayPal doesn't document which payment event,
-  if any, a dispute it decides against the brand sends. OpenPartner reads
-  reversals and refunds, not `CUSTOMER.DISPUTE.RESOLVED`, and a reversal
-  hasn't been seen live yet.
+- **Lost disputes PayPal doesn't tie to one payment's refund** are counted
+  on Tracking health for an admin, not adjusted automatically.
 - **Repeat buyers without a click**: a later purchase by the same PayPal
   payer whose browser lost the referral isn't credited. The payer id is on
   the order, not the capture, so it would cost a read per payment.

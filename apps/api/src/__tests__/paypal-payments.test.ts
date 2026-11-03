@@ -16,7 +16,9 @@
  *     the subscription's transactions, or PayPal's read of it), and
  *     renewals follow Program.renewalsStayWithPartner;
  *   - refunds go through POST /attribution/refunds' path (partials add up),
- *     a reversal is a chargeback, disputes reverse nothing;
+ *     a reversal is a chargeback, disputes reverse nothing until resolved
+ *     against the brand: then the refunds PayPal lists, each once, keyed as
+ *     their own events are; a refund that beats its payment waits for it;
  *   - the catch-up records what no webhook delivered, from the events list
  *     and from Transaction Search, once, never before tracking began;
  *   - Tracking health counts PayPal payments by what became of them.
@@ -189,6 +191,47 @@ function captureRefund(captureId: string, value: string, o: { id?: string; at?: 
   };
 }
 
+/** CUSTOMER.DISPUTE.RESOLVED as the sandbox sent it (Nov 2026): the outcome,
+ *  who the money moved from, and the refund transactions PayPal made. */
+function disputeResolved(o: {
+  captureIds: string[];
+  refunds?: Array<{ id: string; value: string }>;
+  outcome?: string;
+  reason?: string;
+  sellerDebited?: boolean;
+  deprecatedMovements?: boolean;
+  at?: string;
+}) {
+  const at = o.at ?? iso();
+  const settled = (o.refunds ?? []).reduce((n, r) => n + Number(r.value), 0).toFixed(2);
+  const movements = [
+    { party: 'BUYER', amount: { currency_code: 'USD', value: settled }, initiated_time: at, type: 'CREDIT', reason: 'DISPUTE_SETTLEMENT' },
+    ...(o.sellerDebited === false ? [] : [{ party: 'SELLER', amount: { currency_code: 'USD', value: settled }, initiated_time: at, type: 'DEBIT', reason: 'DISPUTE_SETTLEMENT' }]),
+  ];
+  return {
+    id: `WH-${ulid()}`,
+    event_type: 'CUSTOMER.DISPUTE.RESOLVED',
+    create_time: at,
+    resource_type: 'dispute',
+    resource: {
+      dispute_id: `PP-R-${ulid().slice(0, 12)}`,
+      create_time: iso(DAY),
+      update_time: at,
+      status: 'RESOLVED',
+      reason: 'MERCHANDISE_OR_SERVICE_NOT_RECEIVED',
+      disputed_transactions: o.captureIds.map((id) => ({ seller_transaction_id: id, gross_amount: { currency_code: 'USD', value: '100.00' } })),
+      dispute_outcome: { outcome_code: o.outcome ?? 'RESOLVED_BUYER_FAVOUR', ...(o.reason ? { outcome_reason: o.reason } : {}) },
+      ...(o.deprecatedMovements
+        ? { money_movements: movements.map(({ party, ...m }) => ({ affected_party: party, ...m })) }
+        : { fund_movements: [{ party: 'RECEIVER', amount: { currency_code: 'USD', value: '91.60' }, initiated_time: iso(DAY), type: 'DEBIT', reason: 'HOLD_PLACED' }, ...movements] }),
+      refund_details: {
+        allowed_refund_amount: { currency_code: 'USD', value: '100.00' },
+        ...(o.refunds ? { transactions: o.refunds.map((r) => ({ id: r.id, gross_amount: { currency_code: 'USD', value: r.value }, create_time: at })) } : {}),
+      },
+    },
+  };
+}
+
 async function eventsOf(externalEventId: string) {
   return db(TABLES.Event).where({ tenantId: T, externalEventId });
 }
@@ -320,6 +363,7 @@ describe.skipIf(skipIntegration)('turning payment tracking on', () => {
     const hook = fake.webhookAt(`https://portal.brand.example/api/webhooks/paypal/${res.body.connection.id}`)!;
     expect(hook.eventTypes).toContain('PAYMENT.CAPTURE.COMPLETED');
     expect(hook.eventTypes).not.toContain('CUSTOMER.DISPUTE.CREATED');
+    expect(hook.eventTypes).not.toContain('CUSTOMER.DISPUTE.RESOLVED');
     // Pay with PayPal's own card still reads the webhook as working.
     expect((await admin.get('/config/paypal')).body.connections[0].webhook.registered).toBe(true);
     // Off again: the note goes with the payment events.
@@ -329,7 +373,7 @@ describe.skipIf(skipIntegration)('turning payment tracking on', () => {
     expect(checkout.status).toBe(201);
     expect(checkout.body.app.webhook.error).toContain('Customer disputes');
     expect(fake.webhookAt(`https://portal.brand.example/api/webhooks/paypal/${checkout.body.app.id}`)!.eventTypes).toEqual(
-      PAYPAL_PAYMENT_EVENTS.filter((t) => t !== 'CUSTOMER.DISPUTE.CREATED'),
+      PAYPAL_PAYMENT_EVENTS.filter((t) => !t.startsWith('CUSTOMER.DISPUTE.')),
     );
   });
 
@@ -593,7 +637,7 @@ describe.skipIf(skipIntegration)('refunds and disputes', () => {
     expect((await eventsOf(refund.resource.id))[0].metadata).toMatchObject({ paypalSaleId: paid.resource.id });
   });
 
-  it('records a dispute without reversing anything, and leaves refunds of unrecorded payments alone', async () => {
+  it('records a dispute without reversing anything; a refund of a payment not recorded waits for it, then is left alone', async () => {
     const conn = await connect();
     const { clickId } = await click(await program());
     const paid = capture({ customId: clickId, value: '100.00' });
@@ -617,7 +661,75 @@ describe.skipIf(skipIntegration)('refunds and disputes', () => {
     expect(row.metadata).toMatchObject({ paypalDisputeId: dispute.resource.dispute_id, disputedEventIds: [conversion.id] });
     expect((await commissionsOf(conversion.id)).map((c) => c.status)).toEqual(['accrued']);
 
-    expect((await deliver(conn, captureRefund('CAPNEVERSEEN0001', '5.00'))).body.outcome).toBe('not_tracked');
+    // Its payment's webhook may only be late: not logged, so the catch-up
+    // tries again while it still lists the refund.
+    const early = captureRefund('CAPNEVERSEEN0001', '5.00');
+    expect((await deliver(conn, early)).body.outcome).toBe('unresolved');
+    expect(await db(TABLES.PaymentEventLog).where({ tenantId: T, eventKey: `refund:${early.resource.id}` })).toHaveLength(0);
+    const old = captureRefund('CAPNEVERSEEN0002', '5.00', { at: iso(4 * DAY) });
+    expect((await deliver(conn, old)).body.outcome).toBe('not_tracked');
+  });
+
+  it('records the refund a lost dispute names once, whichever of it and the refund’s own event comes first', async () => {
+    const conn = await connect();
+    const { clickId } = await click(await program());
+
+    // The brand accepted the claim (live, Nov 2026): the refund's webhook
+    // came first, then the resolution naming the same refund.
+    const accepted = capture({ customId: clickId, value: '100.00' });
+    await deliver(conn, accepted);
+    const [first] = await eventsOf(accepted.resource.id);
+    const refund = captureRefund(accepted.resource.id, '100.00');
+    expect((await deliver(conn, refund)).body.outcome).toBe('recorded');
+    const settled = disputeResolved({ captureIds: [accepted.resource.id], refunds: [{ id: refund.resource.id, value: '100.00' }], reason: 'SELLER_ISSUED_REFUND' });
+    expect((await deliver(conn, settled)).body.outcome).toBe('recorded');
+    expect(await eventsOf(refund.resource.id)).toHaveLength(1);
+    expect((await commissionsOf(first.id)).map((c) => c.status)).toEqual(['reversed']);
+    expect((await deliver(conn, { ...settled, id: `WH-${ulid()}` })).body.outcome).toBe('duplicate');
+
+    // PayPal decided for the buyer and named its refund before any
+    // reversal event: a chargeback for that share, once.
+    const decided = capture({ customId: clickId, value: '100.00' });
+    await deliver(conn, decided);
+    const [second] = await eventsOf(decided.resource.id);
+    const refundId = `RV${ulid().slice(0, 15)}`;
+    const lost = disputeResolved({ captureIds: [decided.resource.id], refunds: [{ id: refundId, value: '40.00' }] });
+    expect((await deliver(conn, lost)).body.outcome).toBe('recorded');
+    const [chargeback] = await eventsOf(refundId);
+    expect(chargeback).toMatchObject({ type: 'chargeback', value: '-40.00', userId: second.userId });
+    expect(chargeback.metadata).toMatchObject({ conversionEventId: second.id, paypalReversalId: refundId, paypalEventType: 'CUSTOMER.DISPUTE.RESOLVED' });
+    const commissions = await commissionsOf(second.id);
+    expect(commissions.map((c) => [c.status, c.amount])).toEqual([
+      ['reversed', '20.00'],
+      ['accrued', '12.00'],
+    ]);
+    expect((await deliver(conn, captureRefund(decided.resource.id, '40.00', { id: refundId, reversed: true }))).body.outcome).toBe('duplicate');
+    expect(await eventsOf(refundId)).toHaveLength(1);
+  });
+
+  it('keeps the commission when the brand won or PayPal covered the loss, and counts a loss it can’t tie to one payment', async () => {
+    const conn = await connect();
+    const { clickId } = await click(await program());
+    const paid = capture({ customId: clickId, value: '100.00' });
+    await deliver(conn, paid);
+    const [conversion] = await eventsOf(paid.resource.id);
+    const refunds = [{ id: `RV${ulid().slice(0, 15)}`, value: '100.00' }];
+
+    const won = disputeResolved({ captureIds: [paid.resource.id], refunds, outcome: 'RESOLVED_SELLER_FAVOUR' });
+    expect((await deliver(conn, won)).body.outcome).toBe('ignored');
+    const covered = disputeResolved({ captureIds: [paid.resource.id], refunds, sellerDebited: false });
+    expect((await deliver(conn, covered)).body.outcome).toBe('ignored');
+    const unnamed = disputeResolved({ captureIds: [paid.resource.id] });
+    expect((await deliver(conn, unnamed)).body.outcome).toBe('unmatched');
+    const other = capture({ customId: clickId, value: '100.00' });
+    await deliver(conn, other);
+    const both = disputeResolved({ captureIds: [paid.resource.id, other.resource.id], refunds, deprecatedMovements: true });
+    expect((await deliver(conn, both)).body.outcome).toBe('unmatched');
+
+    expect(await eventsOf(refunds[0]!.id)).toHaveLength(0);
+    expect((await commissionsOf(conversion.id)).map((c) => c.status)).toEqual(['accrued']);
+    const [issue] = await db(TABLES.TrackingIssue).where({ tenantId: T, kind: 'paypal_dispute_unmatched' });
+    expect(issue).toMatchObject({ count: 2, sampleRef: both.resource.dispute_id });
   });
 
   it('records a payment PayPal reverses as a chargeback, reversing its commission', async () => {
@@ -681,6 +793,30 @@ describe.skipIf(skipIntegration)('catch-up', () => {
     expect(await eventsOf(tooNew.resource.id)).toHaveLength(0);
     expect(await eventsOf(before.resource.id)).toHaveLength(0);
     expect((await runPaypalPaymentsCatchup()).connections.find((c) => c.connectionId === conn.id)!.recovered).toBe(0);
+  });
+
+  it('settles a refund that came before its payment, and a lost dispute only it heard of, after the payment', async () => {
+    const conn = await connect();
+    await sinceDaysAgo(conn.id, 1);
+    const { clickId } = await click(await program());
+    // The payment's webhook never came; its refund's did.
+    const paid = capture({ customId: clickId, value: '100.00', at: iso(3 * 3_600_000) });
+    const refund = captureRefund(paid.resource.id, '100.00', { at: iso(2 * 3_600_000) });
+    // Another payment, lost in a dispute only the events list has.
+    const disputed = capture({ customId: clickId, value: '100.00', at: iso(3 * 3_600_000) });
+    const refundId = `RV${ulid().slice(0, 15)}`;
+    const lost = disputeResolved({ captureIds: [disputed.resource.id], refunds: [{ id: refundId, value: '100.00' }], at: iso(2 * 3_600_000) });
+    for (const e of [paid, refund, disputed, lost]) fake.addEvent(liveApp, e);
+    expect((await deliver(conn, refund)).body.outcome).toBe('unresolved');
+    await deliver(conn, disputed);
+
+    await runPaypalPaymentsCatchup();
+    const [conversion] = await eventsOf(paid.resource.id);
+    expect((await eventsOf(refund.resource.id))[0]).toMatchObject({ type: 'refund', value: '-100.00', userId: conversion.userId });
+    expect((await commissionsOf(conversion.id)).map((c) => c.status)).toEqual(['reversed']);
+    const [lostConversion] = await eventsOf(disputed.resource.id);
+    expect((await eventsOf(refundId))[0]).toMatchObject({ type: 'chargeback', value: '-100.00' });
+    expect((await commissionsOf(lostConversion.id)).map((c) => c.status)).toEqual(['reversed']);
   });
 
   it('finds payments, renewals and refunds through Transaction Search where PayPal can’t post', async () => {

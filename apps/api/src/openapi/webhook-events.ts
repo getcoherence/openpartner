@@ -234,7 +234,7 @@ const WEBHOOK_DESCRIPTIONS: Record<WebhookEventName, string> = {
   'commission.paid':
     'A commission was included in a payout. For a `manual` payout this fires when the payout is planned, before you have sent the money; `POST /payouts/{id}/confirm` records that you did.',
   'commission.reversed':
-    "A commission was reversed: by an admin, or by a refund or chargeback, reported to `POST /attribution/refunds`, from Stripe's `charge.refunded`, or from a tracked PayPal app. A Stripe dispute reverses nothing until you report the chargeback; a PayPal one, until PayPal reverses the payment.",
+    "A commission was reversed: by an admin, or by a refund or chargeback, reported to `POST /attribution/refunds`, from Stripe's `charge.refunded`, or from a tracked PayPal app. A Stripe dispute reverses nothing until you report the chargeback; a PayPal one, until it is resolved against you or PayPal reverses the payment.",
   'bonus.awarded':
     'A bonus was awarded to a partner: a reward not tied to a sale, paid by an admin or integration (`POST /bonuses`), a performance bounty, or an OpenPartner Network bounty. Bonuses never fire `commission.*` events.',
   'bonus.approved':

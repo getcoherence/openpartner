@@ -271,7 +271,7 @@ export function webhookEventTypes(conn: Pick<PaypalConnectionRow, 'purpose' | 'p
   return [...PAYPAL_WEBHOOK_EVENTS, ...(conn.paymentsSince ? PAYPAL_PAYMENT_EVENTS : [])];
 }
 
-const DISPUTE_EVENTS: ReadonlySet<string> = new Set(['CUSTOMER.DISPUTE.CREATED']);
+const DISPUTE_EVENTS: ReadonlySet<string> = new Set(['CUSTOMER.DISPUTE.CREATED', 'CUSTOMER.DISPUTE.RESOLVED']);
 
 /** Kept as the webhook's note while it is registered without them. */
 export const DISPUTES_REFUSED =
