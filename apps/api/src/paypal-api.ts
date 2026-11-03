@@ -109,9 +109,14 @@ export class PaypalApiError extends Error {
     return this.kind === 'network' || this.status === null || this.status >= 500 || this.status === 429 || this.status === 409;
   }
 
-  /** A one-line summary safe to store and show: name, message, debug id. */
+  /** A one-line summary safe to store and show: name, message, the first
+   *  detail's field and issue (never its value), debug id. */
   get summary(): string {
-    return [this.errorName, this.message, this.debugId ? `debug_id ${this.debugId}` : null].filter(Boolean).join(' · ');
+    const detail = (this.body as { details?: Array<{ field?: unknown; issue?: unknown }> } | null)?.details?.[0];
+    const issue = typeof detail?.issue === 'string' ? detail.issue.slice(0, 120) : null;
+    const field = typeof detail?.field === 'string' ? detail.field.slice(0, 80) : null;
+    const issueText = issue ? (field ? `${field}: ${issue}` : issue) : null;
+    return [this.errorName, this.message, issueText, this.debugId ? `debug_id ${this.debugId}` : null].filter(Boolean).join(' · ');
   }
 }
 
@@ -444,7 +449,8 @@ export async function listWebhookEvents(
   const query =
     'next' in page
       ? page.next
-      : new URLSearchParams({ page_size: '300', start_time: paypalTime(page.start), end_time: paypalTime(page.end) }).toString();
+      : // 100 is PayPal's most per page; it refuses more (INVALID_REQUEST).
+        new URLSearchParams({ page_size: '100', start_time: paypalTime(page.start), end_time: paypalTime(page.end) }).toString();
   const { data } = await call<{ events?: unknown; links?: unknown }>(env, {
     method: 'GET',
     path: `/v1/notifications/webhooks-events?${query}`,
