@@ -1568,7 +1568,7 @@ export interface PaypalConnectionRow {
   disconnectedAt: Date | null;
   disconnectReason: 'admin' | 'replaced' | null;
   /** 'payouts': Pay with PayPal's app. 'checkout': an app connected only to
-   *  report payments, never to send (migration 20261102130000). */
+   *  report payments, never to send (migration 20261102140000). */
   purpose: PaypalConnectionPurpose;
   /** Payment tracking on since; null = off (docs/paypal-payments.md). */
   paymentsSince: Date | null;
@@ -1582,7 +1582,7 @@ export interface PaypalConnectionRow {
 export type PaypalConnectionPurpose = 'payouts' | 'checkout';
 
 /** One provider payment fact a deployment settled (migration
- *  20261102130000_paypal_payment_tracking). Not exported. */
+ *  20261102140000_paypal_payment_tracking). Not exported. */
 export interface PaymentEventLogRow {
   tenantId: string;
   provider: 'paypal';
@@ -1598,7 +1598,7 @@ export interface PaymentEventLogRow {
 }
 
 /** A PayPal subscription's custom_id and the click it named (migration
- *  20261102130000). A cache of PayPal's data: not exported. */
+ *  20261102140000). A cache of PayPal's data: not exported. */
 export interface PaypalSubscriptionRow {
   tenantId: string;
   subscriptionId: string;
