@@ -165,7 +165,7 @@ const APPROVE_ERRORS: Record<string, string> = {
   excluded_country: "That country isn't emailed",
   no_address: 'Add an address first',
   invalid_email: 'Not an email address',
-  not_their_address: 'Use an address at their domain or a free-mail one, not support@ or sales@',
+  not_their_address: 'Use an address at their domain or a free-mail one, not support@ or the like',
   not_their_page: 'The page must be on their own site',
   refuses_unsolicited: 'That page asks not to be emailed',
   suppressed: 'That address or domain is blocked',
