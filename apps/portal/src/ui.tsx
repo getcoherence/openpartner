@@ -1,5 +1,15 @@
-import type { CSSProperties, ReactNode } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from 'react';
 import { alpha, theme } from './theme.js';
+import { MIN_COLUMN_WIDTH, useColumnWidths, type ColumnWidths } from './lib/columnWidths.js';
 import { useIsMobile } from './lib/useMediaQuery.js';
 import { useViewOnly, ViewOnlyFieldset } from './lib/viewOnly.js';
 
@@ -130,6 +140,7 @@ export function Table({
   maxHeight,
   footer,
   dense,
+  resizeKey,
 }: {
   columns: (string | { label: string; align?: 'left' | 'right' })[];
   rows: ReactNode[][];
@@ -141,9 +152,92 @@ export function Table({
   footer?: ReactNode;
   /** Tighter cells, for a wide table to fit a laptop screen. */
   dense?: boolean;
+  /** Lets the viewer drag column widths, saved under this key per viewer
+   *  (lib/columnWidths.tsx). Not on phones, where rows are cards. */
+  resizeKey?: string;
 }) {
   const cols = columns.map((c) => (typeof c === 'string' ? { label: c, align: 'left' as const } : c));
   const isMobile = useIsMobile();
+  const resizable = !!resizeKey && !isMobile;
+  const ids = cols.map((c, i) => c.label || `#${i}`);
+  const [saved, saveWidths] = useColumnWidths(resizeKey);
+  // Every column's width while a drag is under way.
+  const [dragging, setDragging] = useState<{ id: string; widths: ColumnWidths } | null>(null);
+  // Content widths for columns with no saved width beside ones with one.
+  const [fitted, setFitted] = useState<ColumnWidths>({});
+  // The column whose edge has keyboard focus, lit in its header.
+  const [focused, setFocused] = useState<string | null>(null);
+  const headers = useRef<(HTMLTableCellElement | null)[]>([]);
+  const endDrag = useRef<(() => void) | null>(null);
+  useEffect(() => () => endDrag.current?.(), []);
+
+  const widths = dragging?.widths ?? saved;
+  const hasSaved = resizable && ids.some((id) => widths[id] !== undefined);
+  const colWidths = ids.map((id) => widths[id] ?? fitted[id]);
+  // Laid out by width once the viewer has set one; until then by content.
+  const fixed = hasSaved && colWidths.every((w) => w !== undefined);
+  // A column with no width of its own (a view's new column, or one just
+  // reset) is laid out by content for one pass, measured before paint.
+  const measuring = hasSaved && !fixed && rows.length > 0;
+  useLayoutEffect(() => {
+    if (!measuring) return;
+    const next: ColumnWidths = {};
+    ids.forEach((id, i) => {
+      if (widths[id] === undefined) next[id] = measureColumn(headers.current[i]);
+    });
+    setFitted((f) => ({ ...f, ...next }));
+  });
+
+  /** The widths on screen, as saved: what a drag or a key starts from. */
+  const onScreen = (): ColumnWidths =>
+    Object.fromEntries(ids.map((id, i) => [id, fixed ? colWidths[i]! : measureColumn(headers.current[i])]));
+
+  function startDrag(i: number, e: ReactPointerEvent) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const id = ids[i]!;
+    const start = onScreen();
+    const startX = e.clientX;
+    let moved: ColumnWidths | null = null;
+    const body = document.body.style;
+    const before = { cursor: body.cursor, userSelect: body.userSelect };
+    body.cursor = 'col-resize';
+    body.userSelect = 'none';
+    const move = (ev: PointerEvent) => {
+      moved = { ...start, [id]: Math.max(MIN_COLUMN_WIDTH, Math.round(start[id]! + ev.clientX - startX)) };
+      setDragging({ id, widths: { ...saved, ...moved } });
+    };
+    const end = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', end);
+      window.removeEventListener('pointercancel', end);
+      endDrag.current = null;
+      body.cursor = before.cursor;
+      body.userSelect = before.userSelect;
+      setDragging(null);
+      if (moved) saveWidths({ ...saved, ...moved });
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', end);
+    window.addEventListener('pointercancel', end);
+    endDrag.current = end;
+  }
+
+  function nudge(i: number, e: ReactKeyboardEvent) {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    const id = ids[i]!;
+    const now = onScreen();
+    saveWidths({ ...saved, ...now, [id]: Math.max(MIN_COLUMN_WIDTH, now[id]! + (e.key === 'ArrowRight' ? 16 : -16)) });
+  }
+
+  /** Back to its content width. */
+  function fit(i: number) {
+    const id = ids[i]!;
+    const { [id]: _, ...rest } = saved;
+    setFitted(({ [id]: _f, ...f }) => f);
+    saveWidths(rest);
+  }
 
   // On phones, a multi-column table forces horizontal scrolling and hides
   // data off-screen. Reflow each row into a stacked "label: value" card so
@@ -218,15 +312,57 @@ export function Table({
 
   return (
     <Card padded={false} style={{ overflow: 'hidden' }}>
+      {resizable && (
+        // The edges for keyboards and screen readers, out of the headers so
+        // their labels stay out of the headers' names. Focus lights the
+        // edge in its header; the edges there are for pointers.
+        <div style={visuallyHidden}>
+          {cols.map((c, i) => (
+            <div
+              key={ids[i]}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label={`Resize ${c.label || `column ${i + 1}`}`}
+              aria-valuemin={MIN_COLUMN_WIDTH}
+              aria-valuenow={fixed ? colWidths[i] : undefined}
+              tabIndex={0}
+              onKeyDown={(e) => nudge(i, e)}
+              onFocus={() => setFocused(ids[i]!)}
+              onBlur={() => setFocused(null)}
+            />
+          ))}
+        </div>
+      )}
       {/* Horizontal scroll as a fallback for very wide content on tablet/
           desktop widths; phones use the stacked card layout above. */}
       <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch', ...(maxHeight !== undefined && { maxHeight, overflowY: 'auto' }) }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14, minWidth: 'max-content' }}>
+      <table
+        // Fixed layout: cells' own width caps give way (global.css), and an
+        // empty last column takes whatever width the others leave.
+        className={fixed ? 'op-table-fixed' : undefined}
+        style={{
+          width: measuring ? 'auto' : '100%',
+          borderCollapse: 'collapse',
+          fontSize: 14,
+          ...(fixed ? { tableLayout: 'fixed', minWidth: colWidths.reduce<number>((sum, w) => sum + w!, 0) } : { minWidth: 'max-content' }),
+        }}
+      >
+        {fixed && (
+          <colgroup>
+            {colWidths.map((w, i) => (
+              <col key={ids[i]} style={{ width: w }} />
+            ))}
+            <col />
+          </colgroup>
+        )}
         <thead>
           <tr>
-            {cols.map((c) => (
+            {cols.map((c, i) => (
               <th
-                key={c.label}
+                key={ids[i]}
+                ref={(el) => {
+                  headers.current[i] = el;
+                }}
                 style={{
                   textAlign: c.align ?? 'left',
                   padding: dense ? '10px 12px' : '12px 18px',
@@ -237,18 +373,39 @@ export function Table({
                   letterSpacing: '0.05em',
                   borderBottom: `1px solid ${theme.border}`,
                   background: theme.surface2,
+                  ...(resizable && { position: 'relative' }),
                   ...(maxHeight !== undefined && { position: 'sticky', top: 0, zIndex: 1 }),
+                  ...(fixed && { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }),
                 }}
               >
                 {c.label}
+                {resizable && (
+                  <ColumnResizer
+                    column={ids[i]!}
+                    active={dragging?.id === ids[i] || focused === ids[i]}
+                    onPointerDown={(e) => startDrag(i, e)}
+                    onDoubleClick={() => fit(i)}
+                  />
+                )}
               </th>
             ))}
+            {fixed && (
+              <th
+                aria-hidden
+                style={{
+                  padding: 0,
+                  borderBottom: `1px solid ${theme.border}`,
+                  background: theme.surface2,
+                  ...(maxHeight !== undefined && { position: 'sticky', top: 0, zIndex: 1 }),
+                }}
+              />
+            )}
           </tr>
         </thead>
         <tbody>
           {rows.length === 0 ? (
             <tr>
-              <td colSpan={cols.length} style={{ padding: 32, textAlign: 'center', color: theme.textDim, fontSize: 14 }}>
+              <td colSpan={cols.length + (fixed ? 1 : 0)} style={{ padding: 32, textAlign: 'center', color: theme.textDim, fontSize: 14 }}>
                 {empty}
               </td>
             </tr>
@@ -262,11 +419,13 @@ export function Table({
                       padding: dense ? '10px 12px' : '14px 18px',
                       textAlign: cols[j]?.align ?? 'left',
                       fontVariantNumeric: 'tabular-nums',
+                      ...(fixed && { overflow: 'hidden', overflowWrap: 'anywhere' }),
                     }}
                   >
                     {cell}
                   </td>
                 ))}
+                {fixed && <td aria-hidden style={{ padding: 0 }} />}
               </tr>
             ))
           )}
@@ -275,6 +434,62 @@ export function Table({
       {footer}
       </div>
     </Card>
+  );
+}
+
+function measureColumn(th: HTMLTableCellElement | null | undefined): number {
+  return Math.max(MIN_COLUMN_WIDTH, Math.round(th?.getBoundingClientRect().width ?? 0));
+}
+
+const visuallyHidden: CSSProperties = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  margin: -1,
+  padding: 0,
+  overflow: 'hidden',
+  clip: 'rect(0 0 0 0)',
+  whiteSpace: 'nowrap',
+  border: 0,
+};
+
+/** A header's right edge, for pointers: drag it, or double-click to fit the
+ *  column to its content again. Lit while dragged, hovered or focused. */
+function ColumnResizer({
+  column,
+  active,
+  onPointerDown,
+  onDoubleClick,
+}: {
+  column: string;
+  active: boolean;
+  onPointerDown: (e: ReactPointerEvent) => void;
+  onDoubleClick: () => void;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <div
+      aria-hidden
+      data-resize-column={column}
+      title="Drag to resize · double-click to fit"
+      onPointerDown={onPointerDown}
+      onDoubleClick={onDoubleClick}
+      onPointerEnter={() => setHover(true)}
+      onPointerLeave={() => setHover(false)}
+      style={{
+        position: 'absolute',
+        top: 0,
+        right: 0,
+        bottom: 0,
+        width: 9,
+        display: 'flex',
+        justifyContent: 'center',
+        cursor: 'col-resize',
+        touchAction: 'none',
+      }}
+    >
+      <div style={{ width: 2, background: hover || active ? theme.accent : theme.border }} />
+    </div>
   );
 }
 

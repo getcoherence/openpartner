@@ -579,6 +579,7 @@ function EmailTab({ canWrite, onSent }: { canWrite: boolean; onSent: () => void 
       {p?.targets && (
         <Table
           dense
+          resizeKey="ops.brand-outreach.due"
           columns={['Company', 'Address', 'Opens with', '']}
           rows={p.targets.map((t) => [
             <div key="c" style={{ maxWidth: 240 }}>
@@ -832,6 +833,7 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
               <div ref={listRef}>
               <Table
                 dense
+                resizeKey="ops.brand-outreach.prospects"
                 maxHeight={listHeight}
                 columns={
                   view === 'review'

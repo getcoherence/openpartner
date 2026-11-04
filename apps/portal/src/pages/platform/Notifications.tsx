@@ -259,7 +259,7 @@ function SweepCard({
             )}
           </div>
           {result.dryRun && result.eligible.length > 0 && (
-            <Table columns={sweep.columns} rows={sweep.rows(result)} />
+            <Table resizeKey={`ops.notifications.${sweep.key}`} columns={sweep.columns} rows={sweep.rows(result)} />
           )}
         </div>
       )}
