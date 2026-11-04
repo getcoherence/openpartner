@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 /**
  * The brand outreach console page (pages/platform/BrandOutreach.tsx): the
- * prospect list with masked addresses and the words that place a company in
- * the US, the views and reasons it asks the Network for, what an admin can do
- * and support can't, the runs' phase-1 numbers, and saving settings.
+ * review queue (why each is held, approve with or without an address found,
+ * reject), the prospect list with masked addresses and the words that place
+ * a company in the US, the views and reasons it asks the Network for, what
+ * an admin can do and support can't, the runs' phase-1 numbers, and saving
+ * settings.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -42,8 +44,24 @@ const ACME = {
   updatedAt: '2026-10-21T00:00:00.000Z',
 };
 
+const HELD = {
+  ...ACME,
+  id: 'bpr_2',
+  status: 'review',
+  name: 'Pipewise',
+  siteUrl: 'https://pipewise.example',
+  country: null,
+  countryEvidence: null,
+  rejectReason: 'country_unknown',
+  reviewNote: 'Said US, quoting words not on the pages read: "Based in Ohio"',
+  dueAt: null,
+};
+const HELD_NO_ADDRESS = { ...HELD, id: 'bpr_3', name: 'Shipcheck', siteUrl: 'https://shipcheck.example', rejectReason: 'no_address', reviewNote: null, contact: null };
+
 const STATS = {
-  byStatus: { qualified: 1, queued: 3, rejected: 5 },
+  byStatus: { qualified: 1, queued: 3, rejected: 5, review: 2 },
+  held: { country_unknown: 1, no_address: 1 },
+  copyLinks: { website: 7, redirect_only: 2, none: 1 },
   ready: 1,
   waiting: 0,
   rejections: { not_us: 3, has_affiliate_program: 2 },
@@ -73,9 +91,14 @@ function respond(url: string, method: string): { status: number; body: unknown }
   if (url.endsWith('/brand-outreach/settings') && method === 'PUT') return { status: 200, body: { settings: calls[calls.length - 1]!.body, updatedAt: null, updatedByEmail: null } };
   if (url.endsWith('/brand-outreach/settings')) return { status: 200, body: { settings: SETTINGS, defaults: SETTINGS, updatedAt: null, updatedByEmail: null, configured: { exa: true, treg: true, classifier: true, classifierModel: 'claude-opus-5-5' } } };
   if (url.endsWith('/brand-outreach/stats')) return { status: 200, body: STATS };
-  if (url.includes('/brand-outreach/prospects?')) return { status: 200, body: { prospects: url.includes('view=rejected') ? [] : [ACME], nextCursor: null } };
+  if (url.includes('/brand-outreach/prospects?')) {
+    const prospects = url.includes('view=review') ? [HELD, HELD_NO_ADDRESS] : url.includes('view=rejected') ? [] : [ACME];
+    return { status: 200, body: { prospects, nextCursor: null } };
+  }
+  if (url.endsWith('/prospects/bpr_2/approve')) return { status: 200, body: { prospect: { ...HELD, status: 'qualified' } } };
+  if (url.endsWith('/prospects/bpr_3/approve')) return { status: 400, body: { error: 'not_their_address' } };
+  if (url.endsWith('/reject')) return { status: 204, body: null };
   if (url.endsWith('/prospects/bpr_1/contact')) return { status: 200, body: { contact: { email: 'hello@acmenotes.example', foundOn: ACME.contact.foundOn } } };
-  if (url.endsWith('/prospects/bpr_1/reject')) return { status: 204, body: null };
   return { status: 404, body: { error: 'not_found' } };
 }
 
@@ -106,9 +129,42 @@ function wrap(role: 'admin' | 'support', path = '/') {
   );
 }
 
+/** The page opens on the review queue; the others are a button away. */
+async function openView(name: RegExp) {
+  fireEvent.click(await screen.findByRole('button', { name }));
+}
+
 describe('brand outreach console', () => {
+  it('opens on the review queue: why each is held, approved after a confirm', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    wrap('admin');
+    expect(await screen.findByText('Pipewise')).toBeTruthy();
+    expect(calls.some((c) => c.url.includes('/prospects?view=review'))).toBe(true);
+    expect(screen.getByText('country unknown')).toBeTruthy();
+    expect(screen.getByText('“Said US, quoting words not on the pages read: "Based in Ohio"”')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^To review 2/ })).toBeTruthy();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Approve' })[0]!);
+    await waitFor(() => expect(calls.find((c) => c.url.endsWith('/prospects/bpr_2/approve'))).toMatchObject({ method: 'POST', body: {} }));
+  });
+
+  it('approves one with no address only with an address and its page, and shows why the Network refused', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    wrap('admin');
+    fireEvent.click(await screen.findByRole('button', { name: 'Add address' }));
+    const approve = () => screen.getAllByRole('button', { name: 'Approve' }).at(-1) as HTMLButtonElement;
+    expect(approve().disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('Address'), { target: { value: 'support@shipcheck.example' } });
+    fireEvent.change(screen.getByLabelText("Page it's on"), { target: { value: 'https://shipcheck.example/about' } });
+    fireEvent.click(approve());
+    await waitFor(() =>
+      expect(calls.find((c) => c.url.endsWith('/prospects/bpr_3/approve'))?.body).toEqual({ email: 'support@shipcheck.example', sourceUrl: 'https://shipcheck.example/about' }),
+    );
+    expect((await screen.findByRole('alert')).textContent).toMatch(/not support@ or sales@/);
+  });
+
   it('lists ready companies with the words that place them and the address masked, shown in full on request', async () => {
     wrap('admin');
+    await openView(/^Ready/);
     expect(await screen.findByText('Acme Notes')).toBeTruthy();
     expect(screen.getByText('“Acme Notes, Inc. is a Delaware corporation”')).toBeTruthy();
     expect(screen.getByText('h••••@acmenotes.example')).toBeTruthy();
@@ -117,8 +173,11 @@ describe('brand outreach console', () => {
     expect(await screen.findByText('hello@acmenotes.example')).toBeTruthy();
   });
 
-  it("keeps Show and Reject from support", async () => {
+  it('keeps Show, Approve and Reject from support', async () => {
     wrap('support');
+    expect(await screen.findByText('Pipewise')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
+    await openView(/^Ready/);
     expect(await screen.findByText('Acme Notes')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Show' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Reject' })).toBeNull();
@@ -127,6 +186,8 @@ describe('brand outreach console', () => {
   it('rejects by hand after a confirm', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     wrap('admin');
+    await openView(/^Ready/);
+    await screen.findByText('Acme Notes');
     fireEvent.click(await screen.findByRole('button', { name: 'Reject' }));
     await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.url.endsWith('/prospects/bpr_1/reject'))).toBe(true));
   });
@@ -142,6 +203,7 @@ describe('brand outreach console', () => {
     wrap('admin', '/?tab=runs');
     expect(await screen.findByText(/6 with a website link · 2 only Product Hunt links · 1 no links/)).toBeTruthy();
     expect(screen.getByText(/9 read · 1 qualified · not US 3/)).toBeTruthy();
+    expect(screen.getByText(/Every launch page read so far: 7 with a website link · 2 only Product Hunt links · 1 no links/)).toBeTruthy();
   });
 
   it('saves settings, and not a wait longer than the age limit', async () => {

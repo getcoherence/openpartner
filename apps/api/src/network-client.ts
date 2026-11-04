@@ -1746,8 +1746,19 @@ export async function adminGetBrandProspectContact(networkUrl: string, id: strin
 }
 
 /** Reject a prospect by hand: emptied, and never read again. */
-export async function adminRejectBrandProspect(networkUrl: string, id: string): Promise<void> {
-  return callNetworkAdmin<void>(networkUrl, 'POST', `/admin/brand-outreach/prospects/${encodeURIComponent(id)}/reject`, {});
+export async function adminRejectBrandProspect(networkUrl: string, id: string, reviewedByEmail: string): Promise<void> {
+  return callNetworkAdmin<void>(networkUrl, 'POST', `/admin/brand-outreach/prospects/${encodeURIComponent(id)}/reject`, { reviewedByEmail });
+}
+
+/** Approve a prospect held for review: qualified as a US company. With no
+ *  address found, one ops found published on the company's site; the
+ *  Network checks it as the read checks one. */
+export async function adminApproveBrandProspect(
+  networkUrl: string,
+  id: string,
+  body: { reviewedByEmail: string; email?: string; sourceUrl?: string },
+): Promise<{ prospect: unknown }> {
+  return callNetworkAdmin(networkUrl, 'POST', `/admin/brand-outreach/prospects/${encodeURIComponent(id)}/approve`, body, {}, 20_000);
 }
 
 export async function adminQueueBrandSeeds(networkUrl: string, urls: string[]): Promise<Record<string, number>> {

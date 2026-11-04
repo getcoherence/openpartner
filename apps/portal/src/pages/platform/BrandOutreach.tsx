@@ -4,14 +4,16 @@
  * program yet. Everything lives on the Network; this page reads and writes
  * it through the admin key.
  *
- *   - Prospects: ready (their wait after launch is over), waiting, queued,
- *     emailed, rejected by reason. Each with its site, launch, the words
- *     that place it in the US and its address, masked.
+ *   - Prospects: to review (held by the classifier's judgement or for want
+ *     of an address, to approve or reject), ready (their wait after launch
+ *     is over), waiting, queued, emailed, rejected by reason. Each with its
+ *     site, launch, the words that place it in the US and its address,
+ *     masked.
  *   - Runs: spend, counts, each job's latest run, launch pages by hand.
  *   - Settings: on/off, budget, queries, the waits.
  *
- * Support operators can look; changes, runs, rejections and full addresses
- * need an admin.
+ * Support operators can look; changes, runs, approvals, rejections and full
+ * addresses need an admin.
  */
 
 import { useEffect, useState } from 'react';
@@ -54,7 +56,11 @@ interface Stats {
   ready: number;
   waiting: number;
   rejections: Record<string, number>;
+  /** Held for review, by why. */
+  held?: Record<string, number>;
   siteFoundBy: Record<string, number>;
+  /** What Exa's copies of the launch pages held. */
+  copyLinks?: Record<string, number>;
   spend: { thisMonthUsd: number; budgetUsd: number };
   enabled: boolean;
   runs: Partial<Record<Job, Run>>;
@@ -76,7 +82,10 @@ interface Prospect {
   countryEvidence: string | null;
   pricingUrl: string | null;
   contact: { masked: string; foundOn: string | null } | null;
+  /** Why it was rejected, or why it's held for review. */
   rejectReason: string | null;
+  /** What the classifier said, for one held for review. */
+  reviewNote?: string | null;
   dueAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -87,8 +96,9 @@ interface ProspectsPage {
   nextCursor: string | null;
 }
 
-type View = 'ready' | 'waiting' | 'queued' | 'emailed' | 'rejected';
+type View = 'review' | 'ready' | 'waiting' | 'queued' | 'emailed' | 'rejected';
 const VIEWS: Array<{ key: View; label: string }> = [
+  { key: 'review', label: 'To review' },
   { key: 'ready', label: 'Ready' },
   { key: 'waiting', label: 'Waiting' },
   { key: 'queued', label: 'Queued' },
@@ -117,6 +127,23 @@ const REASONS: Record<string, string> = {
 };
 
 const reasonLabel = (r: string) => REASONS[r] ?? r.replace(/_/g, ' ');
+
+/** The Network's refusals of an approval, as ops read them. */
+const APPROVE_ERRORS: Record<string, string> = {
+  no_address: 'Add an address first',
+  invalid_email: 'Not an email address',
+  not_their_address: 'Use an address at their domain or a free-mail one, not support@ or sales@',
+  not_their_page: 'The page must be on their own site',
+  refuses_unsolicited: 'That page asks not to be emailed',
+  suppressed: 'That address or domain is blocked',
+  undeliverable: "The verifier says it won't deliver",
+  verify_unavailable: "The verifier isn't available; try again later",
+  not_found: 'No longer waiting for review',
+};
+const approveError = (err: unknown) => {
+  const code = err instanceof Error ? err.message : String(err);
+  return APPROVE_ERRORS[code] ?? friendlyPlatformError(err);
+};
 
 type Tab = 'prospects' | 'runs' | 'settings';
 const TABS: Array<{ key: Tab; label: string }> = [
@@ -184,6 +211,8 @@ const counts = (v: unknown) =>
     .map(([k, x]) => `${reasonLabel(k)} ${x}`)
     .join(' · ');
 
+const sum = (v: unknown) => Object.values((v ?? {}) as Record<string, number>).reduce((a, b) => a + b, 0);
+
 /** What a finished run did, in one line. */
 function runSummary(job: Job, r: Record<string, unknown> | null): string {
   if (!r) return '';
@@ -196,6 +225,7 @@ function runSummary(job: Job, r: Record<string, unknown> | null): string {
       : [
           `${n(r, 'read')} read`,
           `${n(r, 'qualified')} qualified`,
+          sum(r.held) ? `${sum(r.held)} to review` : '',
           counts(r.rejected),
           n(r, 'retried') ? `${n(r, 'retried')} to retry` : '',
           n(r, 'expired') ? `${n(r, 'expired')} expired` : '',
@@ -216,6 +246,7 @@ function RunLine({ job, run }: { job: Job; run: Run | undefined }) {
   if (!run) return null;
   const diag = job === 'read' && run.finishedAt ? readDiagnostics(run.result) : null;
   const found = job === 'discover' && run.finishedAt ? ((run.result?.found ?? {}) as Record<string, { new: number; known: number; unusable: number }>) : {};
+  const kinds = job === 'discover' && run.finishedAt ? ((run.result?.unusableKinds ?? {}) as Record<string, number>) : {};
   return (
     <div style={{ fontSize: 13, lineHeight: 1.5 }}>
       <strong>{job === 'discover' ? 'Discover' : 'Read'}</strong>{' '}
@@ -227,6 +258,15 @@ function RunLine({ job, run }: { job: Job; run: Run | undefined }) {
         <div style={{ color: theme.textMuted, fontSize: 12 }}>
           {Object.entries(found)
             .map(([q, c]) => `${q}: ${c.new} new, ${c.known} known${c.unusable ? `, ${c.unusable} other pages` : ''}`)
+            .join(' · ')}
+        </div>
+      )}
+      {Object.keys(kinds).length > 0 && (
+        <div style={{ color: theme.textMuted, fontSize: 12 }}>
+          Other pages:{' '}
+          {Object.entries(kinds)
+            .sort((a, b) => b[1] - a[1])
+            .map(([k, c]) => `/${k} ${c}`)
             .join(' · ')}
         </div>
       )}
@@ -291,6 +331,81 @@ function LaunchCell({ p }: { p: Prospect }) {
   );
 }
 
+/** Why a launch is held, and what the classifier said. */
+function HeldCell({ p }: { p: Prospect }) {
+  return (
+    <div style={{ fontSize: 13, maxWidth: 280 }}>
+      <div>{reasonLabel(p.rejectReason ?? '')}</div>
+      {p.country && p.country !== 'US' && <div style={{ color: theme.textMuted, fontSize: 12 }}>{p.country}</div>}
+      {(p.reviewNote ?? p.countryEvidence) && <div style={{ color: theme.textDim, fontSize: 12 }}>“{p.reviewNote ?? p.countryEvidence}”</div>}
+    </div>
+  );
+}
+
+/** Approve a held launch as a US company, or reject it. With no address
+ *  found, an admin gives one published on their site, with its page. */
+function ReviewActions({ p, onDone }: { p: Prospect; onDone: () => void }) {
+  const [adding, setAdding] = useState(false);
+  const [email, setEmail] = useState('');
+  const [page, setPage] = useState('');
+  const approve = useMutation({
+    mutationFn: () =>
+      papi(`/platform-admin/brand-outreach/prospects/${encodeURIComponent(p.id)}/approve`, {
+        method: 'POST',
+        body: p.contact ? {} : { email: email.trim(), sourceUrl: page.trim() },
+      }),
+    onSuccess: onDone,
+  });
+  const reject = useMutation({
+    mutationFn: () => papi(`/platform-admin/brand-outreach/prospects/${encodeURIComponent(p.id)}/reject`, { method: 'POST' }),
+    onSuccess: onDone,
+  });
+  const name = p.name ?? 'this launch';
+  const busy = approve.isPending || reject.isPending;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 180 }}>
+      {adding && !p.contact && (
+        <>
+          <Input aria-label="Address" placeholder="founder@their.site" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <Input aria-label="Page it's on" placeholder="https://their.site/about" value={page} onChange={(e) => setPage(e.target.value)} />
+        </>
+      )}
+      <div style={{ display: 'flex', gap: 6 }}>
+        {p.contact || adding ? (
+          <Button
+            size="sm"
+            disabled={busy || (!p.contact && (!email.trim() || !page.trim()))}
+            onClick={() => {
+              if (window.confirm(`Approve ${name} as a US software company with paid plans and no partner program?`)) approve.mutate();
+            }}
+          >
+            Approve
+          </Button>
+        ) : (
+          <Button size="sm" variant="secondary" onClick={() => setAdding(true)}>
+            Add address
+          </Button>
+        )}
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={busy}
+          onClick={() => {
+            if (window.confirm(`Reject ${name}? It won't be read or emailed again.`)) reject.mutate();
+          }}
+        >
+          Reject
+        </Button>
+      </div>
+      {(approve.error || reject.error) && (
+        <div role="alert" style={{ color: theme.danger, fontSize: 12 }}>
+          {approve.error ? approveError(approve.error) : friendlyPlatformError(reject.error)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const lines = (s: string) => [...new Set(s.split(/\n/).map((l) => l.trim()).filter(Boolean))];
 
 export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) {
@@ -346,12 +461,12 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
     },
   });
 
-  const [view, setView] = useState<View>('ready');
+  const [view, setView] = useState<View>('review');
   const [reason, setReason] = useState('');
   const [q, setQ] = useState('');
   const [searchFor, setSearchFor] = useState('');
   const listQuery = new URLSearchParams({ view });
-  if (view === 'rejected' && reason) listQuery.set('reason', reason);
+  if ((view === 'rejected' || view === 'review') && reason) listQuery.set('reason', reason);
   if (searchFor) listQuery.set('q', searchFor);
   const prospects = useInfiniteQuery({
     queryKey: ['platform-brand-outreach-prospects', listQuery.toString()],
@@ -386,7 +501,15 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
   };
 
   const rows =
-    view === 'rejected'
+    view === 'review'
+      ? listed.map((p) => [
+          <CompanyCell key="c" p={p} />,
+          <LaunchCell key="l" p={p} />,
+          <HeldCell key="h" p={p} />,
+          <ContactCell key="a" p={p} canWrite={canWrite} />,
+          canWrite ? <ReviewActions key="x" p={p} onDone={refresh} /> : <span key="x" />,
+        ])
+      : view === 'rejected'
       ? listed.map((p) => [
           <span key="r">{reasonLabel(p.rejectReason ?? '')}</span>,
           <LaunchCell key="l" p={p} />,
@@ -442,15 +565,23 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                 {VIEWS.map((v) => (
-                  <Button key={v.key} variant={view === v.key ? 'primary' : 'secondary'} size="sm" onClick={() => setView(v.key)}>
+                  <Button
+                    key={v.key}
+                    variant={view === v.key ? 'primary' : 'secondary'}
+                    size="sm"
+                    onClick={() => {
+                      setView(v.key);
+                      setReason('');
+                    }}
+                  >
                     {v.label}
                     {viewCount(v.key) != null ? ` ${viewCount(v.key)}` : ''}
                   </Button>
                 ))}
-                {view === 'rejected' && s && (
+                {(view === 'rejected' || view === 'review') && s && (
                   <Select aria-label="Reason" value={reason} onChange={(e) => setReason(e.target.value)}>
                     <option value="">Every reason</option>
-                    {Object.entries(s.rejections).map(([k, c]) => (
+                    {Object.entries((view === 'review' ? s.held : s.rejections) ?? {}).map(([k, c]) => (
                       <option key={k} value={k}>
                         {reasonLabel(k)} ({c})
                       </option>
@@ -472,7 +603,13 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
               </div>
               <Table
                 dense
-                columns={view === 'rejected' ? ['Reason', 'Launch', 'Found', 'When'] : ['Company', 'Launch', 'Country', 'Address', view === 'ready' || view === 'waiting' ? 'Due' : 'Updated', '']}
+                columns={
+                  view === 'review'
+                    ? ['Company', 'Launch', 'Held for', 'Address', '']
+                    : view === 'rejected'
+                      ? ['Reason', 'Launch', 'Found', 'When']
+                      : ['Company', 'Launch', 'Country', 'Address', view === 'ready' || view === 'waiting' ? 'Due' : 'Updated', '']
+                }
                 rows={rows}
                 empty={prospects.isLoading ? 'Loading…' : 'None.'}
                 footer={
@@ -510,7 +647,7 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
                       <Label>Qualified</Label>
                       <div style={{ fontSize: 20, fontWeight: 600 }}>{(s.byStatus.qualified ?? 0).toLocaleString()}</div>
                       <div style={{ color: theme.textMuted }}>
-                        {s.ready} ready · {s.waiting} waiting · {(s.byStatus.queued ?? 0).toLocaleString()} queued
+                        {s.ready} ready · {s.waiting} waiting · {(s.byStatus.review ?? 0).toLocaleString()} to review · {(s.byStatus.queued ?? 0).toLocaleString()} queued
                       </div>
                     </div>
                     <div>
@@ -525,6 +662,12 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <RunLine job="discover" run={s?.runs.discover} />
                   <RunLine job="read" run={s?.runs.read} />
+                  {s?.copyLinks && Object.keys(s.copyLinks).length > 0 && (
+                    <div style={{ color: theme.textMuted, fontSize: 12 }}>
+                      Every launch page read so far: {s.copyLinks.website ?? 0} with a website link · {s.copyLinks.redirect_only ?? 0} only Product Hunt links ·{' '}
+                      {s.copyLinks.none ?? 0} no links
+                    </div>
+                  )}
                   {!s?.runs.discover && !s?.runs.read && <div style={{ color: theme.textMuted, fontSize: 13 }}>No runs yet.</div>}
                 </div>
                 {canWrite && (
