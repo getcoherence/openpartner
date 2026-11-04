@@ -51,7 +51,8 @@ interface SettingsState {
   updatedAt: string | null;
   updatedByEmail: string | null;
   configured?: { exa: boolean; treg: boolean; classifier: boolean; classifierModel: string };
-  /** The Network's sanctioned and policy-blocked countries, never emailed. */
+  /** Never emailed on top of the list: Japan, South Korea and Israel, and
+   *  the Network's sanctioned and policy-blocked countries. */
   blockedCountries?: string[];
 }
 
@@ -499,6 +500,7 @@ const SKIPS: Record<string, string> = {
   on_openpartner: 'on OpenPartner',
   refuses_unsolicited: 'page refuses email',
   source_unreadable: "source page didn't load",
+  excluded_country: 'country never emailed',
 };
 
 /** The email's next batch, previewed as it would go, then sent; and a
@@ -983,7 +985,7 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
                     }}
                   />
                   {state.data.blockedCountries && state.data.blockedCountries.length > 0 && (
-                    <div style={{ color: theme.textMuted, fontSize: 12 }}>Also blocked platform-wide: {state.data.blockedCountries.join(' ')}</div>
+                    <div style={{ color: theme.textMuted, fontSize: 12 }}>Also never emailed: {state.data.blockedCountries.join(' ')}</div>
                   )}
                 </div>
               )}

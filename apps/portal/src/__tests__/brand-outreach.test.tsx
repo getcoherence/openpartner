@@ -278,7 +278,7 @@ describe('brand outreach console', () => {
     fireEvent.click(await screen.findByLabelText('Brands creators mention'));
     fireEvent.change(screen.getByLabelText('Countries never emailed'), { target: { value: 'de fr, gb  it' } });
     fireEvent.change(screen.getByLabelText('Roles searched on job boards'), { target: { value: 'Head of Partnerships\nAffiliate Manager' } });
-    expect(screen.getByText('Also blocked platform-wide: CU IR KP RU')).toBeTruthy();
+    expect(screen.getByText('Also never emailed: CU IR KP RU')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() =>
       expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({
