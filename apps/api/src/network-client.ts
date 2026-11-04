@@ -1703,6 +1703,63 @@ export async function adminRunCreatorIndexJob(networkUrl: string, job: 'discover
   return callNetworkAdmin<Record<string, unknown>>(networkUrl, 'POST', `/admin/creator-index/run/${job}`, {}, {}, 30_000);
 }
 
+// ---- Brand outreach (openpartner-network docs/brand-outreach.md §6) ----
+
+export interface BrandOutreachSettings {
+  enabled: boolean;
+  monthlyBudgetUsd: number;
+  queries: string[];
+  lookbackDays: number;
+  sendAfterDays: number;
+  maxLaunchAgeDays: number;
+  readConcurrency: number;
+}
+
+export interface StoredBrandOutreachSettings {
+  settings: BrandOutreachSettings;
+  updatedAt: string | null;
+  updatedByEmail: string | null;
+}
+
+export async function adminGetBrandOutreachSettings(networkUrl: string): Promise<StoredBrandOutreachSettings & Record<string, unknown>> {
+  return callNetworkAdmin(networkUrl, 'GET', '/admin/brand-outreach/settings');
+}
+
+export async function adminSetBrandOutreachSettings(
+  networkUrl: string,
+  settings: BrandOutreachSettings & { updatedByEmail?: string },
+): Promise<StoredBrandOutreachSettings> {
+  return callNetworkAdmin(networkUrl, 'PUT', '/admin/brand-outreach/settings', { ...settings });
+}
+
+export async function adminBrandOutreachStats(networkUrl: string): Promise<Record<string, unknown>> {
+  return callNetworkAdmin<Record<string, unknown>>(networkUrl, 'GET', '/admin/brand-outreach/stats');
+}
+
+export async function adminListBrandProspects(networkUrl: string, querystring: string): Promise<{ prospects: unknown[]; nextCursor: string | null }> {
+  return callNetworkAdmin(networkUrl, 'GET', `/admin/brand-outreach/prospects${querystring ? `?${querystring}` : ''}`);
+}
+
+/** One prospect's address in full (the list shows it masked). */
+export async function adminGetBrandProspectContact(networkUrl: string, id: string): Promise<{ contact: { email: string; foundOn: string | null } }> {
+  return callNetworkAdmin(networkUrl, 'GET', `/admin/brand-outreach/prospects/${encodeURIComponent(id)}/contact`);
+}
+
+/** Reject a prospect by hand: emptied, and never read again. */
+export async function adminRejectBrandProspect(networkUrl: string, id: string): Promise<void> {
+  return callNetworkAdmin<void>(networkUrl, 'POST', `/admin/brand-outreach/prospects/${encodeURIComponent(id)}/reject`, {});
+}
+
+export async function adminQueueBrandSeeds(networkUrl: string, urls: string[]): Promise<Record<string, number>> {
+  return callNetworkAdmin<Record<string, number>>(networkUrl, 'POST', '/admin/brand-outreach/seeds', { urls });
+}
+
+/** Starts the job on the Network, which answers at once ({ started: true })
+ *  and runs it in the background; 409 already_running if it's going. */
+export async function adminRunBrandOutreachJob(networkUrl: string, job: 'discover' | 'read'): Promise<Record<string, unknown>> {
+  return callNetworkAdmin<Record<string, unknown>>(networkUrl, 'POST', `/admin/brand-outreach/run/${job}`, {}, {}, 30_000);
+}
+
 export interface CreatorIndexInviteRunResult {
   ran: boolean;
   dryRun: boolean;

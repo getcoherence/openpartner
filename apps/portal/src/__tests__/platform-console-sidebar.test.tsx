@@ -44,6 +44,7 @@ const PAGES = [
   'Creators',
   'Vendors',
   'Creator index',
+  'Brand outreach',
   'Marketplace',
   'Fees',
   'Invoicing',

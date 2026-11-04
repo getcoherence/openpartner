@@ -10,6 +10,7 @@ import {
   Handshake,
   LayoutGrid,
   LogOut,
+  Megaphone,
   Menu,
   Percent,
   ScrollText,
@@ -38,6 +39,7 @@ import { CountriesPage } from './Countries.js';
 import { ScreeningPage } from './Screening.js';
 import { OwnProgramPage } from './OwnProgram.js';
 import { CreatorIndexPage } from './CreatorIndex.js';
+import { BrandOutreachPage } from './BrandOutreach.js';
 import { MailboxCallbackPage } from './Mailboxes.js';
 
 const NAV: ReadonlyArray<{ title: string; items: ReadonlyArray<{ to: string; label: string; icon: LucideIcon }> }> = [
@@ -53,6 +55,7 @@ const NAV: ReadonlyArray<{ title: string; items: ReadonlyArray<{ to: string; lab
     title: 'Network',
     items: [
       { to: '/platform/creator-index', label: 'Creator index', icon: UserSearch },
+      { to: '/platform/brand-outreach', label: 'Brand outreach', icon: Megaphone },
       { to: '/platform/marketplace', label: 'Marketplace', icon: LayoutGrid },
     ],
   },
@@ -151,6 +154,7 @@ export function PlatformConsole() {
           <Route path="brands" element={<BrandsPage operator={operator} />} />
           <Route path="creators" element={<CreatorsPage operator={operator} />} />
           <Route path="creator-index" element={<CreatorIndexPage operator={operator} />} />
+          <Route path="brand-outreach" element={<BrandOutreachPage operator={operator} />} />
           <Route path="mailboxes/callback" element={<MailboxCallbackPage />} />
           <Route path="vendors" element={<VendorsPage operator={operator} />} />
           <Route path="marketplace" element={<MarketplacePage operator={operator} />} />

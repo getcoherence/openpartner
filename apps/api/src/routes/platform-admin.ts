@@ -73,6 +73,14 @@ import {
   adminRunCreatorIndexInvites,
   adminRunCreatorIndexJob,
   adminRunCreatorIndexOutreach,
+  adminBrandOutreachStats,
+  adminGetBrandOutreachSettings,
+  adminGetBrandProspectContact,
+  adminListBrandProspects,
+  adminQueueBrandSeeds,
+  adminRejectBrandProspect,
+  adminRunBrandOutreachJob,
+  adminSetBrandOutreachSettings,
   adminSearchIndexedCreators,
   adminSendCreatorIndexOutreachSample,
   OUTREACH_STYLES,
@@ -2422,6 +2430,164 @@ platformAdminRouter.post('/platform-admin/creator-index/outreach/sample', requir
     sendNetworkFailure(res, err);
   }
 });
+
+// --------------------------------------------------------------------------
+// Brand outreach (openpartner-network docs/brand-outreach.md §6)
+// --------------------------------------------------------------------------
+//
+// Software companies that launched on Product Hunt recently and have no
+// partner program yet. The settings, the data and the jobs all live on the
+// Network; these routes relay them with the admin key. Support operators can
+// look; changes, runs and full addresses need an admin, all audited.
+
+platformAdminRouter.get('/platform-admin/brand-outreach/settings', requirePlatformAdmin, async (_req, res) => {
+  const networkUrl = networkOr503(res);
+  if (!networkUrl) return;
+  try {
+    res.json(await adminGetBrandOutreachSettings(networkUrl));
+  } catch (err) {
+    sendNetworkFailure(res, err);
+  }
+});
+
+const brandOutreachSettingsSchema = z
+  .object({
+    enabled: z.boolean(),
+    monthlyBudgetUsd: z.number().int().min(0).max(10_000),
+    queries: z.array(z.string().trim().min(3).max(200)).max(30),
+    lookbackDays: z.number().int().min(1).max(30),
+    sendAfterDays: z.number().int().min(0).max(60),
+    // The Network checks it's over sendAfterDays.
+    maxLaunchAgeDays: z.number().int().min(7).max(180),
+    readConcurrency: z.number().int().min(1).max(10),
+  })
+  .strict();
+
+platformAdminRouter.put(
+  '/platform-admin/brand-outreach/settings',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = brandOutreachSettingsSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    const actor = req.platformAdminActor!;
+    try {
+      const before = (await adminGetBrandOutreachSettings(networkUrl)).settings;
+      const saved = await adminSetBrandOutreachSettings(networkUrl, { ...body.data, updatedByEmail: actor.email });
+      await writeAudit(db, { actor, action: 'brand_outreach.settings', targetType: 'platform', detail: { before, after: saved.settings } });
+      res.json(saved);
+    } catch (err) {
+      sendNetworkFailure(res, err);
+    }
+  },
+);
+
+platformAdminRouter.get('/platform-admin/brand-outreach/stats', requirePlatformAdmin, async (_req, res) => {
+  const networkUrl = networkOr503(res);
+  if (!networkUrl) return;
+  try {
+    res.json(await adminBrandOutreachStats(networkUrl));
+  } catch (err) {
+    sendNetworkFailure(res, err);
+  }
+});
+
+platformAdminRouter.get('/platform-admin/brand-outreach/prospects', requirePlatformAdmin, async (req, res) => {
+  const networkUrl = networkOr503(res);
+  if (!networkUrl) return;
+  const qs = new URLSearchParams();
+  // `view`: waiting, ready, queued, emailed, joined, muted or rejected;
+  // `reason` with rejected; `after`, the next page's cursor.
+  for (const key of ['view', 'reason', 'q', 'limit', 'after']) {
+    const v = req.query[key];
+    if (typeof v === 'string' && v) qs.set(key, v);
+  }
+  try {
+    res.json(await adminListBrandProspects(networkUrl, qs.toString()));
+  } catch (err) {
+    sendNetworkFailure(res, err);
+  }
+});
+
+/** One prospect's address in full: the list shows them masked. Admins only,
+ *  and each look is in the audit log. */
+platformAdminRouter.get(
+  '/platform-admin/brand-outreach/prospects/:id/contact',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    try {
+      const body = await adminGetBrandProspectContact(networkUrl, req.params.id!);
+      await writeAudit(db, { actor: req.platformAdminActor!, action: 'brand_outreach.contact_view', targetType: 'brand_prospect', targetId: req.params.id! });
+      res.set('Cache-Control', 'no-store').json(body);
+    } catch (err) {
+      sendNetworkFailure(res, err);
+    }
+  },
+);
+
+platformAdminRouter.post(
+  '/platform-admin/brand-outreach/prospects/:id/reject',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    try {
+      await adminRejectBrandProspect(networkUrl, req.params.id!);
+      await writeAudit(db, { actor: req.platformAdminActor!, action: 'brand_outreach.reject', targetType: 'brand_prospect', targetId: req.params.id! });
+      res.status(204).send();
+    } catch (err) {
+      sendNetworkFailure(res, err);
+    }
+  },
+);
+
+const brandSeedsSchema = z.object({ urls: z.array(z.string().trim().min(5).max(500)).min(1).max(200) }).strict();
+
+platformAdminRouter.post(
+  '/platform-admin/brand-outreach/seeds',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = brandSeedsSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    try {
+      const counts = await adminQueueBrandSeeds(networkUrl, body.data.urls);
+      await writeAudit(db, { actor: req.platformAdminActor!, action: 'brand_outreach.seeds', targetType: 'platform', detail: counts });
+      res.json(counts);
+    } catch (err) {
+      sendNetworkFailure(res, err);
+    }
+  },
+);
+
+const BRAND_OUTREACH_JOBS = ['discover', 'read'] as const;
+
+platformAdminRouter.post(
+  '/platform-admin/brand-outreach/run/:job',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const job = req.params.job as (typeof BRAND_OUTREACH_JOBS)[number];
+    if (!BRAND_OUTREACH_JOBS.includes(job)) return res.status(404).json({ error: 'unknown_job' });
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    try {
+      const result = await adminRunBrandOutreachJob(networkUrl, job);
+      await writeAudit(db, { actor: req.platformAdminActor!, action: `brand_outreach.run_${job}`, targetType: 'platform', detail: result });
+      res.json(result);
+    } catch (err) {
+      sendNetworkFailure(res, err);
+    }
+  },
+);
 
 // The creator index's two mailboxes, connected by Microsoft sign-in
 // (openpartner-network docs/creator-index.md §5.5). The Network holds the
