@@ -264,7 +264,11 @@ describe('brand outreach console', () => {
   it('asks for rejected companies by reason', async () => {
     wrap('admin');
     fireEvent.click(await screen.findByRole('button', { name: /^Rejected/ }));
-    fireEvent.change(await screen.findByLabelText('Reason'), { target: { value: 'not_us' } });
+    const reason = await screen.findByLabelText('Reason');
+    // As wide as its choices, on the row with the search.
+    expect(reason.style.width).toBe('auto');
+    expect(reason.parentElement).toBe(screen.getByLabelText('Search prospects').closest('form')!.parentElement);
+    fireEvent.change(reason, { target: { value: 'not_us' } });
     await waitFor(() => expect(calls.some((c) => c.url.includes('view=rejected&reason=not_us'))).toBe(true));
   });
 
