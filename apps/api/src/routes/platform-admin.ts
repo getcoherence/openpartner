@@ -24,6 +24,7 @@ import { offsetDateTime, z } from '../zod.js';
 import { ulid } from 'ulid';
 import {
   DEFAULT_TENANT_ID,
+  FREE_MAIL_DOMAINS,
   TABLES,
   isCountryCode,
   type AdminRow,
@@ -75,6 +76,8 @@ import {
   adminRunCreatorIndexOutreach,
   adminApproveBrandProspect,
   adminBrandOutreachStats,
+  adminRunBrandOutreach,
+  adminSendBrandOutreachSample,
   adminGetBrandOutreachSettings,
   adminGetBrandProspectContact,
   adminListBrandProspects,
@@ -2462,6 +2465,8 @@ const brandOutreachSettingsSchema = z
     maxLaunchAgeDays: z.number().int().min(7).max(180),
     readConcurrency: z.number().int().min(1).max(10),
     // Left out by a console on a Network that predates them.
+    outreachEnabled: z.boolean().optional(),
+    outreachStyle: z.enum(OUTREACH_STYLES).optional(),
     sources: z.object({ productHunt: z.boolean(), jobPosts: z.boolean(), creatorMentions: z.boolean() }).strict().optional(),
     jobQueries: z.array(z.string().trim().min(3).max(200)).max(30).optional(),
     minCreatorMentions: z.number().int().min(1).max(100).optional(),
@@ -2614,6 +2619,65 @@ platformAdminRouter.post(
     }
   },
 );
+
+/** The company email domains of openpartner's own brands' admins (not a
+ *  free-mail provider's): brand outreach never writes to a company that's
+ *  here already. The Network adds its own brands and offerings. */
+async function ownBrandDomains(): Promise<string[]> {
+  const rows = (await db(TABLES.Admin).select(db.raw(`distinct lower(split_part("email", '@', 2)) as "domain"`))) as Array<{ domain: string | null }>;
+  return rows.map((r) => r.domain ?? '').filter((d) => d.includes('.') && !FREE_MAIL_DOMAINS.has(d));
+}
+
+const brandOutreachRunSchema = z
+  .object({
+    dryRun: z.boolean().optional(),
+    limit: z.number().int().min(1).max(50).optional(),
+  })
+  .strict();
+
+/** Brand outreach's email (openpartner-network docs/brand-outreach.md §4).
+ *  Anyone on the console can preview a batch; sending one takes an admin,
+ *  audited. Either way the Network is told openpartner's brands' domains,
+ *  never to be emailed. */
+platformAdminRouter.post('/platform-admin/brand-outreach/outreach/run', requirePlatformAdmin, async (req, res) => {
+  const body = brandOutreachRunSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const { dryRun, limit } = body.data;
+  if (!dryRun && req.platformAdminActor!.role !== 'admin') return res.status(403).json({ error: 'read_only_operator' });
+  const networkUrl = networkOr503(res);
+  if (!networkUrl) return;
+  try {
+    const result = await adminRunBrandOutreach(networkUrl, { dryRun, limit, excludeDomains: await ownBrandDomains() });
+    if (!dryRun) await writeAudit(db, { actor: req.platformAdminActor!, action: 'brand_outreach.outreach_run', targetType: 'platform', detail: { limit } });
+    res.status(dryRun ? 200 : 202).json(result);
+  } catch (err) {
+    sendNetworkFailure(res, err);
+  }
+});
+
+const brandOutreachSampleSchema = z
+  .object({
+    to: z.array(z.string().trim().toLowerCase().email().max(254)).min(1).max(20),
+    // Left out: the style batches send.
+    style: z.enum(OUTREACH_STYLES).optional(),
+  })
+  .strict();
+
+/** The email about a made-up company to addresses an admin types, for a
+ *  seed test. Audited with the addresses. */
+platformAdminRouter.post('/platform-admin/brand-outreach/outreach/sample', requirePlatformAdmin, requirePlatformAdminWrite, async (req, res) => {
+  const body = brandOutreachSampleSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const networkUrl = networkOr503(res);
+  if (!networkUrl) return;
+  try {
+    const result = await adminSendBrandOutreachSample(networkUrl, body.data);
+    await writeAudit(db, { actor: req.platformAdminActor!, action: 'brand_outreach.outreach_sample', targetType: 'platform', detail: { to: body.data.to, style: body.data.style ?? null } });
+    res.json(result);
+  } catch (err) {
+    sendNetworkFailure(res, err);
+  }
+});
 
 const BRAND_OUTREACH_JOBS = ['discover', 'read'] as const;
 

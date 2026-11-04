@@ -1707,6 +1707,9 @@ export async function adminRunCreatorIndexJob(networkUrl: string, job: 'discover
 
 export interface BrandOutreachSettings {
   enabled: boolean;
+  /** Absent from a Network that predates the email. */
+  outreachEnabled?: boolean;
+  outreachStyle?: 'designed' | 'plain';
   monthlyBudgetUsd: number;
   /** Absent from a Network that predates them. */
   sources?: { productHunt: boolean; jobPosts: boolean; creatorMentions: boolean };
@@ -1768,6 +1771,20 @@ export async function adminApproveBrandProspect(
 
 export async function adminQueueBrandSeeds(networkUrl: string, urls: string[]): Promise<Record<string, number>> {
   return callNetworkAdmin<Record<string, number>>(networkUrl, 'POST', '/admin/brand-outreach/seeds', { urls });
+}
+
+/** One batch of brand outreach's email, or its dry run (the batch, as it
+ *  would go). A send starts in the background on the Network (202). */
+export async function adminRunBrandOutreach(
+  networkUrl: string,
+  body: { dryRun?: boolean; limit?: number; excludeDomains: string[] },
+): Promise<Record<string, unknown>> {
+  return callNetworkAdmin<Record<string, unknown>>(networkUrl, 'POST', '/admin/brand-outreach/outreach/run', body, {}, 60_000);
+}
+
+/** The email about a made-up company, to seed addresses. */
+export async function adminSendBrandOutreachSample(networkUrl: string, body: { to: string[]; style?: 'designed' | 'plain' }): Promise<Record<string, unknown>> {
+  return callNetworkAdmin<Record<string, unknown>>(networkUrl, 'POST', '/admin/brand-outreach/outreach/sample', body, {}, 120_000);
 }
 
 /** Starts the job on the Network, which answers at once ({ started: true })

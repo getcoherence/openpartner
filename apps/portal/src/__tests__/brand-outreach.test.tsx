@@ -131,6 +131,30 @@ function respond(url: string, method: string): { status: number; body: unknown }
   if (url.endsWith('/prospects/bpr_2/approve')) return { status: 200, body: { prospect: { ...HELD, status: 'qualified' } } };
   if (url.endsWith('/prospects/bpr_3/approve')) return { status: 400, body: { error: 'not_their_address' } };
   if (url.endsWith('/reject')) return { status: 204, body: null };
+  if (url.endsWith('/brand-outreach/outreach/run')) {
+    const dry = (calls[calls.length - 1]!.body as { dryRun: boolean }).dryRun;
+    if (!dry) return { status: 202, body: { started: true } };
+    return {
+      status: 200,
+      body: {
+        enabled: true,
+        style: 'plain',
+        mailerConfigured: true,
+        sender: 'keith@openpartner.test',
+        senderName: 'Keith Fawcett',
+        due: 2,
+        waiting: 5,
+        candidates: 2,
+        dailyLimit: 50,
+        sentLastDay: 12,
+        targets: [
+          { id: 'bpr_1', name: 'Acme Notes', siteUrl: 'https://acmenotes.example', sourceNote: 'Hiring: Head of Partnerships', country: 'US', address: 'h••••@acmenotes.example', addressFoundOn: 'https://acmenotes.example/about', opening: "Acme Notes came up while I was looking at companies hiring for partnerships: you're hiring a Head of Partnerships." },
+          { id: 'bpr_2', name: 'Pipewise', siteUrl: null, sourceNote: null, country: 'CA', address: 'f••••@pipewise.example', addressFoundOn: null, opening: 'Congrats on the Product Hunt launch.', skip: 'refuses_unsolicited' },
+        ],
+      },
+    };
+  }
+  if (url.endsWith('/brand-outreach/outreach/sample')) return { status: 200, body: { subject: 'Partner program for Acme Notes', sent: ['seed@example.com'], failed: [] } };
   if (url.endsWith('/prospects/bpr_1/contact')) return { status: 200, body: { contact: { email: 'hello@acmenotes.example', foundOn: ACME.contact.foundOn } } };
   return { status: 404, body: { error: 'not_found' } };
 }
@@ -254,7 +278,7 @@ describe('brand outreach console', () => {
     fireEvent.click(await screen.findByLabelText('Brands creators mention'));
     fireEvent.change(screen.getByLabelText('Countries never emailed'), { target: { value: 'de fr, gb  it' } });
     fireEvent.change(screen.getByLabelText('Roles searched on job boards'), { target: { value: 'Head of Partnerships\nAffiliate Manager' } });
-    expect(screen.getByText('Also blocked platform-wide: CU IR KP RU')).toBeTruthy();
+    expect(screen.getByText('Also never emailed: CU IR KP RU')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() =>
       expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({
@@ -263,6 +287,46 @@ describe('brand outreach console', () => {
         jobQueries: ['Head of Partnerships', 'Affiliate Manager'],
       }),
     );
+  });
+
+  it('previews the next batch as it would go, and an admin sends it after a confirm', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    wrap('admin', '/?tab=email');
+    fireEvent.change(await screen.findByLabelText('Batch size'), { target: { value: '10' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Preview batch' }));
+    expect(await screen.findByText("Acme Notes came up while I was looking at companies hiring for partnerships: you're hiring a Head of Partnerships.")).toBeTruthy();
+    expect(screen.getByText('skipped: page refuses email')).toBeTruthy();
+    expect(screen.getByText(/2 due · 5 waiting · sends as Keith Fawcett <keith@openpartner.test> · plain · 12 of 50 sent in the last 24 hours/)).toBeTruthy();
+    expect(calls.find((c) => c.url.endsWith('/outreach/run'))?.body).toEqual({ dryRun: true, limit: 10 });
+    fireEvent.click(screen.getByRole('button', { name: 'Send this batch' }));
+    // One goes: the other would be skipped.
+    expect(confirm).toHaveBeenCalledWith('Send the email to 1 company as Keith Fawcett?');
+    await waitFor(() => expect(calls.some((c) => c.url.endsWith('/outreach/run') && (c.body as { dryRun: boolean }).dryRun === false)).toBe(true));
+  });
+
+  it('sends a sample in the style asked for, and keeps sending and samples from support', async () => {
+    wrap('admin', '/?tab=email');
+    fireEvent.change(await screen.findByLabelText('Sample addresses'), { target: { value: 'seed@example.com\n' } });
+    fireEvent.change(screen.getByLabelText('Sample style'), { target: { value: 'designed' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send sample' }));
+    await waitFor(() => expect(calls.find((c) => c.url.endsWith('/outreach/sample'))?.body).toEqual({ to: ['seed@example.com'], style: 'designed' }));
+    expect(await screen.findByText('Sent to 1')).toBeTruthy();
+    cleanup();
+
+    wrap('support', '/?tab=email');
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview batch' }));
+    expect(await screen.findByText('Acme Notes')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Send this batch' })).toBeNull();
+    expect(screen.queryByLabelText('Sample addresses')).toBeNull();
+  });
+
+  it('switches the email on and picks its style in Settings', async () => {
+    settingsBody = { ...NEW_SETTINGS, outreachEnabled: false, outreachStyle: 'plain' };
+    wrap('admin', '/?tab=settings');
+    fireEvent.click(await screen.findByLabelText('Email on'));
+    fireEvent.change(screen.getByLabelText('Email style'), { target: { value: 'designed' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({ outreachEnabled: true, outreachStyle: 'designed' }));
   });
 
   it('saves settings, and not a wait longer than the age limit', async () => {
