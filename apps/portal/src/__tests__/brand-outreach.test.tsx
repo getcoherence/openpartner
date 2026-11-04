@@ -226,7 +226,7 @@ describe('brand outreach console', () => {
     await waitFor(() =>
       expect(calls.find((c) => c.url.endsWith('/prospects/bpr_3/approve'))?.body).toEqual({ email: 'support@shipcheck.example', sourceUrl: 'https://shipcheck.example/about' }),
     );
-    expect((await screen.findByRole('alert')).textContent).toMatch(/not support@ or sales@/);
+    expect((await screen.findByRole('alert')).textContent).toMatch(/not support@ or the like/);
   });
 
   it('lists ready companies with the words that place them and the address masked, shown in full on request', async () => {
