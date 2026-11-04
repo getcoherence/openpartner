@@ -83,6 +83,10 @@ beforeAll(async () => {
           return res.end();
         }
         if (path === '/admin/brand-outreach/prospects/bpr_gone/reject') return json(404, { error: 'not_found' });
+        if (path === '/admin/brand-outreach/prospects/bpr_1/approve') {
+          if (body?.email === 'support@acmenotes.example') return json(400, { error: 'not_their_address' });
+          return json(200, { prospect: { id: 'bpr_1', status: 'qualified' } });
+        }
         if (path === '/admin/brand-outreach/seeds') return json(200, { queued: 1, duplicate: 0, invalid: 0 });
         if (path === '/admin/brand-outreach/run/discover') return json(202, { started: true });
         if (path === '/admin/brand-outreach/run/read') return json(409, { error: 'already_running' });
@@ -159,6 +163,7 @@ describe.skipIf(skipIntegration)('brand outreach: ops console', () => {
       ['post', '/platform-admin/brand-outreach/run/discover'],
       ['post', '/platform-admin/brand-outreach/seeds'],
       ['post', '/platform-admin/brand-outreach/prospects/bpr_1/reject'],
+      ['post', '/platform-admin/brand-outreach/prospects/bpr_1/approve'],
       ['get', '/platform-admin/brand-outreach/prospects/bpr_1/contact'],
     ] as const) {
       expect({ path, status: (await request(app)[method](path).set('Cookie', support).send(SETTINGS)).status }).toEqual({ path, status: 403 });
@@ -178,8 +183,27 @@ describe.skipIf(skipIntegration)('brand outreach: ops console', () => {
     expect(await audited('brand_outreach.seeds')).toBeTruthy();
 
     expect((await request(app).post('/platform-admin/brand-outreach/prospects/bpr_1/reject').set('Cookie', admin)).status).toBe(204);
+    expect(last('/admin/brand-outreach/prospects/bpr_1/reject')!.body).toEqual({ reviewedByEmail: OPS_EMAIL });
     expect(await audited('brand_outreach.reject')).toMatchObject({ targetType: 'brand_prospect', targetId: 'bpr_1' });
     expect((await request(app).post('/platform-admin/brand-outreach/prospects/bpr_gone/reject').set('Cookie', admin)).body).toEqual({ error: 'not_found' });
+  });
+
+  it('approves a held one for admins with who did it, audited, and passes the Network’s refusal back', async () => {
+    const admin = await operator();
+    const ok = await request(app).post('/platform-admin/brand-outreach/prospects/bpr_1/approve').set('Cookie', admin).send({});
+    expect(ok.body).toEqual({ prospect: { id: 'bpr_1', status: 'qualified' } });
+    expect(last('/admin/brand-outreach/prospects/bpr_1/approve')!.body).toEqual({ reviewedByEmail: OPS_EMAIL });
+    expect(await audited('brand_outreach.approve')).toMatchObject({ targetType: 'brand_prospect', targetId: 'bpr_1' });
+
+    const page = 'https://acmenotes.example/about';
+    const refused = await request(app).post('/platform-admin/brand-outreach/prospects/bpr_1/approve').set('Cookie', admin).send({ email: 'support@acmenotes.example', sourceUrl: page });
+    expect(refused.status).toBe(400);
+    expect(refused.body).toEqual({ error: 'not_their_address' });
+    expect(last('/admin/brand-outreach/prospects/bpr_1/approve')!.body).toEqual({ email: 'support@acmenotes.example', sourceUrl: page, reviewedByEmail: OPS_EMAIL });
+
+    // An address goes with its page.
+    expect((await request(app).post('/platform-admin/brand-outreach/prospects/bpr_1/approve').set('Cookie', admin).send({ email: 'jo@acmenotes.example' })).status).toBe(400);
+    expect((await request(app).post('/platform-admin/brand-outreach/prospects/bpr_1/approve').set('Cookie', admin).send({ reviewedByEmail: 'someone@else.example' })).status).toBe(400);
   });
 
   it('shows one address in full to admins, uncached and audited', async () => {

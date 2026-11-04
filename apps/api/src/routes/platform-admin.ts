@@ -73,6 +73,7 @@ import {
   adminRunCreatorIndexInvites,
   adminRunCreatorIndexJob,
   adminRunCreatorIndexOutreach,
+  adminApproveBrandProspect,
   adminBrandOutreachStats,
   adminGetBrandOutreachSettings,
   adminGetBrandProspectContact,
@@ -2538,9 +2539,48 @@ platformAdminRouter.post(
     const networkUrl = networkOr503(res);
     if (!networkUrl) return;
     try {
-      await adminRejectBrandProspect(networkUrl, req.params.id!);
+      await adminRejectBrandProspect(networkUrl, req.params.id!, req.platformAdminActor!.email);
       await writeAudit(db, { actor: req.platformAdminActor!, action: 'brand_outreach.reject', targetType: 'brand_prospect', targetId: req.params.id! });
       res.status(204).send();
+    } catch (err) {
+      sendNetworkFailure(res, err);
+    }
+  },
+);
+
+const approveProspectSchema = z
+  .object({
+    // An address ops found published on the company's site, when the read
+    // found none, with the page it's on.
+    email: z.string().trim().min(3).max(254).optional(),
+    sourceUrl: z.string().trim().min(8).max(500).optional(),
+  })
+  .strict()
+  .refine((b) => !b.email === !b.sourceUrl, 'email and sourceUrl together');
+
+/** Approve a launch held for review: it's qualified as a US company. The
+ *  Network passes its own refusal back (no_address, not_their_address,
+ *  refuses_unsolicited and the like). Admins only, audited. */
+platformAdminRouter.post(
+  '/platform-admin/brand-outreach/prospects/:id/approve',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = approveProspectSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body' });
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    const actor = req.platformAdminActor!;
+    try {
+      const result = await adminApproveBrandProspect(networkUrl, req.params.id!, { ...body.data, reviewedByEmail: actor.email });
+      await writeAudit(db, {
+        actor,
+        action: 'brand_outreach.approve',
+        targetType: 'brand_prospect',
+        targetId: req.params.id!,
+        detail: body.data.sourceUrl ? { addressFoundOn: body.data.sourceUrl } : {},
+      });
+      res.json(result);
     } catch (err) {
       sendNetworkFailure(res, err);
     }
