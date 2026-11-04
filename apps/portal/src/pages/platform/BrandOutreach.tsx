@@ -25,6 +25,7 @@ import { theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select, Table, Textarea, formatDate } from '../../ui.js';
 import { friendlyPlatformError, papi, type PlatformOperator } from './lib.js';
 import { shortUrl } from '../../lib/partnership-signals.js';
+import { useRestOfWindow } from '../../lib/useRestOfWindow.js';
 
 interface BrandSettings {
   enabled: boolean;
@@ -38,6 +39,10 @@ interface BrandSettings {
   jobQueries?: string[];
   minCreatorMentions?: number;
   excludedCountries?: string[];
+  /** Exa's company data past either is too big. Absent from a Network that
+   *  predates the size check. */
+  maxEmployees?: number;
+  maxFundingUsdMillions?: number;
   queries: string[];
   lookbackDays: number;
   sendAfterDays: number;
@@ -107,6 +112,8 @@ interface Prospect {
   launchSite?: string;
   /** What found it: "Hiring: Head of Partnerships", "Mentioned by 12 creators". */
   sourceNote?: string | null;
+  /** Exa's company data in a line: "≈12 employees · Seed · $3.5M raised". */
+  companySize?: string | null;
   dueAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -278,7 +285,14 @@ function readDiagnostics(r: Record<string, unknown> | null): string | null {
   const copies = r?.copies as Record<string, number> | undefined;
   const website = r?.website as Record<string, number> | undefined;
   if (!copies || !website) return null;
-  return `Copies: ${copies.websiteLink ?? 0} with a website link · ${copies.onlyRedirectLinks ?? 0} only Product Hunt links · ${copies.noLinks ?? 0} no links. Websites: ${website.copy ?? 0} from the copy · ${website.search ?? 0} by search · ${website.none ?? 0} none`;
+  const size = r?.size as { checked?: number; withData?: number; tooBig?: Record<string, number>; placed?: number } | undefined;
+  return [
+    `Copies: ${copies.websiteLink ?? 0} with a website link · ${copies.onlyRedirectLinks ?? 0} only Product Hunt links · ${copies.noLinks ?? 0} no links.`,
+    `Websites: ${website.copy ?? 0} from the copy · ${website.search ?? 0} by search · ${website.none ?? 0} none.`,
+    size ? `Size: ${size.withData ?? 0} of ${size.checked ?? 0} with Exa data · ${sum(size.tooBig)} too big · ${size.placed ?? 0} placed by headquarters` : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
 }
 
 function RunLine({ job, run }: { job: Job; run: Run | undefined }) {
@@ -348,6 +362,7 @@ function CompanyCell({ p }: { p: Prospect }) {
         <span style={{ fontWeight: 600 }}>{p.name ?? '—'}</span>
       )}
       {p.summary && <div style={{ color: theme.textMuted, fontSize: 12 }}>{p.summary}</div>}
+      {p.companySize && <div style={{ color: theme.textMuted, fontSize: 12 }}>{p.companySize}</div>}
       {p.categories.length > 0 && <div style={{ color: theme.textDim, fontSize: 12 }}>{p.categories.join(', ')}</div>}
     </div>
   );
@@ -628,6 +643,8 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
   };
 
   const [draft, setDraft] = useState<BrandSettings | null>(null);
+  // The list scrolls within the window, like the creator index's.
+  const [listRef, listHeight] = useRestOfWindow(34);
   const [queriesText, setQueriesText] = useState('');
   const [jobsText, setJobsText] = useState('');
   const [countriesText, setCountriesText] = useState('');
@@ -812,8 +829,10 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
                   </Button>
                 </form>
               </div>
+              <div ref={listRef}>
               <Table
                 dense
+                maxHeight={listHeight}
                 columns={
                   view === 'review'
                     ? ['Company', 'Launch', 'Held for', 'Address', '']
@@ -833,6 +852,7 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
                   ) : undefined
                 }
               />
+              </div>
             </div>
           )}
 
@@ -955,6 +975,18 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
                   <Input type="number" min={7} max={180} aria-label="Too old after (days)" value={draft.maxLaunchAgeDays} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, maxLaunchAgeDays: Math.min(180, Math.max(7, Math.round(Number(e.target.value) || 7))) })} />
                   {waitTooLong && <div style={{ color: theme.danger, fontSize: 12 }}>Must be over the email wait</div>}
                 </div>
+                {draft.maxEmployees !== undefined && (
+                  <div>
+                    <Label>Max employees</Label>
+                    <Input type="number" min={5} max={10000} aria-label="Max employees" value={draft.maxEmployees} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, maxEmployees: Math.min(10_000, Math.max(5, Math.round(Number(e.target.value) || 5))) })} />
+                  </div>
+                )}
+                {draft.maxFundingUsdMillions !== undefined && (
+                  <div>
+                    <Label>Max funding ($M)</Label>
+                    <Input type="number" min={1} max={10000} aria-label="Max funding ($M)" value={draft.maxFundingUsdMillions} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, maxFundingUsdMillions: Math.min(10_000, Math.max(1, Math.round(Number(e.target.value) || 1))) })} />
+                  </div>
+                )}
               </div>
               {draft.sources && (
                 <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 14 }}>

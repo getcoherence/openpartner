@@ -1716,6 +1716,9 @@ export interface BrandOutreachSettings {
   jobQueries?: string[];
   minCreatorMentions?: number;
   excludedCountries?: string[];
+  /** Absent from a Network that predates the size check. */
+  maxEmployees?: number;
+  maxFundingUsdMillions?: number;
   queries: string[];
   lookbackDays: number;
   sendAfterDays: number;
