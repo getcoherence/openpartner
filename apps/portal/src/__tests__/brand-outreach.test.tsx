@@ -70,6 +70,11 @@ const STATS = {
   enabled: true,
   queriesSearchedAt: {},
   runs: {
+    discover: {
+      startedAt: '2026-11-03T09:00:00.000Z',
+      finishedAt: '2026-11-03T09:00:20.000Z',
+      result: { ran: true, searches: 3, queued: 4, failed: 0, wholeSite: 1, found: { 'developer tools': { new: 3, known: 1, unusable: 0 }, 'design tools': { new: 1, known: 0, unusable: 2, wholeSite: true } }, unusableKinds: { p: 2 } },
+    },
     read: {
       startedAt: '2026-11-03T10:00:00.000Z',
       finishedAt: '2026-11-03T10:02:00.000Z',
@@ -203,6 +208,9 @@ describe('brand outreach console', () => {
     wrap('admin', '/?tab=runs');
     expect(await screen.findByText(/6 with a website link · 2 only Product Hunt links · 1 no links/)).toBeTruthy();
     expect(screen.getByText(/9 read · 1 qualified · not US 3/)).toBeTruthy();
+    // A query whose product-page search found nothing, searched on the whole site.
+    expect(screen.getByText(/3 searches · 4 new launches · 1 on the whole site/)).toBeTruthy();
+    expect(screen.getByText(/design tools: 1 new, 0 known, 2 other pages \(whole site\)/)).toBeTruthy();
     expect(screen.getByText(/Every launch page read so far: 7 with a website link · 2 only Product Hunt links · 1 no links/)).toBeTruthy();
   });
 

@@ -221,7 +221,12 @@ function runSummary(job: Job, r: Record<string, unknown> | null): string {
   if (r.ran === false) return [n(r, 'expired') ? `${n(r, 'expired')} expired` : '', stopped || 'off'].filter(Boolean).join(' · ');
   const parts =
     job === 'discover'
-      ? [`${n(r, 'searches')} searches`, `${n(r, 'queued')} new launches`, n(r, 'failed') ? `${n(r, 'failed')} failed` : '']
+      ? [
+          `${n(r, 'searches')} searches`,
+          `${n(r, 'queued')} new launches`,
+          n(r, 'wholeSite') ? `${n(r, 'wholeSite')} on the whole site` : '',
+          n(r, 'failed') ? `${n(r, 'failed')} failed` : '',
+        ]
       : [
           `${n(r, 'read')} read`,
           `${n(r, 'qualified')} qualified`,
@@ -245,7 +250,7 @@ function readDiagnostics(r: Record<string, unknown> | null): string | null {
 function RunLine({ job, run }: { job: Job; run: Run | undefined }) {
   if (!run) return null;
   const diag = job === 'read' && run.finishedAt ? readDiagnostics(run.result) : null;
-  const found = job === 'discover' && run.finishedAt ? ((run.result?.found ?? {}) as Record<string, { new: number; known: number; unusable: number }>) : {};
+  const found = job === 'discover' && run.finishedAt ? ((run.result?.found ?? {}) as Record<string, { new: number; known: number; unusable: number; wholeSite?: boolean }>) : {};
   const kinds = job === 'discover' && run.finishedAt ? ((run.result?.unusableKinds ?? {}) as Record<string, number>) : {};
   return (
     <div style={{ fontSize: 13, lineHeight: 1.5 }}>
@@ -257,7 +262,7 @@ function RunLine({ job, run }: { job: Job; run: Run | undefined }) {
       {Object.keys(found).length > 0 && (
         <div style={{ color: theme.textMuted, fontSize: 12 }}>
           {Object.entries(found)
-            .map(([q, c]) => `${q}: ${c.new} new, ${c.known} known${c.unusable ? `, ${c.unusable} other pages` : ''}`)
+            .map(([q, c]) => `${q}: ${c.new} new, ${c.known} known${c.unusable ? `, ${c.unusable} other pages` : ''}${c.wholeSite ? ' (whole site)' : ''}`)
             .join(' · ')}
         </div>
       )}
@@ -716,8 +721,8 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
                   <Input type="number" min={1} max={10} aria-label="Read at once" value={draft.readConcurrency} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, readConcurrency: Math.min(10, Math.max(1, Math.round(Number(e.target.value) || 1))) })} />
                 </div>
                 <div>
-                  <Label>First search looks back (days)</Label>
-                  <Input type="number" min={1} max={30} aria-label="First search looks back (days)" value={draft.lookbackDays} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, lookbackDays: Math.min(30, Math.max(1, Math.round(Number(e.target.value) || 1))) })} />
+                  <Label>Searches look back (days)</Label>
+                  <Input type="number" min={1} max={30} aria-label="Searches look back (days)" value={draft.lookbackDays} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, lookbackDays: Math.min(30, Math.max(1, Math.round(Number(e.target.value) || 1))) })} />
                 </div>
                 <div>
                   <Label>Email after launch (days)</Label>
