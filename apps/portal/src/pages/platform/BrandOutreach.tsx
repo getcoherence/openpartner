@@ -9,6 +9,8 @@
  *     is over), waiting, queued, emailed, rejected by reason. Each with its
  *     site, launch, the words that place it in the US and its address,
  *     masked.
+ *   - Email: the email's next batch previewed as it would go, sent by an
+ *     admin, and a sample to seed addresses.
  *   - Runs: spend, counts, each job's latest run, launch pages by hand.
  *   - Settings: on/off, budget, queries, the waits.
  *
@@ -26,6 +28,9 @@ import { shortUrl } from '../../lib/partnership-signals.js';
 
 interface BrandSettings {
   enabled: boolean;
+  /** Absent from a Network that predates the email, and then not offered. */
+  outreachEnabled?: boolean;
+  outreachStyle?: 'designed' | 'plain';
   monthlyBudgetUsd: number;
   /** These four are absent from a Network that predates them, and then not
    *  offered (nor sent). */
@@ -50,7 +55,7 @@ interface SettingsState {
   blockedCountries?: string[];
 }
 
-type Job = 'discover' | 'read';
+type Job = 'discover' | 'read' | 'outreach';
 
 interface Run {
   startedAt: string;
@@ -71,6 +76,9 @@ interface Stats {
   copyLinks?: Record<string, number>;
   spend: { thisMonthUsd: number; budgetUsd: number };
   enabled: boolean;
+  outreachEnabled?: boolean;
+  /** The outreach mailbox's day, shared with the creator index's email. */
+  outreach?: { dailyLimit: number; sentLastDay: number };
   runs: Partial<Record<Job, Run>>;
   queriesSearchedAt: Record<string, string>;
 }
@@ -162,9 +170,10 @@ const approveError = (err: unknown) => {
   return APPROVE_ERRORS[code] ?? friendlyPlatformError(err);
 };
 
-type Tab = 'prospects' | 'runs' | 'settings';
+type Tab = 'prospects' | 'email' | 'runs' | 'settings';
 const TABS: Array<{ key: Tab; label: string }> = [
   { key: 'prospects', label: 'Prospects' },
+  { key: 'email', label: 'Email' },
   { key: 'runs', label: 'Runs' },
   { key: 'settings', label: 'Settings' },
 ];
@@ -237,7 +246,14 @@ function runSummary(job: Job, r: Record<string, unknown> | null): string {
   const stopped = typeof r.stoppedBy === 'string' ? `stopped: ${r.stoppedBy}` : '';
   if (r.ran === false) return [n(r, 'expired') ? `${n(r, 'expired')} expired` : '', stopped || 'off'].filter(Boolean).join(' · ');
   const parts =
-    job === 'discover'
+    job === 'outreach'
+      ? [
+          `${n(r, 'sent')} sent`,
+          n(r, 'skipped') ? `${n(r, 'skipped')} skipped` : '',
+          n(r, 'failed') ? `${n(r, 'failed')} refused, to retry` : '',
+          r.dailyLimitReached ? 'stopped at the daily limit' : '',
+        ]
+      : job === 'discover'
       ? [
           `${n(r, 'searches')} searches`,
           `${n(r, 'queued')} new launches`,
@@ -271,7 +287,7 @@ function RunLine({ job, run }: { job: Job; run: Run | undefined }) {
   const kinds = job === 'discover' && run.finishedAt ? ((run.result?.unusableKinds ?? {}) as Record<string, number>) : {};
   return (
     <div style={{ fontSize: 13, lineHeight: 1.5 }}>
-      <strong>{job === 'discover' ? 'Discover' : 'Read'}</strong>{' '}
+      <strong>{job === 'discover' ? 'Discover' : job === 'read' ? 'Read' : 'Email batch'}</strong>{' '}
       <span style={{ color: theme.textMuted }}>
         {run.finishedAt ? `${formatDate(run.finishedAt, { relative: true })}: ${runSummary(job, run.result)}` : `running since ${formatDate(run.startedAt, { relative: true })}…`}
       </span>
@@ -451,6 +467,144 @@ function ReviewActions({ p, onDone }: { p: Prospect; onDone: () => void }) {
 
 const lines = (s: string) => [...new Set(s.split(/\n/).map((l) => l.trim()).filter(Boolean))];
 
+interface OutreachTarget {
+  id: string;
+  name: string | null;
+  siteUrl: string | null;
+  sourceNote: string | null;
+  country: string | null;
+  /** Masked. */
+  address: string;
+  addressFoundOn: string | null;
+  opening: string;
+  skip?: string;
+}
+
+interface OutreachPreview {
+  enabled: boolean;
+  style: string;
+  mailerConfigured: boolean;
+  sender: string | null;
+  senderName: string | null;
+  due: number;
+  waiting: number;
+  candidates: number;
+  dailyLimit: number;
+  sentLastDay: number;
+  targets?: OutreachTarget[];
+}
+
+const SKIPS: Record<string, string> = {
+  suppressed: 'blocked',
+  on_openpartner: 'on OpenPartner',
+  refuses_unsolicited: 'page refuses email',
+  source_unreadable: "source page didn't load",
+};
+
+/** The email's next batch, previewed as it would go, then sent; and a
+ *  sample to seed addresses. Sending and samples are an admin's. */
+function EmailTab({ canWrite, onSent }: { canWrite: boolean; onSent: () => void }) {
+  const [size, setSize] = useState(25);
+  const preview = useMutation({
+    mutationFn: () => papi<OutreachPreview>('/platform-admin/brand-outreach/outreach/run', { method: 'POST', body: { dryRun: true, limit: size } }),
+  });
+  const send = useMutation({
+    mutationFn: () => papi('/platform-admin/brand-outreach/outreach/run', { method: 'POST', body: { dryRun: false, limit: size } }),
+    onSuccess: () => {
+      preview.reset();
+      onSent();
+    },
+  });
+  const [to, setTo] = useState('');
+  const [style, setStyle] = useState<'' | 'plain' | 'designed'>('');
+  const sample = useMutation({
+    mutationFn: () =>
+      papi<{ subject: string; sent: string[]; failed: Array<{ to: string }> }>('/platform-admin/brand-outreach/outreach/sample', {
+        method: 'POST',
+        body: { to: lines(to), ...(style ? { style } : {}) },
+      }),
+  });
+  const p = preview.data;
+  const going = p?.targets?.filter((t) => !t.skip).length ?? 0;
+  const error = preview.error ?? send.error ?? sample.error;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <ErrorBanner error={error ? friendlyPlatformError(error) : null} />
+      <Card>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <div style={{ width: 120 }}>
+            <Label>Batch size</Label>
+            <Input type="number" min={1} max={50} aria-label="Batch size" value={size} onChange={(e) => setSize(Math.min(50, Math.max(1, Math.round(Number(e.target.value) || 1))))} />
+          </div>
+          <Button variant="secondary" disabled={preview.isPending} onClick={() => preview.mutate()}>
+            {preview.isPending ? 'Checking…' : 'Preview batch'}
+          </Button>
+          {canWrite && p && (
+            <Button
+              disabled={send.isPending || !p.enabled || !p.mailerConfigured || going === 0}
+              onClick={() => {
+                if (window.confirm(`Send the email to ${going} ${going === 1 ? 'company' : 'companies'} as ${p.senderName ?? p.sender}?`)) send.mutate();
+              }}
+            >
+              Send this batch
+            </Button>
+          )}
+          {send.isSuccess && <span style={{ fontSize: 13, color: theme.success }}>Sending; see Runs.</span>}
+        </div>
+        {p && (
+          <div style={{ marginTop: 12, fontSize: 13, color: theme.textMuted }}>
+            {p.due} due · {p.waiting} waiting · sends as {p.senderName ? `${p.senderName} <${p.sender}>` : p.sender ?? 'nobody'} · {p.style} · {p.sentLastDay} of {p.dailyLimit} sent in the last 24 hours
+            {!p.enabled && <div style={{ color: theme.danger }}>The email is off in Settings.</div>}
+            {!p.mailerConfigured && <div style={{ color: theme.danger }}>No outreach mailbox is set up.</div>}
+          </div>
+        )}
+      </Card>
+      {p?.targets && (
+        <Table
+          dense
+          columns={['Company', 'Address', 'Opens with', '']}
+          rows={p.targets.map((t) => [
+            <div key="c" style={{ maxWidth: 240 }}>
+              <div style={{ fontWeight: 600 }}>{t.name ?? '—'}</div>
+              {t.sourceNote && <div style={{ fontSize: 12, color: theme.textMuted }}>{t.sourceNote}</div>}
+              {t.country && <div style={{ fontSize: 12, color: theme.textDim }}>{t.country}</div>}
+            </div>,
+            <div key="a" style={{ fontSize: 13 }}>
+              {t.address}
+              {t.addressFoundOn && <div style={{ fontSize: 12, color: theme.textMuted }}>{shortUrl(t.addressFoundOn)}</div>}
+            </div>,
+            <div key="o" style={{ fontSize: 13, maxWidth: 420, whiteSpace: 'normal' }}>{t.opening}</div>,
+            <span key="s" style={{ fontSize: 12, color: t.skip ? theme.danger : theme.textMuted }}>{t.skip ? `skipped: ${SKIPS[t.skip] ?? t.skip}` : ''}</span>,
+          ])}
+          empty="Nobody is due."
+        />
+      )}
+      {canWrite && (
+        <Card>
+          <Label>Send a sample to</Label>
+          <Textarea rows={2} aria-label="Sample addresses" placeholder="One address a line" value={to} onChange={(e) => setTo(e.target.value)} />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+            <Select aria-label="Sample style" value={style} onChange={(e) => setStyle(e.target.value as '' | 'plain' | 'designed')}>
+              <option value="">The batches' style</option>
+              <option value="plain">Plain</option>
+              <option value="designed">Designed</option>
+            </Select>
+            <Button size="sm" variant="secondary" disabled={sample.isPending || lines(to).length === 0} onClick={() => sample.mutate()}>
+              {sample.isPending ? 'Sending…' : 'Send sample'}
+            </Button>
+            {sample.data && (
+              <span style={{ fontSize: 12, color: theme.textMuted }}>
+                Sent to {sample.data.sent.length}
+                {sample.data.failed.length ? `, ${sample.data.failed.length} failed` : ''}
+              </span>
+            )}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
 export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) {
   const canWrite = operator.role === 'admin';
   const qc = useQueryClient();
@@ -611,6 +765,11 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
             notes={{ runs: running && <Pill on>running</Pill>, settings: unsaved && <Pill on={false}>unsaved</Pill> }}
           />
 
+          {tab === 'email' && <EmailTab canWrite={canWrite} onSent={() => {
+            setWatchUntil(Date.now() + 20_000);
+            refresh();
+          }} />}
+
           {tab === 'prospects' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -712,6 +871,7 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <RunLine job="discover" run={s?.runs.discover} />
                   <RunLine job="read" run={s?.runs.read} />
+                  <RunLine job="outreach" run={s?.runs.outreach} />
                   {s?.copyLinks && Object.keys(s.copyLinks).length > 0 && (
                     <div style={{ color: theme.textMuted, fontSize: 12 }}>
                       Every launch page read so far: {s.copyLinks.website ?? 0} with a website link · {s.copyLinks.redirect_only ?? 0} only Product Hunt links ·{' '}
@@ -757,6 +917,21 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
                   <input type="checkbox" checked={draft.enabled} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })} />
                   Discovery and reads on
                 </label>
+                {draft.outreachEnabled !== undefined && (
+                  <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
+                    <input type="checkbox" checked={draft.outreachEnabled} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, outreachEnabled: e.target.checked })} />
+                    Email on
+                  </label>
+                )}
+                {draft.outreachStyle !== undefined && (
+                  <div>
+                    <Label>Email style</Label>
+                    <Select aria-label="Email style" value={draft.outreachStyle} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, outreachStyle: e.target.value as 'plain' | 'designed' })}>
+                      <option value="plain">Plain</option>
+                      <option value="designed">Designed</option>
+                    </Select>
+                  </div>
+                )}
                 <div>
                   <Label>Monthly budget (USD)</Label>
                   <Input type="number" min={0} aria-label="Monthly budget (USD)" value={draft.monthlyBudgetUsd} disabled={!canWrite} onChange={(e) => setDraft({ ...draft, monthlyBudgetUsd: Math.max(0, Math.round(Number(e.target.value) || 0)) })} />

@@ -89,6 +89,8 @@ beforeAll(async () => {
         }
         if (path === '/admin/brand-outreach/seeds') return json(200, { queued: 1, duplicate: 0, invalid: 0 });
         if (path === '/admin/brand-outreach/run/discover') return json(202, { started: true });
+        if (path === '/admin/brand-outreach/outreach/run') return body?.dryRun ? json(200, { due: 1, targets: [] }) : json(202, { started: true });
+        if (path === '/admin/brand-outreach/outreach/sample') return json(200, { sent: body?.to, failed: [] });
         if (path === '/admin/brand-outreach/run/read') return json(409, { error: 'already_running' });
         json(404, { error: 'not_found' });
       });
@@ -158,7 +160,7 @@ describe.skipIf(skipIntegration)('brand outreach: ops console', () => {
     expect((await request(app).put('/platform-admin/brand-outreach/settings').set('Cookie', cookie).send({ ...SETTINGS, excludedCountries: ['XX'] })).status).toBe(400);
 
     // Nothing the Network doesn't take, and its own refusal comes back.
-    expect((await request(app).put('/platform-admin/brand-outreach/settings').set('Cookie', cookie).send({ ...SETTINGS, outreachEnabled: true })).status).toBe(400);
+    expect((await request(app).put('/platform-admin/brand-outreach/settings').set('Cookie', cookie).send({ ...SETTINGS, bogus: true })).status).toBe(400);
     expect((await request(app).put('/platform-admin/brand-outreach/settings').set('Cookie', cookie).send({ ...SETTINGS, readConcurrency: 11 })).status).toBe(400);
     expect((await request(app).put('/platform-admin/brand-outreach/settings').set('Cookie', cookie).send({ ...SETTINGS, maxLaunchAgeDays: 14 })).status).toBe(400);
   });
@@ -217,6 +219,41 @@ describe.skipIf(skipIntegration)('brand outreach: ops console', () => {
     // An address goes with its page.
     expect((await request(app).post('/platform-admin/brand-outreach/prospects/bpr_1/approve').set('Cookie', admin).send({ email: 'jo@acmenotes.example' })).status).toBe(400);
     expect((await request(app).post('/platform-admin/brand-outreach/prospects/bpr_1/approve').set('Cookie', admin).send({ reviewedByEmail: 'someone@else.example' })).status).toBe(400);
+  });
+
+  it("previews a batch for support, sends one for admins, and never emails openpartner's own brands", async () => {
+    const tenantId = ulid();
+    const slug = `bo${ulid().slice(-8).toLowerCase()}`;
+    await db(TABLES.Tenant).insert({ id: tenantId, slug, displayName: 'Ours', status: 'active', approvalStatus: 'approved' });
+    await db(TABLES.Admin).insert([
+      { id: ulid(), tenantId, email: `owner@${slug}.example`, name: 'Owner', activatedAt: new Date() },
+      { id: ulid(), tenantId, email: `someone-${slug}@gmail.com`, name: 'Free', activatedAt: new Date() },
+    ]);
+    try {
+      const support = await operator('support');
+      const dry = await request(app).post('/platform-admin/brand-outreach/outreach/run').set('Cookie', support).send({ dryRun: true, limit: 10 });
+      expect(dry.status).toBe(200);
+      const sent = last('/admin/brand-outreach/outreach/run')!.body as { dryRun: boolean; limit: number; excludeDomains: string[] };
+      expect(sent).toMatchObject({ dryRun: true, limit: 10 });
+      expect(sent.excludeDomains).toContain(`${slug}.example`);
+      // A free-mail provider isn't a company.
+      expect(sent.excludeDomains).not.toContain('gmail.com');
+      expect((await request(app).post('/platform-admin/brand-outreach/outreach/run').set('Cookie', support).send({})).status).toBe(403);
+      expect((await request(app).post('/platform-admin/brand-outreach/outreach/sample').set('Cookie', support).send({ to: ['seed@example.com'] })).status).toBe(403);
+
+      const admin = await operator();
+      const live = await request(app).post('/platform-admin/brand-outreach/outreach/run').set('Cookie', admin).send({ limit: 25 });
+      expect(live.status).toBe(202);
+      expect(await audited('brand_outreach.outreach_run')).toMatchObject({ detail: { limit: 25 } });
+      expect((await request(app).post('/platform-admin/brand-outreach/outreach/run').set('Cookie', admin).send({ limit: 51 })).status).toBe(400);
+
+      const sample = await request(app).post('/platform-admin/brand-outreach/outreach/sample').set('Cookie', admin).send({ to: ['Seed@Example.com'], style: 'designed' });
+      expect(sample.body).toEqual({ sent: ['seed@example.com'], failed: [] });
+      expect(await audited('brand_outreach.outreach_sample')).toMatchObject({ detail: { to: ['seed@example.com'], style: 'designed' } });
+    } finally {
+      await db(TABLES.Admin).where({ tenantId }).del();
+      await db(TABLES.Tenant).where({ id: tenantId }).del();
+    }
   });
 
   it('shows one address in full to admins, uncached and audited', async () => {
