@@ -2461,6 +2461,11 @@ const brandOutreachSettingsSchema = z
     // The Network checks it's over sendAfterDays.
     maxLaunchAgeDays: z.number().int().min(7).max(180),
     readConcurrency: z.number().int().min(1).max(10),
+    // Left out by a console on a Network that predates them.
+    sources: z.object({ productHunt: z.boolean(), jobPosts: z.boolean(), creatorMentions: z.boolean() }).strict().optional(),
+    jobQueries: z.array(z.string().trim().min(3).max(200)).max(30).optional(),
+    minCreatorMentions: z.number().int().min(1).max(100).optional(),
+    excludedCountries: z.array(z.string().trim().length(2).transform((v) => v.toUpperCase()).refine(isCountryCode, 'unknown country code')).max(250).optional(),
   })
   .strict();
 
@@ -2550,6 +2555,8 @@ platformAdminRouter.post(
 
 const approveProspectSchema = z
   .object({
+    // Where the company is, when its pages didn't say or said wrong.
+    country: z.string().trim().length(2).transform((v) => v.toUpperCase()).refine(isCountryCode, 'unknown country code').optional(),
     // An address ops found published on the company's site, when the read
     // found none, with the page it's on.
     email: z.string().trim().min(3).max(254).optional(),
