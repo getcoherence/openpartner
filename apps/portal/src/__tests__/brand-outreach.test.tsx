@@ -56,7 +56,30 @@ const HELD = {
   reviewNote: 'Said US, quoting words not on the pages read: "Based in Ohio"',
   dueAt: null,
 };
-const HELD_NO_ADDRESS = { ...HELD, id: 'bpr_3', name: 'Shipcheck', siteUrl: 'https://shipcheck.example', rejectReason: 'no_address', reviewNote: null, contact: null };
+const HELD_NO_ADDRESS = {
+  ...HELD,
+  id: 'bpr_3',
+  name: 'Shipcheck',
+  siteUrl: 'https://shipcheck.example',
+  rejectReason: 'no_address',
+  reviewNote: null,
+  contact: null,
+  country: 'US',
+  countryEvidence: 'Shipcheck, Inc., a Delaware corporation',
+  launchSite: 'job_post',
+  launchUrl: 'https://boards.greenhouse.io/shipcheck/jobs/1',
+  sourceNote: 'Hiring: Head of Partnerships',
+};
+
+/** From a Network with the sources and countries settings. */
+const NEW_SETTINGS = {
+  ...SETTINGS,
+  sources: { productHunt: true, jobPosts: true, creatorMentions: false },
+  jobQueries: ['Head of Partnerships'],
+  minCreatorMentions: 2,
+  excludedCountries: ['DE', 'FR', 'GB'],
+};
+let settingsBody: Record<string, unknown> = SETTINGS;
 
 const STATS = {
   byStatus: { qualified: 1, queued: 3, rejected: 5, review: 2 },
@@ -94,7 +117,12 @@ const STATS = {
 
 function respond(url: string, method: string): { status: number; body: unknown } {
   if (url.endsWith('/brand-outreach/settings') && method === 'PUT') return { status: 200, body: { settings: calls[calls.length - 1]!.body, updatedAt: null, updatedByEmail: null } };
-  if (url.endsWith('/brand-outreach/settings')) return { status: 200, body: { settings: SETTINGS, defaults: SETTINGS, updatedAt: null, updatedByEmail: null, configured: { exa: true, treg: true, classifier: true, classifierModel: 'claude-opus-5-5' } } };
+  if (url.endsWith('/brand-outreach/settings')) {
+    return {
+      status: 200,
+      body: { settings: settingsBody, defaults: settingsBody, updatedAt: null, updatedByEmail: null, configured: { exa: true, treg: true, classifier: true, classifierModel: 'claude-opus-5-5' }, blockedCountries: ['CU', 'IR', 'KP', 'RU'] },
+    };
+  }
   if (url.endsWith('/brand-outreach/stats')) return { status: 200, body: STATS };
   if (url.includes('/brand-outreach/prospects?')) {
     const prospects = url.includes('view=review') ? [HELD, HELD_NO_ADDRESS] : url.includes('view=rejected') ? [] : [ACME];
@@ -109,6 +137,7 @@ function respond(url: string, method: string): { status: number; body: unknown }
 
 beforeEach(() => {
   calls = [];
+  settingsBody = SETTINGS;
   vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = init?.method ?? 'GET';
@@ -140,7 +169,7 @@ async function openView(name: RegExp) {
 }
 
 describe('brand outreach console', () => {
-  it('opens on the review queue: why each is held, approved after a confirm', async () => {
+  it('opens on the review queue: why each is held, approved after a confirm with the country its pages didn\'t give', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     wrap('admin');
     expect(await screen.findByText('Pipewise')).toBeTruthy();
@@ -148,8 +177,13 @@ describe('brand outreach console', () => {
     expect(screen.getByText('country unknown')).toBeTruthy();
     expect(screen.getByText('“Said US, quoting words not on the pages read: "Based in Ohio"”')).toBeTruthy();
     expect(screen.getByRole('button', { name: /^To review 2/ })).toBeTruthy();
-    fireEvent.click(screen.getAllByRole('button', { name: 'Approve' })[0]!);
-    await waitFor(() => expect(calls.find((c) => c.url.endsWith('/prospects/bpr_2/approve'))).toMatchObject({ method: 'POST', body: {} }));
+    const approve = screen.getAllByRole('button', { name: 'Approve' })[0] as HTMLButtonElement;
+    expect(approve.disabled).toBe(true);
+    fireEvent.change(screen.getAllByLabelText('Country')[0]!, { target: { value: 'ca' } });
+    fireEvent.click(approve);
+    await waitFor(() => expect(calls.find((c) => c.url.endsWith('/prospects/bpr_2/approve'))).toMatchObject({ method: 'POST', body: { country: 'CA' } }));
+    // Where each was found.
+    expect(screen.getByText('Hiring: Head of Partnerships')).toBeTruthy();
   });
 
   it('approves one with no address only with an address and its page, and shows why the Network refused', async () => {
@@ -212,6 +246,23 @@ describe('brand outreach console', () => {
     expect(screen.getByText(/3 searches · 4 new launches · 1 on the whole site/)).toBeTruthy();
     expect(screen.getByText(/design tools: 1 new, 0 known, 2 other pages \(whole site\)/)).toBeTruthy();
     expect(screen.getByText(/Every launch page read so far: 7 with a website link · 2 only Product Hunt links · 1 no links/)).toBeTruthy();
+  });
+
+  it('sets the sources, job roles and countries never emailed', async () => {
+    settingsBody = NEW_SETTINGS;
+    wrap('admin', '/?tab=settings');
+    fireEvent.click(await screen.findByLabelText('Brands creators mention'));
+    fireEvent.change(screen.getByLabelText('Countries never emailed'), { target: { value: 'de fr, gb  it' } });
+    fireEvent.change(screen.getByLabelText('Roles searched on job boards'), { target: { value: 'Head of Partnerships\nAffiliate Manager' } });
+    expect(screen.getByText('Also blocked platform-wide: CU IR KP RU')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({
+        sources: { productHunt: true, jobPosts: true, creatorMentions: true },
+        excludedCountries: ['DE', 'FR', 'GB', 'IT'],
+        jobQueries: ['Head of Partnerships', 'Affiliate Manager'],
+      }),
+    );
   });
 
   it('saves settings, and not a wait longer than the age limit', async () => {

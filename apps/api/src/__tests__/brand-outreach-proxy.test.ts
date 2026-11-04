@@ -148,6 +148,15 @@ describe.skipIf(skipIntegration)('brand outreach: ops console', () => {
     expect(last('/admin/brand-outreach/settings')!.body).toMatchObject({ queries: ['developer tools', 'AI tools for marketers'], updatedByEmail: OPS_EMAIL });
     expect(await audited('brand_outreach.settings')).toBeTruthy();
 
+    // The sources, job roles and countries, the codes made upper case.
+    const sourced = await request(app)
+      .put('/platform-admin/brand-outreach/settings')
+      .set('Cookie', cookie)
+      .send({ ...SETTINGS, sources: { productHunt: true, jobPosts: true, creatorMentions: false }, jobQueries: ['Head of Partnerships'], minCreatorMentions: 3, excludedCountries: ['de', 'GB'] });
+    expect(sourced.status).toBe(200);
+    expect(last('/admin/brand-outreach/settings')!.body).toMatchObject({ excludedCountries: ['DE', 'GB'], minCreatorMentions: 3, sources: { creatorMentions: false } });
+    expect((await request(app).put('/platform-admin/brand-outreach/settings').set('Cookie', cookie).send({ ...SETTINGS, excludedCountries: ['XX'] })).status).toBe(400);
+
     // Nothing the Network doesn't take, and its own refusal comes back.
     expect((await request(app).put('/platform-admin/brand-outreach/settings').set('Cookie', cookie).send({ ...SETTINGS, outreachEnabled: true })).status).toBe(400);
     expect((await request(app).put('/platform-admin/brand-outreach/settings').set('Cookie', cookie).send({ ...SETTINGS, readConcurrency: 11 })).status).toBe(400);
@@ -193,6 +202,10 @@ describe.skipIf(skipIntegration)('brand outreach: ops console', () => {
     const ok = await request(app).post('/platform-admin/brand-outreach/prospects/bpr_1/approve').set('Cookie', admin).send({});
     expect(ok.body).toEqual({ prospect: { id: 'bpr_1', status: 'qualified' } });
     expect(last('/admin/brand-outreach/prospects/bpr_1/approve')!.body).toEqual({ reviewedByEmail: OPS_EMAIL });
+    // The country ops name, as a code.
+    await request(app).post('/platform-admin/brand-outreach/prospects/bpr_1/approve').set('Cookie', admin).send({ country: 'ca' });
+    expect(last('/admin/brand-outreach/prospects/bpr_1/approve')!.body).toEqual({ country: 'CA', reviewedByEmail: OPS_EMAIL });
+    expect((await request(app).post('/platform-admin/brand-outreach/prospects/bpr_1/approve').set('Cookie', admin).send({ country: 'XX' })).status).toBe(400);
     expect(await audited('brand_outreach.approve')).toMatchObject({ targetType: 'brand_prospect', targetId: 'bpr_1' });
 
     const page = 'https://acmenotes.example/about';

@@ -27,6 +27,12 @@ import { shortUrl } from '../../lib/partnership-signals.js';
 interface BrandSettings {
   enabled: boolean;
   monthlyBudgetUsd: number;
+  /** These four are absent from a Network that predates them, and then not
+   *  offered (nor sent). */
+  sources?: Record<SourceKey, boolean>;
+  jobQueries?: string[];
+  minCreatorMentions?: number;
+  excludedCountries?: string[];
   queries: string[];
   lookbackDays: number;
   sendAfterDays: number;
@@ -40,6 +46,8 @@ interface SettingsState {
   updatedAt: string | null;
   updatedByEmail: string | null;
   configured?: { exa: boolean; treg: boolean; classifier: boolean; classifierModel: string };
+  /** The Network's sanctioned and policy-blocked countries, never emailed. */
+  blockedCountries?: string[];
 }
 
 type Job = 'discover' | 'read';
@@ -86,6 +94,10 @@ interface Prospect {
   rejectReason: string | null;
   /** What the classifier said, for one held for review. */
   reviewNote?: string | null;
+  /** product_hunt, job_post or creators. */
+  launchSite?: string;
+  /** What found it: "Hiring: Head of Partnerships", "Mentioned by 12 creators". */
+  sourceNote?: string | null;
   dueAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -123,6 +135,8 @@ const REASONS: Record<string, string> = {
   address_refused: 'refuses email',
   read_failed: 'read failed',
   too_old: 'too old',
+  excluded_country: 'excluded country',
+  large_company: 'large company',
   ops: 'rejected by ops',
 };
 
@@ -130,6 +144,9 @@ const reasonLabel = (r: string) => REASONS[r] ?? r.replace(/_/g, ' ');
 
 /** The Network's refusals of an approval, as ops read them. */
 const APPROVE_ERRORS: Record<string, string> = {
+  country_required: 'Say which country it is in',
+  invalid_country: 'Not a country code',
+  excluded_country: "That country isn't emailed",
   no_address: 'Add an address first',
   invalid_email: 'Not an email address',
   not_their_address: 'Use an address at their domain or a free-mail one, not support@ or sales@',
@@ -319,18 +336,29 @@ function CompanyCell({ p }: { p: Prospect }) {
   );
 }
 
+/** Where each source's prospects come from, as ops read it. */
+type SourceKey = 'productHunt' | 'jobPosts' | 'creatorMentions';
+const SOURCES: Array<{ key: SourceKey; label: string }> = [
+  { key: 'productHunt', label: 'Product Hunt launches' },
+  { key: 'jobPosts', label: 'Companies hiring for partnerships' },
+  { key: 'creatorMentions', label: 'Brands creators mention' },
+];
+const SITE_LABEL: Record<string, string> = { product_hunt: 'Product Hunt', job_post: 'Job post', creators: 'Creators' };
+
 function LaunchCell({ p }: { p: Prospect }) {
+  const site = SITE_LABEL[p.launchSite ?? 'product_hunt'] ?? 'Product Hunt';
   return (
     <div style={{ fontSize: 13, whiteSpace: 'nowrap' }}>
       {p.launchUrl ? (
         <a href={p.launchUrl} target="_blank" rel="noreferrer" style={{ color: theme.text }}>
-          {p.launchedAt ? formatDate(p.launchedAt) : 'Product Hunt'}
+          {p.launchedAt ? formatDate(p.launchedAt) : site}
         </a>
       ) : (
-        <span>{p.launchedAt ? formatDate(p.launchedAt) : '—'}</span>
+        <span>{p.launchedAt ? formatDate(p.launchedAt) : site}</span>
       )}
+      {p.sourceNote && <div style={{ fontSize: 12, whiteSpace: 'normal', maxWidth: 220 }}>{p.sourceNote}</div>}
       <div style={{ color: theme.textDim, fontSize: 12 }} title={p.discoveredBy}>
-        {p.discoveredBy === 'ops' ? 'added by ops' : p.discoveredBy.replace(/^exa:/, '')}
+        {p.discoveredBy === 'ops' ? 'added by ops' : p.discoveredBy === 'creators' ? 'creator mentions' : p.discoveredBy.replace(/^exa:/, '')}
       </div>
     </div>
   );
@@ -353,11 +381,17 @@ function ReviewActions({ p, onDone }: { p: Prospect; onDone: () => void }) {
   const [adding, setAdding] = useState(false);
   const [email, setEmail] = useState('');
   const [page, setPage] = useState('');
+  // Its pages didn't place it: ops say where it is.
+  const needsCountry = !p.country;
+  const [country, setCountry] = useState('');
   const approve = useMutation({
     mutationFn: () =>
       papi(`/platform-admin/brand-outreach/prospects/${encodeURIComponent(p.id)}/approve`, {
         method: 'POST',
-        body: p.contact ? {} : { email: email.trim(), sourceUrl: page.trim() },
+        body: {
+          ...(needsCountry ? { country: country.trim().toUpperCase() } : {}),
+          ...(p.contact ? {} : { email: email.trim(), sourceUrl: page.trim() }),
+        },
       }),
     onSuccess: onDone,
   });
@@ -369,6 +403,9 @@ function ReviewActions({ p, onDone }: { p: Prospect; onDone: () => void }) {
   const busy = approve.isPending || reject.isPending;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 180 }}>
+      {needsCountry && (p.contact || adding) && (
+        <Input aria-label="Country" placeholder="Country code, e.g. US" maxLength={2} value={country} onChange={(e) => setCountry(e.target.value.toUpperCase())} />
+      )}
       {adding && !p.contact && (
         <>
           <Input aria-label="Address" placeholder="founder@their.site" value={email} onChange={(e) => setEmail(e.target.value)} />
@@ -379,9 +416,10 @@ function ReviewActions({ p, onDone }: { p: Prospect; onDone: () => void }) {
         {p.contact || adding ? (
           <Button
             size="sm"
-            disabled={busy || (!p.contact && (!email.trim() || !page.trim()))}
+            disabled={busy || (!p.contact && (!email.trim() || !page.trim())) || (needsCountry && country.trim().length !== 2)}
             onClick={() => {
-              if (window.confirm(`Approve ${name} as a US software company with paid plans and no partner program?`)) approve.mutate();
+              const where = needsCountry ? country.trim().toUpperCase() : p.country;
+              if (window.confirm(`Approve ${name} as a software company in ${where} with paid plans and no partner program?`)) approve.mutate();
             }}
           >
             Approve
@@ -435,17 +473,24 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
 
   const [draft, setDraft] = useState<BrandSettings | null>(null);
   const [queriesText, setQueriesText] = useState('');
+  const [jobsText, setJobsText] = useState('');
+  const [countriesText, setCountriesText] = useState('');
+  const showLists = (s: BrandSettings) => {
+    setQueriesText(s.queries.join('\n'));
+    setJobsText((s.jobQueries ?? []).join('\n'));
+    setCountriesText((s.excludedCountries ?? []).join(' '));
+  };
   useEffect(() => {
     if (state.data && !draft) {
       setDraft(state.data.settings);
-      setQueriesText(state.data.settings.queries.join('\n'));
+      showLists(state.data.settings);
     }
   }, [state.data, draft]);
   const save = useMutation({
     mutationFn: (s: BrandSettings) => papi<{ settings: BrandSettings }>('/platform-admin/brand-outreach/settings', { method: 'PUT', body: s }),
     onSuccess: (r) => {
       setDraft(r.settings);
-      setQueriesText(r.settings.queries.join('\n'));
+      showLists(r.settings);
       refresh();
     },
   });
@@ -734,6 +779,70 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
                   {waitTooLong && <div style={{ color: theme.danger, fontSize: 12 }}>Must be over the email wait</div>}
                 </div>
               </div>
+              {draft.sources && (
+                <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 14 }}>
+                  {SOURCES.map((src) => (
+                    <label key={src.key} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
+                      <input
+                        type="checkbox"
+                        checked={draft.sources![src.key]}
+                        disabled={!canWrite}
+                        onChange={(e) => setDraft({ ...draft, sources: { ...draft.sources!, [src.key]: e.target.checked } })}
+                      />
+                      {src.label}
+                    </label>
+                  ))}
+                </div>
+              )}
+              {draft.excludedCountries && (
+                <div style={{ marginTop: 14 }}>
+                  <Label>Countries never emailed</Label>
+                  <Textarea
+                    rows={2}
+                    aria-label="Countries never emailed"
+                    value={countriesText}
+                    disabled={!canWrite}
+                    onChange={(e) => {
+                      setCountriesText(e.target.value);
+                      setDraft({ ...draft, excludedCountries: [...new Set(e.target.value.toUpperCase().split(/[^A-Z]+/).filter((c) => c.length === 2))] });
+                    }}
+                  />
+                  {state.data.blockedCountries && state.data.blockedCountries.length > 0 && (
+                    <div style={{ color: theme.textMuted, fontSize: 12 }}>Also blocked platform-wide: {state.data.blockedCountries.join(' ')}</div>
+                  )}
+                </div>
+              )}
+              {draft.jobQueries && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 160px', gap: 14, marginTop: 14 }} className="op-grid-collapse">
+                  <div>
+                    <Label>Roles searched on job boards (one a line)</Label>
+                    <Textarea
+                      rows={4}
+                      aria-label="Roles searched on job boards"
+                      value={jobsText}
+                      disabled={!canWrite}
+                      onChange={(e) => {
+                        setJobsText(e.target.value);
+                        setDraft({ ...draft, jobQueries: lines(e.target.value).filter((l) => l.length >= 3).slice(0, 30) });
+                      }}
+                    />
+                  </div>
+                  {draft.minCreatorMentions != null && (
+                    <div>
+                      <Label>Creators mentioning a brand</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={100}
+                        aria-label="Creators mentioning a brand"
+                        value={draft.minCreatorMentions}
+                        disabled={!canWrite}
+                        onChange={(e) => setDraft({ ...draft, minCreatorMentions: Math.min(100, Math.max(1, Math.round(Number(e.target.value) || 1))) })}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
               <div style={{ marginTop: 14 }}>
                 <Label>Queries (kinds of software, one a line)</Label>
                 <Textarea

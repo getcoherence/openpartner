@@ -1708,6 +1708,11 @@ export async function adminRunCreatorIndexJob(networkUrl: string, job: 'discover
 export interface BrandOutreachSettings {
   enabled: boolean;
   monthlyBudgetUsd: number;
+  /** Absent from a Network that predates them. */
+  sources?: { productHunt: boolean; jobPosts: boolean; creatorMentions: boolean };
+  jobQueries?: string[];
+  minCreatorMentions?: number;
+  excludedCountries?: string[];
   queries: string[];
   lookbackDays: number;
   sendAfterDays: number;
@@ -1756,7 +1761,7 @@ export async function adminRejectBrandProspect(networkUrl: string, id: string, r
 export async function adminApproveBrandProspect(
   networkUrl: string,
   id: string,
-  body: { reviewedByEmail: string; email?: string; sourceUrl?: string },
+  body: { reviewedByEmail: string; country?: string; email?: string; sourceUrl?: string },
 ): Promise<{ prospect: unknown }> {
   return callNetworkAdmin(networkUrl, 'POST', `/admin/brand-outreach/prospects/${encodeURIComponent(id)}/approve`, body, {}, 20_000);
 }
