@@ -2471,6 +2471,8 @@ const brandOutreachSettingsSchema = z
     jobQueries: z.array(z.string().trim().min(3).max(200)).max(30).optional(),
     minCreatorMentions: z.number().int().min(1).max(100).optional(),
     excludedCountries: z.array(z.string().trim().length(2).transform((v) => v.toUpperCase()).refine(isCountryCode, 'unknown country code')).max(250).optional(),
+    maxEmployees: z.number().int().min(5).max(10_000).optional(),
+    maxFundingUsdMillions: z.number().int().min(1).max(10_000).optional(),
   })
   .strict();
 

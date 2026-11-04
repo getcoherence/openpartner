@@ -24,11 +24,11 @@
  * changes, runs and sends need an admin.
  */
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { theme } from '../../theme.js';
-import { useIsMobile } from '../../lib/useMediaQuery.js';
+import { useRestOfWindow } from '../../lib/useRestOfWindow.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select, Table, Textarea, formatDate } from '../../ui.js';
 import { friendlyPlatformError, papi, PlatformApiError, type PlatformOperator } from './lib.js';
 import { brandSignalLabel, shortUrl, type PartnershipSignal } from '../../lib/partnership-signals.js';
@@ -848,35 +848,6 @@ function Tabs({ tab, onTab, notes }: { tab: Tab; onTab: (t: Tab) => void; notes:
       ))}
     </div>
   );
-}
-
-/** Shortest the list gets, however little of the window is left for it. */
-const MIN_LIST_HEIGHT = 320;
-
-/** From the element's top down to the bottom of the window, less `gap`: the
- *  list scrolls within it, so its scrollbars stay in view. None on phones,
- *  where the list is cards in the page's own scroll. */
-function useRestOfWindow(gap: number): [(el: HTMLDivElement | null) => void, number | undefined] {
-  const isMobile = useIsMobile();
-  const [el, setEl] = useState<HTMLDivElement | null>(null);
-  const [height, setHeight] = useState<number>();
-  useLayoutEffect(() => {
-    if (!el || isMobile) {
-      setHeight(undefined);
-      return;
-    }
-    const measure = () => setHeight(Math.max(MIN_LIST_HEIGHT, Math.floor(window.innerHeight - (el.getBoundingClientRect().top + window.scrollY) - gap)));
-    measure();
-    window.addEventListener('resize', measure);
-    // Whatever moves the list down (an error, a filter's note) resizes the page.
-    const resized = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
-    resized?.observe(document.body);
-    return () => {
-      window.removeEventListener('resize', measure);
-      resized?.disconnect();
-    };
-  }, [el, isMobile, gap]);
-  return [setEl, height];
 }
 
 /** Narrows the list to who ops can still fill in. */

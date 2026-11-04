@@ -33,6 +33,7 @@ const ACME = {
   siteUrl: 'https://acmenotes.example',
   siteFoundBy: 'copy',
   summary: 'Writes meeting notes for small teams.',
+  companySize: '≈12 employees · Seed · $3.5M raised · founded 2023 · Austin, US',
   categories: ['productivity'],
   country: 'US',
   countryEvidence: 'Acme Notes, Inc. is a Delaware corporation',
@@ -78,6 +79,8 @@ const NEW_SETTINGS = {
   jobQueries: ['Head of Partnerships'],
   minCreatorMentions: 2,
   excludedCountries: ['DE', 'FR', 'GB'],
+  maxEmployees: 50,
+  maxFundingUsdMillions: 30,
 };
 let settingsBody: Record<string, unknown> = SETTINGS;
 
@@ -110,6 +113,7 @@ const STATS = {
         retried: 0,
         copies: { websiteLink: 6, onlyRedirectLinks: 2, noLinks: 1 },
         website: { copy: 6, search: 2, none: 1 },
+        size: { checked: 9, withData: 7, tooBig: { employees: 2, round: 1 }, placed: 2, rechecked: 0 },
       },
     },
   },
@@ -231,6 +235,8 @@ describe('brand outreach console', () => {
     expect(await screen.findByText('Acme Notes')).toBeTruthy();
     expect(screen.getByText('“Acme Notes, Inc. is a Delaware corporation”')).toBeTruthy();
     expect(screen.getByText('h••••@acmenotes.example')).toBeTruthy();
+    // Exa's company data, in a line.
+    expect(screen.getByText('≈12 employees · Seed · $3.5M raised · founded 2023 · Austin, US')).toBeTruthy();
     expect(calls.some((c) => c.url.includes('/prospects?view=ready'))).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Show' }));
     expect(await screen.findByText('hello@acmenotes.example')).toBeTruthy();
@@ -266,6 +272,7 @@ describe('brand outreach console', () => {
     wrap('admin', '/?tab=runs');
     expect(await screen.findByText(/6 with a website link · 2 only Product Hunt links · 1 no links/)).toBeTruthy();
     expect(screen.getByText(/9 read · 1 qualified · not US 3/)).toBeTruthy();
+    expect(screen.getByText(/Size: 7 of 9 with Exa data · 3 too big · 2 placed by headquarters/)).toBeTruthy();
     // A query whose product-page search found nothing, searched on the whole site.
     expect(screen.getByText(/3 searches · 4 new launches · 1 on the whole site/)).toBeTruthy();
     expect(screen.getByText(/design tools: 1 new, 0 known, 2 other pages \(whole site\)/)).toBeTruthy();
@@ -278,6 +285,8 @@ describe('brand outreach console', () => {
     fireEvent.click(await screen.findByLabelText('Brands creators mention'));
     fireEvent.change(screen.getByLabelText('Countries never emailed'), { target: { value: 'de fr, gb  it' } });
     fireEvent.change(screen.getByLabelText('Roles searched on job boards'), { target: { value: 'Head of Partnerships\nAffiliate Manager' } });
+    fireEvent.change(screen.getByLabelText('Max employees'), { target: { value: '25' } });
+    fireEvent.change(screen.getByLabelText('Max funding ($M)'), { target: { value: '15' } });
     expect(screen.getByText('Also never emailed: CU IR KP RU')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() =>
@@ -285,8 +294,18 @@ describe('brand outreach console', () => {
         sources: { productHunt: true, jobPosts: true, creatorMentions: true },
         excludedCountries: ['DE', 'FR', 'GB', 'IT'],
         jobQueries: ['Head of Partnerships', 'Affiliate Manager'],
+        maxEmployees: 25,
+        maxFundingUsdMillions: 15,
       }),
     );
+  });
+
+  it('scrolls the list within the window, its header in view', async () => {
+    wrap('admin');
+    await screen.findByText('Pipewise');
+    const scroller = screen.getByRole('table').parentElement as HTMLElement;
+    expect(scroller.style.overflowY).toBe('auto');
+    expect(Number.parseInt(scroller.style.maxHeight, 10)).toBeGreaterThanOrEqual(320);
   });
 
   it('previews the next batch as it would go, and an admin sends it after a confirm', async () => {
