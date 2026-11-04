@@ -807,7 +807,7 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
                   </Button>
                 ))}
                 {(view === 'rejected' || view === 'review') && s && (
-                  <Select aria-label="Reason" value={reason} onChange={(e) => setReason(e.target.value)}>
+                  <Select aria-label="Reason" value={reason} style={{ width: 'auto', minWidth: 200 }} onChange={(e) => setReason(e.target.value)}>
                     <option value="">Every reason</option>
                     {Object.entries((view === 'review' ? s.held : s.rejections) ?? {}).map(([k, c]) => (
                       <option key={k} value={k}>
