@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { theme } from '../../theme.js';
 import { ThemeToggle } from '../../lib/ThemeToggle.js';
+import { ColumnWidthsViewer } from '../../lib/columnWidths.js';
 import { CookieSettingsButton } from '../../lib/ConsentBanner.js';
 import { useIsMobile } from '../../lib/useMediaQuery.js';
 import { Logo } from '../auth/Shared.js';
@@ -149,6 +150,7 @@ export function PlatformConsole() {
           a scroll container, so the mobile top bar sticks to the viewport. */}
       <main style={{ flex: 1, minWidth: 0, overflowX: 'clip' }}>
         {isMobile && <MobileTopBar onMenu={() => setDrawerOpen(true)} />}
+        <ColumnWidthsViewer id={operator.email}>
         <Routes>
           <Route index element={<Navigate to="/platform/brands" replace />} />
           <Route path="brands" element={<BrandsPage operator={operator} />} />
@@ -168,6 +170,7 @@ export function PlatformConsole() {
           <Route path="audit" element={<AuditPage />} />
           <Route path="*" element={<Navigate to="/platform/brands" replace />} />
         </Routes>
+        </ColumnWidthsViewer>
       </main>
     </div>
   );

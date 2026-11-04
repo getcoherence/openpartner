@@ -86,6 +86,7 @@ export function ScreeningPage({ operator }: { operator: PlatformOperator }) {
               </Card>
             ) : (
               <Table
+                resizeKey="ops.screening"
                 columns={['Brand', 'Partner', 'Reason', 'Effect', { label: 'Owed', align: 'right' }]}
                 rows={data.held.map((h) => [
                   <span>{h.brandName ?? h.tenantId}</span>,

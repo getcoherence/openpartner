@@ -310,6 +310,9 @@ describe('brand outreach console', () => {
     const scroller = screen.getByRole('table').parentElement as HTMLElement;
     expect(scroller.style.overflowY).toBe('auto');
     expect(Number.parseInt(scroller.style.maxHeight, 10)).toBeGreaterThanOrEqual(320);
+    // Its column widths can be dragged.
+    expect(screen.getByRole('separator', { name: 'Resize Company' })).toBeTruthy();
+    expect(screen.getByRole('columnheader', { name: 'Company' })).toBeTruthy();
   });
 
   it('previews the next batch as it would go, and an admin sends it after a confirm', async () => {

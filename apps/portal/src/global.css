@@ -220,6 +220,14 @@ code, pre {
   }
 }
 
+/* A table laid out by column widths the viewer dragged (ui.tsx Table,
+ * `resizeKey`). Cells cap their content's width inline so a table laid out
+ * by content wraps; with the widths set, the cap would stop a widened
+ * column's content from filling it. Same `!important` reasoning as above. */
+.op-table-fixed > tbody > tr > td > * {
+  max-width: none !important;
+}
+
 /* A scrolling box whose scrollbar shows only while the pointer is over it
  * (Discover creators' list and side panel). The bar keeps its room either
  * way, so nothing shifts when it appears. Chromium and Firefox use the

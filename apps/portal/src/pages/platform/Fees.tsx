@@ -283,6 +283,7 @@ function TenantsCard({ state, canWrite }: { state: FeesState; canWrite: boolean 
       </div>
       <div style={{ marginTop: 12 }}>
         <Table
+          resizeKey="ops.fees.brands"
           columns={['Brand', 'Plan', 'Rule', 'Rates', { label: 'Old fee (30d)', align: 'right' }, { label: 'New fee (30d)', align: 'right' }, 'Floor / renamed', '']}
           empty="No hosted brands."
           // The table never wraps by itself (max-content), so the wordy
@@ -447,6 +448,7 @@ function EstimateCard({ tenants }: { tenants: FeeTenantStatus[] }) {
             {run.data.estimates.length} brand{run.data.estimates.length === 1 ? '' : 's'} with conversions · old {money(totals!.old)} → new {money(totals!.next)} over {run.data.days} days
           </div>
           <Table
+            resizeKey="ops.fees.estimate"
             columns={['Brand', 'Plan', { label: 'Conversions', align: 'right' }, { label: 'Old fee', align: 'right' }, { label: 'New fee', align: 'right' }, 'Floor / renamed']}
             empty="No conversions in the window."
             rows={run.data.estimates.map((e) => [
@@ -505,6 +507,7 @@ function NoticeCard({ state, canWrite }: { state: FeesState; canWrite: boolean }
         <div style={{ marginTop: 12 }}>
           {!result.cutoverAt && <div style={{ ...muted, color: theme.warn }}>No cutover set: set one above before sending.</div>}
           <Table
+            resizeKey="ops.fees.notices"
             columns={['Brand', 'Recipients', 'Rates', 'Effective', '']}
             empty="No brand is owed a notice."
             rows={(result.candidates ?? []).map((c) => [
@@ -563,6 +566,7 @@ function SignalsCard() {
           <div>
             <Label>Identified signups or clicks, no commission-bearing conversions</Label>
             <Table
+              resizeKey="ops.fees.no-commission"
               columns={['Brand', { label: 'Clicks', align: 'right' }, { label: 'Identified users', align: 'right' }]}
               empty="None."
               rows={d.noCommissionActivity.map((r) => [`/t/${r.slug}/`, String(r.clicks), String(r.identities)])}
@@ -571,6 +575,7 @@ function SignalsCard() {
           <div>
             <Label>Revenue conversions where commission exceeds value</Label>
             <Table
+              resizeKey="ops.fees.over-value"
               columns={['Brand', { label: 'Conversions', align: 'right' }, 'Latest events']}
               empty="None."
               rows={d.commissionAboveValue.map((r) => [
@@ -588,6 +593,7 @@ function SignalsCard() {
                 : ` (needs 3+ brands with 200+ clicks; ${d.lowConversion.peers} so far)`}
             </Label>
             <Table
+              resizeKey="ops.fees.low-conversion"
               columns={['Brand', { label: 'Clicks', align: 'right' }, { label: 'Conversions', align: 'right' }, { label: 'Rate', align: 'right' }]}
               empty="None."
               rows={d.lowConversion.tenants.map((r) => [`/t/${r.slug}/`, String(r.clicks), String(r.conversions), `${(r.rate * 100).toFixed(2)}%`])}

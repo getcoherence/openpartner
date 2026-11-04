@@ -1590,6 +1590,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                   {preview.targets.length > 0 && (
                     <div style={{ marginTop: 10 }}>
                       <Table
+                        resizeKey="ops.creator-index.outreach"
                         columns={['Creator', 'Where', 'Reach', 'Email', 'Opens with']}
                         rows={preview.targets.map((t) => [
                           <div key="n">
@@ -1705,6 +1706,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
             )}
             <div ref={listRef}>
               <Table
+                resizeKey="ops.creator-index.creators"
                 columns={['Creator', 'Tags', 'Where', 'Reach', 'Address', 'Status']}
                 maxHeight={listHeight}
                 dense
