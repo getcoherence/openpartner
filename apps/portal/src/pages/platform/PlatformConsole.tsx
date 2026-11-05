@@ -10,6 +10,7 @@ import {
   Handshake,
   LayoutGrid,
   LogOut,
+  Megaphone,
   Menu,
   Percent,
   ScrollText,
@@ -21,6 +22,7 @@ import {
 } from 'lucide-react';
 import { theme } from '../../theme.js';
 import { ThemeToggle } from '../../lib/ThemeToggle.js';
+import { ColumnWidthsViewer } from '../../lib/columnWidths.js';
 import { CookieSettingsButton } from '../../lib/ConsentBanner.js';
 import { useIsMobile } from '../../lib/useMediaQuery.js';
 import { Logo } from '../auth/Shared.js';
@@ -38,6 +40,7 @@ import { CountriesPage } from './Countries.js';
 import { ScreeningPage } from './Screening.js';
 import { OwnProgramPage } from './OwnProgram.js';
 import { CreatorIndexPage } from './CreatorIndex.js';
+import { BrandOutreachPage } from './BrandOutreach.js';
 import { MailboxCallbackPage } from './Mailboxes.js';
 
 const NAV: ReadonlyArray<{ title: string; items: ReadonlyArray<{ to: string; label: string; icon: LucideIcon }> }> = [
@@ -53,6 +56,7 @@ const NAV: ReadonlyArray<{ title: string; items: ReadonlyArray<{ to: string; lab
     title: 'Network',
     items: [
       { to: '/platform/creator-index', label: 'Creator index', icon: UserSearch },
+      { to: '/platform/brand-outreach', label: 'Brand outreach', icon: Megaphone },
       { to: '/platform/marketplace', label: 'Marketplace', icon: LayoutGrid },
     ],
   },
@@ -146,11 +150,13 @@ export function PlatformConsole() {
           a scroll container, so the mobile top bar sticks to the viewport. */}
       <main style={{ flex: 1, minWidth: 0, overflowX: 'clip' }}>
         {isMobile && <MobileTopBar onMenu={() => setDrawerOpen(true)} />}
+        <ColumnWidthsViewer id={operator.email}>
         <Routes>
           <Route index element={<Navigate to="/platform/brands" replace />} />
           <Route path="brands" element={<BrandsPage operator={operator} />} />
           <Route path="creators" element={<CreatorsPage operator={operator} />} />
           <Route path="creator-index" element={<CreatorIndexPage operator={operator} />} />
+          <Route path="brand-outreach" element={<BrandOutreachPage operator={operator} />} />
           <Route path="mailboxes/callback" element={<MailboxCallbackPage />} />
           <Route path="vendors" element={<VendorsPage operator={operator} />} />
           <Route path="marketplace" element={<MarketplacePage operator={operator} />} />
@@ -164,6 +170,7 @@ export function PlatformConsole() {
           <Route path="audit" element={<AuditPage />} />
           <Route path="*" element={<Navigate to="/platform/brands" replace />} />
         </Routes>
+        </ColumnWidthsViewer>
       </main>
     </div>
   );

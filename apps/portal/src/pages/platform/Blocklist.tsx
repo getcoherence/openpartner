@@ -126,7 +126,7 @@ export function BlocklistPage({ operator }: { operator: PlatformOperator }) {
       {list.isLoading ? (
         <Card>Loading…</Card>
       ) : (
-        <Table columns={['Value', 'Type', 'Reason', 'Added by', 'When', '']} rows={rows} empty="Nothing blocked yet." />
+        <Table resizeKey="ops.blocklist" columns={['Value', 'Type', 'Reason', 'Added by', 'When', '']} rows={rows} empty="Nothing blocked yet." />
       )}
     </Page>
   );

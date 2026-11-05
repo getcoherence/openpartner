@@ -43,6 +43,10 @@ const PUSH_TIMEOUT_MS = 5_000;
 // here meant every first-after-idle render of the Network admin page
 // failed with 504. Keep it generous; the request blocks the admin UI.
 const PROXY_TIMEOUT_MS = 30_000;
+// Admin calls that wait on the Network's email verifier, which hands an
+// unsure answer on to up to two more providers. Saving an address by hand
+// once took over 10s and the console gave up while the Network carried on.
+const VERIFY_CALL_TIMEOUT_MS = 60_000;
 const MAX_ATTEMPTS = 8; // exponential backoff: ~24h max wall time
 
 // ---------- config shape ----------
@@ -1680,7 +1684,7 @@ export async function adminSetIndexedCreatorContact(
   id: string,
   body: { email: string; sourceUrl: string },
 ): Promise<{ creator: unknown }> {
-  return callNetworkAdmin(networkUrl, 'PUT', `/admin/creator-index/creators/${encodeURIComponent(id)}/contact`, body);
+  return callNetworkAdmin(networkUrl, 'PUT', `/admin/creator-index/creators/${encodeURIComponent(id)}/contact`, body, {}, VERIFY_CALL_TIMEOUT_MS);
 }
 
 /** A US creator's state ops found (`US-TX`), with the page that shows it. */
@@ -1701,6 +1705,110 @@ export async function adminQueueIndexSeeds(networkUrl: string, urls: string[]): 
  *  and runs it in the background; 409 already_running if it's going. */
 export async function adminRunCreatorIndexJob(networkUrl: string, job: 'discover' | 'read' | 'refresh'): Promise<Record<string, unknown>> {
   return callNetworkAdmin<Record<string, unknown>>(networkUrl, 'POST', `/admin/creator-index/run/${job}`, {}, {}, 30_000);
+}
+
+// ---- Brand outreach (openpartner-network docs/brand-outreach.md §6) ----
+
+export interface BrandOutreachSettings {
+  enabled: boolean;
+  /** Absent from a Network that predates the email. */
+  outreachEnabled?: boolean;
+  outreachStyle?: 'designed' | 'plain';
+  monthlyBudgetUsd: number;
+  /** Absent from a Network that predates them. */
+  sources?: { productHunt: boolean; jobPosts: boolean; creatorMentions: boolean };
+  jobQueries?: string[];
+  minCreatorMentions?: number;
+  excludedCountries?: string[];
+  /** Absent from a Network that predates the size check. */
+  maxEmployees?: number;
+  maxFundingUsdMillions?: number;
+  queries: string[];
+  lookbackDays: number;
+  sendAfterDays: number;
+  maxLaunchAgeDays: number;
+  readConcurrency: number;
+}
+
+export interface StoredBrandOutreachSettings {
+  settings: BrandOutreachSettings;
+  updatedAt: string | null;
+  updatedByEmail: string | null;
+}
+
+export async function adminGetBrandOutreachSettings(networkUrl: string): Promise<StoredBrandOutreachSettings & Record<string, unknown>> {
+  return callNetworkAdmin(networkUrl, 'GET', '/admin/brand-outreach/settings');
+}
+
+export async function adminSetBrandOutreachSettings(
+  networkUrl: string,
+  settings: BrandOutreachSettings & { updatedByEmail?: string },
+): Promise<StoredBrandOutreachSettings> {
+  return callNetworkAdmin(networkUrl, 'PUT', '/admin/brand-outreach/settings', { ...settings });
+}
+
+export async function adminBrandOutreachStats(networkUrl: string): Promise<Record<string, unknown>> {
+  return callNetworkAdmin<Record<string, unknown>>(networkUrl, 'GET', '/admin/brand-outreach/stats');
+}
+
+export async function adminListBrandProspects(networkUrl: string, querystring: string): Promise<{ prospects: unknown[]; nextCursor: string | null }> {
+  return callNetworkAdmin(networkUrl, 'GET', `/admin/brand-outreach/prospects${querystring ? `?${querystring}` : ''}`);
+}
+
+/** One prospect's address in full (the list shows it masked). */
+export async function adminGetBrandProspectContact(networkUrl: string, id: string): Promise<{ contact: { email: string; foundOn: string | null } }> {
+  return callNetworkAdmin(networkUrl, 'GET', `/admin/brand-outreach/prospects/${encodeURIComponent(id)}/contact`);
+}
+
+/** Reject a prospect by hand: emptied, and never read again. */
+export async function adminRejectBrandProspect(networkUrl: string, id: string, reviewedByEmail: string): Promise<void> {
+  return callNetworkAdmin<void>(networkUrl, 'POST', `/admin/brand-outreach/prospects/${encodeURIComponent(id)}/reject`, { reviewedByEmail });
+}
+
+/** Approve a prospect held for review: qualified as a US company. With no
+ *  address found, one ops found published on the company's site; the
+ *  Network checks it as the read checks one. */
+export async function adminApproveBrandProspect(
+  networkUrl: string,
+  id: string,
+  body: { reviewedByEmail: string; country?: string; email?: string; sourceUrl?: string },
+): Promise<{ prospect: unknown }> {
+  return callNetworkAdmin(networkUrl, 'POST', `/admin/brand-outreach/prospects/${encodeURIComponent(id)}/approve`, body, {}, VERIFY_CALL_TIMEOUT_MS);
+}
+
+/** Find email: a founder's work address at the company's domain, looked
+ *  up for a held prospect with none (people search, email finder,
+ *  verifier). It stays held for ops to approve. */
+export async function adminFindBrandProspectAddress(
+  networkUrl: string,
+  id: string,
+  body: { reviewedByEmail: string; country?: string },
+): Promise<{ prospect: unknown }> {
+  return callNetworkAdmin(networkUrl, 'POST', `/admin/brand-outreach/prospects/${encodeURIComponent(id)}/find-address`, body, {}, VERIFY_CALL_TIMEOUT_MS);
+}
+
+export async function adminQueueBrandSeeds(networkUrl: string, urls: string[]): Promise<Record<string, number>> {
+  return callNetworkAdmin<Record<string, number>>(networkUrl, 'POST', '/admin/brand-outreach/seeds', { urls });
+}
+
+/** One batch of brand outreach's email, or its dry run (the batch, as it
+ *  would go). A send starts in the background on the Network (202). */
+export async function adminRunBrandOutreach(
+  networkUrl: string,
+  body: { dryRun?: boolean; limit?: number; excludeDomains: string[] },
+): Promise<Record<string, unknown>> {
+  return callNetworkAdmin<Record<string, unknown>>(networkUrl, 'POST', '/admin/brand-outreach/outreach/run', body, {}, 60_000);
+}
+
+/** The email about a made-up company, to seed addresses. */
+export async function adminSendBrandOutreachSample(networkUrl: string, body: { to: string[]; style?: 'designed' | 'plain' }): Promise<Record<string, unknown>> {
+  return callNetworkAdmin<Record<string, unknown>>(networkUrl, 'POST', '/admin/brand-outreach/outreach/sample', body, {}, 120_000);
+}
+
+/** Starts the job on the Network, which answers at once ({ started: true })
+ *  and runs it in the background; 409 already_running if it's going. */
+export async function adminRunBrandOutreachJob(networkUrl: string, job: 'discover' | 'read'): Promise<Record<string, unknown>> {
+  return callNetworkAdmin<Record<string, unknown>>(networkUrl, 'POST', `/admin/brand-outreach/run/${job}`, {}, {}, 30_000);
 }
 
 export interface CreatorIndexInviteRunResult {

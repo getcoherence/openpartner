@@ -160,6 +160,7 @@ export function CountriesPage({ operator }: { operator: PlatformOperator }) {
           <Card>
             <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Not served</div>
             <Table
+              resizeKey="ops.countries"
               columns={['Country', 'Why', '']}
               empty="No countries blocked."
               rows={sorted.map((b) => [

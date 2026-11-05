@@ -6,6 +6,7 @@ import { alpha, theme } from '../../theme.js';
 import { countryErrorMessage } from '../../lib/CountryField.js';
 import { creatorApi, ApiError } from './creator-api.js';
 import { categoryLabel } from '@openpartner/db';
+import { formatRecruiterShare, type RecruiterShareLike } from '../../lib/commission-summary.js';
 import { ListingBanner, ListingVideo, type OfferingVideo } from './ListingBanner.js';
 import {
   ProfileIncompleteNotice,
@@ -78,6 +79,8 @@ interface Offering {
     /** ISO timestamp when the bound vendor  Program expires. Null =
      *  indefinite (no end date). Absent = legacy offering. */
     campaignEndsAt?: string | null;
+    /** What the program pays of the commissions of partners you recruit. */
+    recruiterCommission?: RecruiterShareLike | null;
   };
   /** Brand's banner; null = logo-wash fallback. */
   coverImageUrl?: string | null;
@@ -335,6 +338,11 @@ function OfferingDetailBody({
                 <RewardIcon kind="customer" />
               </Tooltip>
             )}
+            {offering.terms.recruiterCommission && (
+              <Tooltip text={`Pays for recruits: ${formatRecruiterShare(offering.terms.recruiterCommission)}`}>
+                <RewardIcon kind="recruits" />
+              </Tooltip>
+            )}
           </div>
         </QuickCell>
         {cats.length > 0 && (
@@ -429,6 +437,12 @@ function OfferingDetailBody({
               <RewardCardRow
                 icon="customer"
                 text={`New customers get ${formatCustomerReward(offering.terms.customerReward)}`}
+              />
+            )}
+            {offering.terms.recruiterCommission && (
+              <RewardCardRow
+                icon="recruits"
+                text={`Recruit other partners: ${formatRecruiterShare(offering.terms.recruiterCommission)}`}
               />
             )}
           </Card>
@@ -527,7 +541,7 @@ function QuickCell({ label, children }: { label: string; children: React.ReactNo
   );
 }
 
-function RewardIcon({ kind }: { kind: 'commission' | 'customer' }) {
+function RewardIcon({ kind }: { kind: RewardKind }) {
   return (
     <span
       style={{
@@ -543,7 +557,7 @@ function RewardIcon({ kind }: { kind: 'commission' | 'customer' }) {
         cursor: 'help',
       }}
     >
-      {kind === 'commission' ? <DollarIcon /> : <GiftIcon />}
+      {kind === 'commission' ? <DollarIcon /> : kind === 'customer' ? <GiftIcon /> : <UserPlusIcon />}
     </span>
   );
 }
@@ -571,7 +585,20 @@ function GiftIcon() {
   );
 }
 
-function RewardCardRow({ icon, text }: { icon: 'commission' | 'customer'; text: string }) {
+function UserPlusIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <line x1="19" y1="8" x2="19" y2="14" />
+      <line x1="22" y1="11" x2="16" y2="11" />
+    </svg>
+  );
+}
+
+type RewardKind = 'commission' | 'customer' | 'recruits';
+
+function RewardCardRow({ icon, text }: { icon: RewardKind; text: string }) {
   return (
     <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '6px 0' }}>
       <RewardIcon kind={icon} />

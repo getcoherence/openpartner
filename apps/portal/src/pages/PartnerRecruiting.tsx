@@ -65,7 +65,14 @@ function earnedText(earned: Record<string, string>): string {
   return entries.map(([currency, amount]) => money(amount, currency)).join(' + ');
 }
 
-function RecruitsTable({ data, emptyHint }: { data: PartnerRecruits; emptyHint: string }) {
+/** What RecruitsTable lists: the brand's own rows, or a Network creator's
+ *  (CreatorProgramDetail), which carry no partner ids. */
+export interface RecruitsList {
+  recruits: Array<Omit<PartnerRecruits['recruits'][number], 'id'>>;
+  total: number;
+}
+
+export function RecruitsTable({ data, emptyHint }: { data: RecruitsList; emptyHint: string }) {
   if (data.recruits.length === 0) {
     return <EmptyState title="No recruits yet" hint={emptyHint} icon={<UserPlus size={28} strokeWidth={1.25} />} />;
   }
@@ -89,7 +96,7 @@ function RecruitsTable({ data, emptyHint }: { data: PartnerRecruits; emptyHint: 
   );
 }
 
-function RecruitLink({ url, signupOpen }: { url: string; signupOpen: boolean }) {
+export function RecruitLink({ url, signupOpen }: { url: string; signupOpen: boolean }) {
   const [copied, setCopied] = useState(false);
   return (
     <div>

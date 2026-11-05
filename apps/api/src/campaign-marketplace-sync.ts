@@ -49,6 +49,10 @@ interface OfferingTerms {
    *  marketplace card as a chip and powers category-based filtering. */
   categories?: string[];
   campaignEndsAt?: string | null;
+  /** Two-tier commissions (docs/two-tier-commissions.md): what a partner
+   *  earns of their recruits' commissions here. Null = nothing. Drives the
+   *  marketplace's "Pays for recruits" chip and filter. */
+  recruiterCommission?: { percent: number; months: number | null } | null;
 }
 
 /**
@@ -180,6 +184,10 @@ export function buildTermsPayload(campaign: ProgramRow, derivedSummary: string):
     customerReward: campaign.customerReward ?? null,
     categories: campaign.categories ?? [],
     campaignEndsAt: campaign.endsAt ? campaign.endsAt.toISOString() : null,
+    recruiterCommission:
+      campaign.recruiterCommissionPercent != null
+        ? { percent: Number(campaign.recruiterCommissionPercent), months: campaign.recruiterCommissionMonths ?? null }
+        : null,
   };
 }
 

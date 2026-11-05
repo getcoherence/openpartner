@@ -103,6 +103,7 @@ function BrandsCard({ state, canWrite }: { state: InvoiceBillingState; canWrite:
       </div>
       <div style={{ marginTop: 12 }}>
         <Table
+          resizeKey="ops.invoicing"
           columns={['Brand', 'Country', 'New subscriptions', 'Live subscription', 'Terms', 'GSTIN', '']}
           empty="No brand pays by invoice yet."
           rows={rows.map((t) => [

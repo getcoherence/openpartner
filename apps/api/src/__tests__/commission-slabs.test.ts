@@ -257,6 +257,15 @@ describe('marketplace terms payload', () => {
     expect(terms.commissionDescription).toBe('10–15% on every invoice (tiers by monthly partner revenue)');
   });
 
+  it('sends the recruiter share, for the marketplace’s "Pays for recruits", and null when the program pays none', () => {
+    const rules: CommissionSubRule[] = [{ trigger: 'every', type: 'percent', value: 10 }];
+    expect(buildTermsPayload(program(rules), 'x').recruiterCommission).toBeNull();
+    const paying = { ...program(rules), recruiterCommissionPercent: '10.00', recruiterCommissionMonths: 12 } as ProgramRow;
+    expect(buildTermsPayload(paying, 'x').recruiterCommission).toEqual({ percent: 10, months: 12 });
+    const forever = { ...program(rules), recruiterCommissionPercent: '7.50', recruiterCommissionMonths: null } as ProgramRow;
+    expect(buildTermsPayload(forever, 'x').recruiterCommission).toEqual({ percent: 7.5, months: null });
+  });
+
   it('trims a summary past the Network limit instead of failing the whole write', () => {
     const long = 'x'.repeat(NETWORK_DESCRIPTION_MAX + 50);
     const terms = buildTermsPayload(program([{ trigger: 'every', type: 'percent', value: 10 }]), long);
