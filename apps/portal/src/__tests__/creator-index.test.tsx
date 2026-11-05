@@ -439,6 +439,20 @@ describe('external creators', () => {
       expect(screen.getByRole('link', { name: 'LinkedIn, 12,000 followers, 0.96% engagement over 8 posts' }).textContent).toBe('12K· 1%');
     });
 
+    it('counts a newsletter’s subscribers, not followers', async () => {
+      const newsletters = [
+        { platform: 'substack', handle: 'jonotes', profileUrl: 'https://jonotes.substack.com', followerCount: 12_000, postsLast30d: null, avgReactions: null, avgComments: null, avgReposts: null, topPostUrls: [] },
+        { platform: 'newsletter', handle: 'jorivera.co', profileUrl: 'https://jorivera.co', followerCount: 7_000, postsLast30d: null, avgReactions: null, avgComments: null, avgReposts: null, topPostUrls: [] },
+      ];
+      respond = () => ({ status: 200, body: { creator: { ...PROFILE, platforms: [...PROFILE.platforms, ...newsletters] } } });
+      profilePage();
+      expect(await screen.findByText('12,000 subscribers')).toBeTruthy();
+      expect(screen.getByText('7,000 subscribers')).toBeTruthy();
+      expect(screen.getByRole('link', { name: 'Substack, 12,000 subscribers' })).toBeTruthy();
+      expect(screen.getByRole('link', { name: 'Newsletter, 7,000 subscribers' })).toBeTruthy();
+      expect(screen.getByRole('link', { name: 'LinkedIn, 12,000 followers' })).toBeTruthy();
+    });
+
     it('says why a creator can’t be invited', async () => {
       respond = () => ({ status: 200, body: { creator: { ...PROFILE, invitable: false, blocker: 'unreachable' } } });
       profilePage();
