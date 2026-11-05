@@ -2,17 +2,18 @@
 /**
  * The brand outreach console page (pages/platform/BrandOutreach.tsx): the
  * review queue (why each is held, approve with or without an address found,
- * reject), the prospect list with masked addresses and the words that place
+ * reject with Undo), the prospect list with masked addresses and the words that place
  * a company in the US, the views and reasons it asks the Network for, what
  * an admin can do and support can't, the runs' phase-1 numbers, and saving
  * settings.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrandOutreachPage } from '../pages/platform/BrandOutreach.js';
+import { UNDO_MS } from '../lib/useUndo.js';
 
 interface Recorded {
   url: string;
@@ -20,6 +21,7 @@ interface Recorded {
   body: unknown;
 }
 let calls: Recorded[] = [];
+let rejectFails = false;
 
 const SETTINGS = { enabled: true, monthlyBudgetUsd: 20, queries: ['developer tools'], lookbackDays: 7, sendAfterDays: 14, maxLaunchAgeDays: 60, readConcurrency: 4 };
 
@@ -134,6 +136,7 @@ function respond(url: string, method: string): { status: number; body: unknown }
   }
   if (url.endsWith('/prospects/bpr_2/approve')) return { status: 200, body: { prospect: { ...HELD, status: 'qualified' } } };
   if (url.endsWith('/prospects/bpr_3/approve')) return { status: 400, body: { error: 'not_their_address' } };
+  if (url.endsWith('/prospects/bpr_3/reject') && rejectFails) return { status: 500, body: { error: 'internal' } };
   if (url.endsWith('/reject')) return { status: 204, body: null };
   if (url.endsWith('/brand-outreach/outreach/run')) {
     const dry = (calls[calls.length - 1]!.body as { dryRun: boolean }).dryRun;
@@ -165,6 +168,7 @@ function respond(url: string, method: string): { status: number; body: unknown }
 
 beforeEach(() => {
   calls = [];
+  rejectFails = false;
   settingsBody = SETTINGS;
   vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -252,13 +256,57 @@ describe('brand outreach console', () => {
     expect(screen.queryByRole('button', { name: 'Reject' })).toBeNull();
   });
 
-  it('rejects by hand after a confirm', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
-    wrap('admin');
-    await openView(/^Ready/);
-    await screen.findByText('Acme Notes');
-    fireEvent.click(await screen.findByRole('button', { name: 'Reject' }));
-    await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.url.endsWith('/prospects/bpr_1/reject'))).toBe(true));
+  describe('rejecting, with Undo instead of a confirm', () => {
+    const rejected = (id: string) => calls.some((c) => c.method === 'POST' && c.url.endsWith(`/prospects/${id}/reject`));
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('hides the company at once and tells the Network when the toast goes', async () => {
+      const confirm = vi.spyOn(window, 'confirm').mockClear();
+      wrap('admin');
+      await openView(/^Ready/);
+      await screen.findByText('Acme Notes');
+      fireEvent.click(screen.getByRole('button', { name: 'Reject' }));
+      expect(confirm).not.toHaveBeenCalled();
+      expect(screen.queryByText('Acme Notes')).toBeNull();
+      expect(screen.getByText('Rejected Acme Notes')).toBeTruthy();
+      expect(rejected('bpr_1')).toBe(false);
+      await act(() => vi.advanceTimersByTimeAsync(UNDO_MS));
+      await waitFor(() => expect(rejected('bpr_1')).toBe(true));
+      expect(screen.queryByText('Rejected Acme Notes')).toBeNull();
+    });
+
+    it('puts it back on Undo, and a second reject sends the first at once', async () => {
+      wrap('admin');
+      await screen.findByText('Pipewise');
+      fireEvent.click(screen.getAllByRole('button', { name: 'Reject' })[0]!);
+      expect(screen.queryByText('Pipewise')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Reject' }));
+      await waitFor(() => expect(rejected('bpr_2')).toBe(true));
+      expect(screen.getByText('Rejected Shipcheck')).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+      expect(screen.getByText('Shipcheck')).toBeTruthy();
+      await act(() => vi.advanceTimersByTimeAsync(UNDO_MS));
+      expect(rejected('bpr_3')).toBe(false);
+    });
+
+    it('sends what is pending when the page goes, and brings back one the Network refused', async () => {
+      rejectFails = true;
+      const view = wrap('admin');
+      await screen.findByText('Shipcheck');
+      fireEvent.click(screen.getAllByRole('button', { name: 'Reject' })[1]!);
+      await act(() => vi.advanceTimersByTimeAsync(UNDO_MS));
+      await waitFor(() => expect(rejected('bpr_3')).toBe(true));
+      expect(await screen.findByText('Shipcheck')).toBeTruthy();
+
+      fireEvent.click(screen.getAllByRole('button', { name: 'Reject' })[0]!);
+      view.unmount();
+      await waitFor(() => expect(rejected('bpr_2')).toBe(true));
+    });
   });
 
   it('asks for rejected companies by reason', async () => {
