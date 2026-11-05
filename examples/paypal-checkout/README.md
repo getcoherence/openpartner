@@ -20,6 +20,8 @@ node server.mjs        # http://localhost:3001
 - Set the program's destination to `http://localhost:3001/`. The router's redirect happens in your own browser, so a local page works. Only OpenPartner's webhook needs a public https address.
 - `AMOUNT` (default `10.00`) and `CURRENCY` (default `USD`) change the one-time payment.
 
+`sandbox-plan.mjs` makes a sandbox plan for `PAYPAL_PLAN_ID`: daily, three payments, so a renewal arrives the next day and the subscription then ends. Run it in your own terminal with the same app's client id and secret: it prints the plan id.
+
 `sandbox-dispute.mjs` settles a sandbox dispute for the buyer: PayPal's sandbox-only adjudicate when PayPal offers it, otherwise by accepting the claim, which refunds the buyer. Run it in your own terminal with the sandbox app's client id and secret, then open the dispute as the sandbox buyer: it picks the dispute up.
 
 The steps to run against it are in [docs/paypal-payments.md](../../docs/paypal-payments.md#checking-it-against-paypal).

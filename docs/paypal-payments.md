@@ -373,9 +373,6 @@ payloads. What still needs PayPal itself:
   format (`2026-11-02T10:00:00Z`), and its ids match the webhook's (a
   capture's `transaction_id` is the capture id, a subscription payment's the
   sale id);
-- `custom_id` passes through `actions.subscription.create`, renewals carry
-  `billing_agreement_id`, and a subscription's transactions list its sale
-  ids;
 - the events list's retention and next-page link;
 - a v2 refund's `up` link names the capture, and a `T1107` row's
   `paypal_reference_id` is the refunded payment;
@@ -386,14 +383,18 @@ payloads. What still needs PayPal itself:
 - a dispute PayPal decides lists its refund in `refund_details` under the
   id the refund's own events carry.
 
-Checked on a sandbox app (Nov 2026): payments by card and by PayPal
-account, refunds (a `T1107` row's `transaction_id` is the refund id the
-webhook sends, and its `paypal_reference_id` the capture), disputes opened,
-and a claim the brand accepted (its `PAYMENT.CAPTURE.REFUNDED`, then the
-resolution listing that refund's id). The events list takes at most 100
-events a page and times to the second. The sandbox never offered its
-settle call (`adjudicate`), so a dispute PayPal decides, and the reversal
-events, haven't been seen live.
+Checked on a sandbox app (Nov 2026): payments by card and by PayPal account,
+refunds (a `T1107` row's `transaction_id` is the refund id the webhook
+sends, and its `paypal_reference_id` the capture), disputes opened, and a
+claim the brand accepted (its `PAYMENT.CAPTURE.REFUNDED`, then the
+resolution listing that refund's id). A subscription through
+`actions.subscription.create` kept its `custom_id`; each of its three daily
+payments arrived as `PAYMENT.SALE.COMPLETED` carrying `billing_agreement_id`
+(the subscription id) and was credited to the click's partner, and the
+subscription's transactions list those sale ids. The events list takes at
+most 100 events a page and times to the second. The sandbox never offered
+its settle call (`adjudicate`), so a dispute PayPal decides, and the
+reversal events, haven't been seen live.
 
 **Where to run it.** PayPal posts webhooks only to public https addresses.
 Run the check **after deploying, in a test workspace on the hosted app**:
@@ -420,8 +421,9 @@ Only the webhook needs to be public: the checkout page can run on
 4. Run the sample checkout page
    ([examples/paypal-checkout](../examples/paypal-checkout/README.md)) in
    your own terminal with the app's client id and secret: it creates and
-   captures orders on the server. Add `PAYPAL_PLAN_ID` (a sandbox plan of the
-   same app) to test subscriptions.
+   captures orders on the server. To test subscriptions, `sandbox-plan.mjs`
+   there makes a daily sandbox plan of the same app (three payments) and
+   prints its id: start the page with it as `PAYPAL_PLAN_ID`.
 5. **The test click.** Tracking health → **Send a test click** on the
    program. The tab lands on the page, which shows the click. Pay with the
    sandbox buyer. Within a minute the test's last step reads "A PayPal
@@ -433,9 +435,12 @@ Only the webhook needs to be public: the checkout page can run on
 7. **Refunds.** In the sandbox merchant account (sandbox.paypal.com, the
    app's Business account): Activity → the payment → Refund part of it. The
    commission drops to the share kept. Refund the rest: it is reversed.
-8. **Subscriptions.** Through `/?mode=subscription`, subscribe with the
-   sandbox buyer: `subscription_created` at approval and an `invoice_paid`
-   for the first payment, under the same partner.
+8. **Subscriptions.** Open the partner's link, then **Subscription instead**
+   (`/?mode=subscription`, the click stays), and subscribe with the sandbox
+   buyer: `subscription_created` at approval and an `invoice_paid` for the
+   first payment, under the same partner. Each renewal is another
+   `invoice_paid` under that partner. The sandbox doesn't keep to the hour:
+   ours came 15 and 25 hours apart.
 9. **A dispute.** Pay again through the partner's link. In your own
    terminal, start the sandbox settle script with the app's credentials:
    ```bash
