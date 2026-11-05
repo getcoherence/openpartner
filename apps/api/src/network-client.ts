@@ -43,6 +43,10 @@ const PUSH_TIMEOUT_MS = 5_000;
 // here meant every first-after-idle render of the Network admin page
 // failed with 504. Keep it generous; the request blocks the admin UI.
 const PROXY_TIMEOUT_MS = 30_000;
+// Admin calls that wait on the Network's email verifier, which hands an
+// unsure answer on to up to two more providers. Saving an address by hand
+// once took over 10s and the console gave up while the Network carried on.
+const VERIFY_CALL_TIMEOUT_MS = 60_000;
 const MAX_ATTEMPTS = 8; // exponential backoff: ~24h max wall time
 
 // ---------- config shape ----------
@@ -1680,7 +1684,7 @@ export async function adminSetIndexedCreatorContact(
   id: string,
   body: { email: string; sourceUrl: string },
 ): Promise<{ creator: unknown }> {
-  return callNetworkAdmin(networkUrl, 'PUT', `/admin/creator-index/creators/${encodeURIComponent(id)}/contact`, body);
+  return callNetworkAdmin(networkUrl, 'PUT', `/admin/creator-index/creators/${encodeURIComponent(id)}/contact`, body, {}, VERIFY_CALL_TIMEOUT_MS);
 }
 
 /** A US creator's state ops found (`US-TX`), with the page that shows it. */
@@ -1769,7 +1773,7 @@ export async function adminApproveBrandProspect(
   id: string,
   body: { reviewedByEmail: string; country?: string; email?: string; sourceUrl?: string },
 ): Promise<{ prospect: unknown }> {
-  return callNetworkAdmin(networkUrl, 'POST', `/admin/brand-outreach/prospects/${encodeURIComponent(id)}/approve`, body, {}, 20_000);
+  return callNetworkAdmin(networkUrl, 'POST', `/admin/brand-outreach/prospects/${encodeURIComponent(id)}/approve`, body, {}, VERIFY_CALL_TIMEOUT_MS);
 }
 
 /** Find email: a founder's work address at the company's domain, looked
@@ -1780,7 +1784,7 @@ export async function adminFindBrandProspectAddress(
   id: string,
   body: { reviewedByEmail: string; country?: string },
 ): Promise<{ prospect: unknown }> {
-  return callNetworkAdmin(networkUrl, 'POST', `/admin/brand-outreach/prospects/${encodeURIComponent(id)}/find-address`, body, {}, 60_000);
+  return callNetworkAdmin(networkUrl, 'POST', `/admin/brand-outreach/prospects/${encodeURIComponent(id)}/find-address`, body, {}, VERIFY_CALL_TIMEOUT_MS);
 }
 
 export async function adminQueueBrandSeeds(networkUrl: string, urls: string[]): Promise<Record<string, number>> {

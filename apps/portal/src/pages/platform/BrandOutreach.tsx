@@ -23,7 +23,7 @@ import { useSearchParams } from 'react-router';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select, Table, Textarea, formatDate } from '../../ui.js';
-import { friendlyPlatformError, papi, type PlatformOperator } from './lib.js';
+import { PlatformApiError, friendlyPlatformError, papi, type PlatformOperator } from './lib.js';
 import { shortUrl } from '../../lib/partnership-signals.js';
 import { useRestOfWindow } from '../../lib/useRestOfWindow.js';
 import { useUndo } from '../../lib/useUndo.js';
@@ -189,7 +189,11 @@ const APPROVE_ERRORS: Record<string, string> = {
 };
 const approveError = (err: unknown) => {
   const code = err instanceof Error ? err.message : String(err);
-  return APPROVE_ERRORS[code] ?? friendlyPlatformError(err);
+  if (APPROVE_ERRORS[code]) return APPROVE_ERRORS[code];
+  // The Network didn't answer: the edge in front of prod sends our 502 on
+  // as its own bare 504.
+  if (err instanceof PlatformApiError && (err.status === 502 || err.status === 504)) return "Couldn't finish just now; try again";
+  return friendlyPlatformError(err);
 };
 
 type Tab = 'prospects' | 'email' | 'runs' | 'settings';
