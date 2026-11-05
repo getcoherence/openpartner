@@ -22,6 +22,9 @@ interface Recorded {
 }
 let calls: Recorded[] = [];
 let rejectFails = false;
+/** Find email: whether it has been asked, and whether it finds no one. */
+let lookedUp = false;
+let findFails = false;
 
 const SETTINGS = { enabled: true, monthlyBudgetUsd: 20, queries: ['developer tools'], lookbackDays: 7, sendAfterDays: 14, maxLaunchAgeDays: 60, readConcurrency: 4 };
 
@@ -131,11 +134,17 @@ function respond(url: string, method: string): { status: number; body: unknown }
   }
   if (url.endsWith('/brand-outreach/stats')) return { status: 200, body: STATS };
   if (url.includes('/brand-outreach/prospects?')) {
-    const prospects = url.includes('view=review') ? [HELD, HELD_NO_ADDRESS] : url.includes('view=rejected') ? [] : [ACME];
+    const shipcheck = lookedUp ? { ...HELD_NO_ADDRESS, contact: { masked: 'j•@shipcheck.example', foundOn: 'via:own-domain:shipcheck.example', person: 'Jo Rivera, Founder' } } : HELD_NO_ADDRESS;
+    const prospects = url.includes('view=review') ? [HELD, shipcheck] : url.includes('view=rejected') ? [] : [ACME];
     return { status: 200, body: { prospects, nextCursor: null } };
   }
   if (url.endsWith('/prospects/bpr_2/approve')) return { status: 200, body: { prospect: { ...HELD, status: 'qualified' } } };
   if (url.endsWith('/prospects/bpr_3/approve')) return { status: 400, body: { error: 'not_their_address' } };
+  if (url.endsWith('/prospects/bpr_3/find-address')) {
+    if (findFails) return { status: 422, body: { error: 'none_found' } };
+    lookedUp = true;
+    return { status: 200, body: { prospect: {} } };
+  }
   if (url.endsWith('/prospects/bpr_3/reject') && rejectFails) return { status: 500, body: { error: 'internal' } };
   if (url.endsWith('/reject')) return { status: 204, body: null };
   if (url.endsWith('/brand-outreach/outreach/run')) {
@@ -169,6 +178,8 @@ function respond(url: string, method: string): { status: number; body: unknown }
 beforeEach(() => {
   calls = [];
   rejectFails = false;
+  lookedUp = false;
+  findFails = false;
   settingsBody = SETTINGS;
   vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -254,6 +265,26 @@ describe('brand outreach console', () => {
     expect(await screen.findByText('Acme Notes')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Show' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Reject' })).toBeNull();
+  });
+
+  it("finds a founder's address for one with none, and shows whose it is before it's approved", async () => {
+    wrap('admin');
+    await screen.findByText('Shipcheck');
+    // Only the one with no address offers it.
+    expect(screen.getAllByRole('button', { name: 'Find email' })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Find email' }));
+    await waitFor(() => expect(calls.find((c) => c.url.endsWith('/prospects/bpr_3/find-address'))).toMatchObject({ method: 'POST', body: {} }));
+    expect(await screen.findByText('Jo Rivera, Founder · lookup')).toBeTruthy();
+    expect(screen.getByText('j•@shipcheck.example')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Find email' })).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Approve' })).toHaveLength(2);
+  });
+
+  it('says why Find email came back empty', async () => {
+    findFails = true;
+    wrap('admin');
+    fireEvent.click(await screen.findByRole('button', { name: 'Find email' }));
+    expect((await screen.findByRole('alert')).textContent).toBe('No address the verifier says delivers');
   });
 
   describe('rejecting, with Undo instead of a confirm', () => {

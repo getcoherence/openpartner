@@ -75,6 +75,7 @@ import {
   adminRunCreatorIndexJob,
   adminRunCreatorIndexOutreach,
   adminApproveBrandProspect,
+  adminFindBrandProspectAddress,
   adminBrandOutreachStats,
   adminRunBrandOutreach,
   adminSendBrandOutreachSample,
@@ -2594,6 +2595,34 @@ platformAdminRouter.post(
         targetId: req.params.id!,
         detail: body.data.sourceUrl ? { addressFoundOn: body.data.sourceUrl } : {},
       });
+      res.json(result);
+    } catch (err) {
+      sendNetworkFailure(res, err);
+    }
+  },
+);
+
+const findProspectAddressSchema = z
+  .object({ country: z.string().trim().length(2).transform((v) => v.toUpperCase()).refine(isCountryCode, 'unknown country code').optional() })
+  .strict();
+
+/** Find email for a held launch with no address: the Network looks up a
+ *  founder's work address at its domain (on the brand outreach budget) and
+ *  keeps it held. Its refusals pass back (no_founder, none_found,
+ *  published_only_country and the like). Admins only, audited. */
+platformAdminRouter.post(
+  '/platform-admin/brand-outreach/prospects/:id/find-address',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = findProspectAddressSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body' });
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    const actor = req.platformAdminActor!;
+    try {
+      const result = await adminFindBrandProspectAddress(networkUrl, req.params.id!, { ...body.data, reviewedByEmail: actor.email });
+      await writeAudit(db, { actor, action: 'brand_outreach.find_address', targetType: 'brand_prospect', targetId: req.params.id! });
       res.json(result);
     } catch (err) {
       sendNetworkFailure(res, err);

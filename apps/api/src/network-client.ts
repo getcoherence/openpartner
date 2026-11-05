@@ -1772,6 +1772,17 @@ export async function adminApproveBrandProspect(
   return callNetworkAdmin(networkUrl, 'POST', `/admin/brand-outreach/prospects/${encodeURIComponent(id)}/approve`, body, {}, 20_000);
 }
 
+/** Find email: a founder's work address at the company's domain, looked
+ *  up for a held prospect with none (people search, email finder,
+ *  verifier). It stays held for ops to approve. */
+export async function adminFindBrandProspectAddress(
+  networkUrl: string,
+  id: string,
+  body: { reviewedByEmail: string; country?: string },
+): Promise<{ prospect: unknown }> {
+  return callNetworkAdmin(networkUrl, 'POST', `/admin/brand-outreach/prospects/${encodeURIComponent(id)}/find-address`, body, {}, 60_000);
+}
+
 export async function adminQueueBrandSeeds(networkUrl: string, urls: string[]): Promise<Record<string, number>> {
   return callNetworkAdmin<Record<string, number>>(networkUrl, 'POST', '/admin/brand-outreach/seeds', { urls });
 }
