@@ -9,7 +9,8 @@
  * is waiting and what we hold, and sends an existing account to sign in, or
  * with no brand waiting, lands them in their account; the ops console picks
  * where to search and whether to keep only creators who take partnerships,
- * and previews and sends the outreach email in batches.
+ * picks creators by URL and follows what came of each, and previews and
+ * sends the outreach email in batches.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -546,6 +547,84 @@ describe('ops console: creator index settings', () => {
     fireEvent.click(screen.getByText('Save settings'));
     await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({ contactEnrichment: { creatorData: false, ownDomain: true } }));
   });
+
+  it('picks creators by URL, follows what came of each, and searches Substack when switched on', async () => {
+    const settings = { ...SETTINGS, hideOverFollowers: 25_000, discoverySources: { storefronts: true, sponsorPages: true, mediaKits: false, people: false, creatorDatabase: false, newsletters: false } };
+    let checks = 0;
+    respond = (url, method) => {
+      if (url.endsWith('/creator-index/settings') && method === 'PUT') return { status: 200, body: { settings: calls[calls.length - 1]!.body, visibilityChanged: 0 } };
+      if (url.endsWith('/creator-index/settings')) return { status: 200, body: { settings, defaults: settings, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {} } };
+      if (url.endsWith('/creator-index/stats')) {
+        return {
+          status: 200,
+          body: { creators: { byStatus: {}, listed: 1, shownToBrands: 1, hiddenFromBrands: 0 }, byCountry: [], candidates: {}, rejections: {}, invites: {}, emailsSent30d: 0, suppressions: {}, spend: { thisMonthUsd: 0, budgetUsd: 10 } },
+        };
+      }
+      if (url.endsWith('/creator-index/seeds') && method === 'POST') {
+        return {
+          status: 200,
+          body: {
+            queued: 2,
+            duplicate: 1,
+            invalid: 1,
+            suppressed: 0,
+            member: 0,
+            items: [
+              { result: 'queued', id: 'ixd_page' },
+              { result: 'queued', id: 'ixd_profile' },
+              { result: 'listed', id: 'ixc_a' },
+              { result: 'invalid', id: null },
+            ],
+          },
+        };
+      }
+      if (url.includes('/creator-index/seeds/status?')) {
+        checks += 1;
+        // Queued at first; then read.
+        const read = checks > 1;
+        return {
+          status: 200,
+          body: {
+            items: [
+              { id: 'ixd_page', state: read ? 'rejected' : 'queued', reason: read ? 'no_profile_link' : null, listingId: null },
+              { id: 'ixd_profile', state: read ? 'listed' : 'queued', reason: null, listingId: read ? 'ixc_new' : null },
+            ],
+          },
+        };
+      }
+      const base = { status: 'active', headline: null, country: 'US', region: 'US-TX', brandVisible: true, emailsSent: 0, contact: null, platforms: [] };
+      // Picked: over Hide over, and not hidden for it.
+      return { status: 200, body: { creators: [{ ...base, id: 'a', name: 'Jo Rivera', totalReach: 90_000, pickedAt: '2026-11-05T12:00:00.000Z' }] } };
+    };
+    wrap(<CreatorIndexPage operator={{ id: 'pa_1', email: 'ops@test', role: 'admin' } as never} />);
+    expect(await screen.findByText('active · picked')).toBeTruthy();
+    await openTab('Runs');
+    fireEvent.change(screen.getByPlaceholderText('https://www.linkedin.com/in/…'), {
+      target: { value: 'https://jonotes.com\nhttps://x.com/samlee\nhttps://www.linkedin.com/in/jo\nhttps://www.instagram.com/jo' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Queue' }));
+    await waitFor(() =>
+      expect(calls.find((c) => c.url.endsWith('/creator-index/seeds'))?.body).toEqual({
+        urls: ['https://jonotes.com', 'https://x.com/samlee', 'https://www.linkedin.com/in/jo', 'https://www.instagram.com/jo'],
+        detail: true,
+      }),
+    );
+    expect(await screen.findByText('Already listed: now a pick')).toBeTruthy();
+    expect(screen.getByText('Not a profile, storefront or page we can read')).toBeTruthy();
+    expect((await screen.findAllByText('Queued')).length).toBe(2);
+    // Only the ones still to be read are followed.
+    expect(calls.find((c) => c.url.includes('/seeds/status?'))?.url).toContain(`ids=${encodeURIComponent('ixd_page,ixd_profile')}`);
+    expect(screen.queryByText(/^\d+ queued/)).toBeNull();
+    // Followed until each is read.
+    expect(await screen.findByText('Turned away: the page links no LinkedIn, X or YouTube profile', {}, { timeout: 20_000 })).toBeTruthy();
+    expect(screen.getByText('jonotes.com').parentElement!.textContent).toContain('Turned away');
+    expect(screen.getByText('x.com/samlee').parentElement!.textContent).toBe('x.com/samleeListed');
+
+    await openTab('Settings');
+    fireEvent.click(screen.getByLabelText('Substack newsletters'));
+    fireEvent.click(screen.getByText('Save settings'));
+    await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({ discoverySources: { newsletters: true } }));
+  }, 30_000);
 
   it('sets the members’ budget beside the index’s, and shows what members’ reads spent', async () => {
     respond = (url, method) => {

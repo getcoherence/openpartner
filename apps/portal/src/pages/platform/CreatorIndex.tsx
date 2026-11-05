@@ -35,7 +35,7 @@ import { brandSignalLabel, shortUrl, type PartnershipSignal } from '../../lib/pa
 import { PlatformMark, compactCount, platformName } from '../../lib/PlatformMark.js';
 import { MailboxesSection, type MailboxState } from './Mailboxes.js';
 
-type DiscoverySource = 'creatorDatabase' | 'storefronts' | 'sponsorPages' | 'mediaKits' | 'people';
+type DiscoverySource = 'creatorDatabase' | 'storefronts' | 'sponsorPages' | 'mediaKits' | 'newsletters' | 'people';
 
 /** Where seed queries are searched, as ops read it. */
 const DISCOVERY_SOURCES: Array<{ key: DiscoverySource; label: string }> = [
@@ -43,15 +43,16 @@ const DISCOVERY_SOURCES: Array<{ key: DiscoverySource; label: string }> = [
   { key: 'storefronts', label: 'Sponsorship storefronts' },
   { key: 'sponsorPages', label: 'Creators’ sponsor and media-kit pages' },
   { key: 'mediaKits', label: 'Media kits on Beacons' },
+  { key: 'newsletters', label: 'Substack newsletters' },
   { key: 'people', label: 'Anyone who posts about the topic' },
 ];
 
 /** Shown only once the Network has them, so an older one is never sent a
  *  switch it would refuse. */
-const NEWER_SOURCES: DiscoverySource[] = ['creatorDatabase', 'mediaKits'];
+const NEWER_SOURCES: DiscoverySource[] = ['creatorDatabase', 'mediaKits', 'newsletters'];
 
 /** Until the Network sends its own. */
-const SOURCE_DEFAULTS: Record<DiscoverySource, boolean> = { creatorDatabase: false, storefronts: true, sponsorPages: true, mediaKits: false, people: false };
+const SOURCE_DEFAULTS: Record<DiscoverySource, boolean> = { creatorDatabase: false, storefronts: true, sponsorPages: true, mediaKits: false, newsletters: false, people: false };
 
 interface IndexSettings {
   enabled: boolean;
@@ -224,6 +225,86 @@ const reasonText = (r: string) => RUN_REASONS[r] ?? r.replace(/_/g, ' ');
 
 const JOB_LABEL: Record<RunKind, string> = { discover: 'Discover', read: 'Read', refresh: 'Refresh', outreach: 'Outreach email' };
 
+/** A URL ops picked, what the Network said when it was queued, and the
+ *  candidate's or listing's id to follow (openpartner-network
+ *  docs/creator-index.md §3.11). */
+interface PickItem {
+  url: string;
+  result: string;
+  id: string | null;
+}
+
+interface PickState {
+  id: string;
+  state: 'queued' | 'listed' | 'rejected' | 'failed' | 'gone';
+  reason: string | null;
+  listingId: string | null;
+}
+
+/** Picks settled when queued, in ops' words. */
+const PICK_RESULT: Record<string, string> = {
+  listed: 'Already listed: now a pick',
+  member: 'Already on OpenPartner',
+  suppressed: 'Asked to be removed',
+  invalid: 'Not a profile, storefront or page we can read',
+};
+
+/** Why a pick was turned away. */
+const PICK_REASON: Record<string, string> = {
+  not_found: 'couldn’t read it',
+  unsupported: 'not a profile we read',
+  no_profile_link: 'the page links no LinkedIn, X or YouTube profile',
+  several_profiles: 'the page links several people',
+  not_a_storefront: 'not a storefront',
+  no_country: 'no country on their profiles',
+  excluded_country: 'in an excluded country',
+  country_not_served: 'in a country we don’t serve',
+  not_creator: 'not a creator',
+  likely_minor: 'may be under 18',
+  off_topic: 'not about business',
+  classifier_declined: 'the classifier declined',
+  already_member: 'already on OpenPartner',
+  already_indexed: 'already listed',
+  suppressed: 'asked to be removed',
+};
+
+function pickText(item: PickItem, state: PickState | undefined): { text: string; color: string } {
+  const settled = PICK_RESULT[item.result];
+  if (settled) return { text: settled, color: item.result === 'listed' ? theme.success : item.result === 'invalid' ? theme.danger : theme.textMuted };
+  if (!state || state.state === 'queued') return { text: 'Queued', color: theme.textMuted };
+  if (state.state === 'listed') return { text: 'Listed', color: theme.success };
+  const reason = state.reason ?? '';
+  if (state.state === 'rejected') return { text: `Turned away: ${PICK_REASON[reason] ?? reason.replace(/_/g, ' ')}`, color: theme.danger };
+  if (state.state === 'failed') return { text: `Couldn’t read it${reason ? ` (${reason.replace(/_/g, ' ')})` : ''}`, color: theme.danger };
+  return { text: 'Removed since', color: theme.textMuted };
+}
+
+/** What came of each URL picked, followed until each is read. */
+function PickResults({ items }: { items: PickItem[] }) {
+  const ids = items.filter((i) => i.id && !PICK_RESULT[i.result]).map((i) => i.id!);
+  const status = useQuery({
+    queryKey: ['platform-creator-index-picks', ids],
+    queryFn: () => papi<{ items: PickState[] }>(`/platform-admin/creator-index/seeds/status?ids=${encodeURIComponent(ids.join(','))}`),
+    enabled: ids.length > 0,
+    // The read job takes queued picks first, every 10 minutes.
+    refetchInterval: (query) => (query.state.data?.items.every((s) => s.state !== 'queued') ? false : 15_000),
+  });
+  const byId = new Map((status.data?.items ?? []).map((s) => [s.id, s]));
+  return (
+    <div style={{ marginTop: 10, display: 'grid', gap: 4, fontSize: 13 }}>
+      {items.map((item, i) => {
+        const { text, color } = pickText(item, item.id ? byId.get(item.id) : undefined);
+        return (
+          <div key={`${i}-${item.url}`} style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <span style={{ wordBreak: 'break-all' }}>{shortUrl(item.url)}</span>
+            <span style={{ color }}>{text}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 const PLATFORM_NAME: Record<string, string> = { linkedin: 'LinkedIn', twitter: 'X', youtube: 'YouTube', substack: 'Substack', newsletter: 'Newsletter' };
 
 /** US states, DC and Puerto Rico, as the Network takes them. */
@@ -333,6 +414,9 @@ interface OpsCreator {
   brandVisible: boolean;
   /** When ops hid them. Absent from a Network that predates it. */
   hiddenAt?: string | null;
+  /** When ops picked them: listed whatever their reach, and never hidden
+   *  for it. Absent from a Network that predates picks. */
+  pickedAt?: string | null;
   totalReach: number;
   contact: { masked: string; foundOn: string | null; verified: boolean } | null;
   emailsSent: number;
@@ -995,10 +1079,17 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
   });
 
   const [seedText, setSeedText] = useState('');
+  // The latest picks first, while the page is open.
+  const [picks, setPicks] = useState<PickItem[]>([]);
   const seeds = useMutation({
-    mutationFn: () => papi<Record<string, number>>('/platform-admin/creator-index/seeds', { method: 'POST', body: { urls: list(seedText) } }),
-    onSuccess: () => {
+    mutationFn: (urls: string[]) =>
+      papi<Record<string, number> & { items?: Array<{ result: string; id: string | null }> }>('/platform-admin/creator-index/seeds', {
+        method: 'POST',
+        body: { urls, detail: true },
+      }),
+    onSuccess: (r, urls) => {
       setSeedText('');
+      if (r.items) setPicks((prev) => [...r.items!.map((it, i) => ({ url: urls[i]!, ...it })), ...prev].slice(0, 50));
       refresh();
     },
   });
@@ -1099,7 +1190,7 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
   };
   const hideOver = state.data?.settings.hideOverFollowers ?? null;
   // Hidden by the setting, without being marked.
-  const overHide = (c: OpsCreator) => c.status !== 'claimed' && hideOver !== null && c.totalReach > hideOver;
+  const overHide = (c: OpsCreator) => c.status !== 'claimed' && !c.pickedAt && hideOver !== null && c.totalReach > hideOver;
 
   const s = stats.data;
   const configured = state.data?.configured;
@@ -1615,16 +1706,18 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
             </div>
             {canWrite && (
               <div style={{ marginTop: 16 }}>
-                <Label>Queue URLs: profiles (LinkedIn, X, YouTube), sponsorship storefronts or sponsor pages</Label>
+                <Label>Pick creators: a LinkedIn, X or YouTube profile, a storefront, or a page of theirs (a newsletter, a Substack)</Label>
                 <Textarea rows={3} value={seedText} onChange={(e) => setSeedText(e.target.value)} placeholder="https://www.linkedin.com/in/…" />
                 <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
-                  <Button variant="secondary" onClick={() => seeds.mutate()} disabled={!seedText.trim() || seeds.isPending}>Queue</Button>
-                  {seeds.data && (
+                  <Button variant="secondary" onClick={() => seeds.mutate(list(seedText))} disabled={!seedText.trim() || seeds.isPending}>Queue</Button>
+                  {/* A Network that predates picks sends counts only. */}
+                  {seeds.data && !seeds.data.items && (
                     <span style={{ fontSize: 12, color: theme.textMuted }}>
                       {Object.entries(seeds.data).map(([k, v]) => `${k} ${v}`).join(' · ')}
                     </span>
                   )}
                 </div>
+                {picks.length > 0 && <PickResults items={picks} />}
               </div>
             )}
           </Section>
@@ -1809,8 +1902,8 @@ export function CreatorIndexPage({ operator }: { operator: PlatformOperator }) {
                     }}
                   />,
                   <div key="s">
-                    <div title={c.hiddenAt ? `Hidden ${formatDate(c.hiddenAt)}` : overHide(c) ? 'Over Hide over (reach)' : undefined}>
-                      {`${c.status}${c.hiddenAt || overHide(c) ? ' · hidden' : ''}${c.emailsSent ? ` · ${c.emailsSent} sent` : ''}`}
+                    <div title={c.hiddenAt ? `Hidden ${formatDate(c.hiddenAt)}` : overHide(c) ? 'Over Hide over (reach)' : c.pickedAt ? `Picked ${formatDate(c.pickedAt)}` : undefined}>
+                      {`${c.status}${c.pickedAt ? ' · picked' : ''}${c.hiddenAt || overHide(c) ? ' · hidden' : ''}${c.emailsSent ? ` · ${c.emailsSent} sent` : ''}`}
                     </div>
                     {c.listedAt && (
                       <div style={{ fontSize: 12, color: isNew(c.listedAt) ? theme.success : theme.textMuted, whiteSpace: 'nowrap' }}>

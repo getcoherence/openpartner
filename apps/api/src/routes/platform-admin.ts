@@ -64,6 +64,7 @@ import {
   adminGetCreatorIndexSettings,
   adminGetIndexedCreator,
   adminGetIndexedCreatorContact,
+  adminIndexPickStatus,
   adminQueueIndexSeeds,
   adminRemoveIndexedCreator,
   adminHideIndexedCreators,
@@ -2317,7 +2318,7 @@ platformAdminRouter.put(
   },
 );
 
-const indexSeedsSchema = z.object({ urls: z.array(z.string().trim().min(5).max(500)).min(1).max(500) });
+const indexSeedsSchema = z.object({ urls: z.array(z.string().trim().min(5).max(500)).min(1).max(500), detail: z.boolean().optional() });
 
 platformAdminRouter.post(
   '/platform-admin/creator-index/seeds',
@@ -2329,14 +2330,38 @@ platformAdminRouter.post(
     const networkUrl = networkOr503(res);
     if (!networkUrl) return;
     try {
-      const counts = await adminQueueIndexSeeds(networkUrl, body.data.urls);
+      const queued = await adminQueueIndexSeeds(networkUrl, body.data.urls, body.data.detail === true);
+      // The counts only: the items are ids, for the console to follow.
+      const { items: _items, ...counts } = queued;
       await writeAudit(db, { actor: req.platformAdminActor!, action: 'creator_index.seeds', targetType: 'platform', detail: counts });
-      res.json(counts);
+      res.json(queued);
     } catch (err) {
       sendNetworkFailure(res, err);
     }
   },
 );
+
+const pickStatusSchema = z.object({
+  ids: z
+    .string()
+    .max(4_000)
+    .transform((s) => s.split(',').map((x) => x.trim()).filter(Boolean))
+    .pipe(z.array(z.string().regex(/^ix[cd]_[0-9A-Z]{26}$/)).min(1).max(100)),
+});
+
+/** Where the URLs ops picked got to (openpartner-network
+ *  docs/creator-index.md §3.11). Ids in, states and reasons out. */
+platformAdminRouter.get('/platform-admin/creator-index/seeds/status', requirePlatformAdmin, async (req, res) => {
+  const q = pickStatusSchema.safeParse(req.query);
+  if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
+  const networkUrl = networkOr503(res);
+  if (!networkUrl) return;
+  try {
+    res.set('Cache-Control', 'no-store').json(await adminIndexPickStatus(networkUrl, q.data.ids));
+  } catch (err) {
+    sendNetworkFailure(res, err);
+  }
+});
 
 const INDEX_JOBS = ['discover', 'read', 'refresh'] as const;
 

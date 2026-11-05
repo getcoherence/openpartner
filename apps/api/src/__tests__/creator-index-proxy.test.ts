@@ -54,6 +54,7 @@ const calls: Call[] = [];
 let network: Server;
 let networkUrl: string;
 const OPS_EMAIL = `ops-${ulid().slice(-6).toLowerCase()}@openpartner.test`;
+const PICK_ID = `ixd_${ulid()}`;
 const operatorIds: string[] = [];
 
 const SETTINGS = {
@@ -134,7 +135,13 @@ beforeAll(async () => {
             res.writeHead(204);
             return res.end();
           }
-          if (path === '/admin/creator-index/seeds') return json(200, { queued: 1, invalid: 0, duplicate: 0, suppressed: 0, member: 0 });
+          if (path === '/admin/creator-index/seeds') {
+            const counts = { queued: 1, invalid: 0, duplicate: 0, suppressed: 0, member: 0 };
+            return json(200, body?.detail ? { ...counts, items: [{ result: 'queued', id: PICK_ID }] } : counts);
+          }
+          if (path.startsWith('/admin/creator-index/seeds/status?')) {
+            return json(200, { items: [{ id: PICK_ID, state: 'rejected', reason: 'too_many_followers', listingId: null }] });
+          }
           // The Network starts runs in the background and answers at once.
           if (path === '/admin/creator-index/run/read') return json(202, { started: true });
           if (path === '/admin/creator-index/run/refresh') return json(409, { error: 'already_running' });
@@ -398,6 +405,19 @@ describe.skipIf(skipIntegration)('creator index: ops console', () => {
     expect(busy.body).toEqual({ error: 'already_running' });
     expect((await request(app).post('/platform-admin/creator-index/run/nope').set('Cookie', admin)).status).toBe(404);
     expect((await request(app).post('/platform-admin/creator-index/seeds').set('Cookie', admin).send({ urls: ['https://x.com/jo'] })).body).toMatchObject({ queued: 1 });
+    // Picks with detail: each URL's id to follow, never in the audit.
+    const picked = await request(app).post('/platform-admin/creator-index/seeds').set('Cookie', admin).send({ urls: ['https://x.com/jo'], detail: true });
+    expect(picked.body).toMatchObject({ queued: 1, items: [{ result: 'queued', id: PICK_ID }] });
+    expect(last('/admin/creator-index/seeds')?.body).toEqual({ urls: ['https://x.com/jo'], detail: true });
+    const audit = await db(TABLES.PlatformAuditLog).where({ action: 'creator_index.seeds', platformAdminEmail: OPS_EMAIL }).orderBy('createdAt', 'desc').first();
+    expect(audit?.detail).toEqual({ queued: 1, invalid: 0, duplicate: 0, suppressed: 0, member: 0 });
+    // Where they got to: anyone on the console may look.
+    const status = await request(app).get('/platform-admin/creator-index/seeds/status').query({ ids: PICK_ID }).set('Cookie', await operator('support'));
+    expect(status.status).toBe(200);
+    expect(status.headers['cache-control']).toBe('no-store');
+    expect(status.body.items).toEqual([{ id: PICK_ID, state: 'rejected', reason: 'too_many_followers', listingId: null }]);
+    expect(last(/^\/admin\/creator-index\/seeds\/status/)?.path).toBe(`/admin/creator-index/seeds/status?ids=${PICK_ID}`);
+    expect((await request(app).get('/platform-admin/creator-index/seeds/status').query({ ids: '../settings' }).set('Cookie', admin)).status).toBe(400);
     expect((await request(app).delete('/platform-admin/creator-index/creators/ixc_1').set('Cookie', admin)).status).toBe(204);
     expect((await request(app).delete('/platform-admin/creator-index/creators/ixc_gone').set('Cookie', admin)).body).toEqual({ error: 'not_found' });
     expect((await request(app).post('/platform-admin/creator-index/invites/run').set('Cookie', admin).send({ dryRun: false })).body).toMatchObject({ sent: 1 });
