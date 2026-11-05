@@ -407,7 +407,9 @@ const ADDRESS_ERRORS: Record<string, string> = {
 function addressError(err: unknown): string {
   const code = err instanceof Error ? err.message : '';
   if (ADDRESS_ERRORS[code]) return ADDRESS_ERRORS[code];
-  if (err instanceof PlatformApiError && err.status === 502) return 'Couldn’t check the address just now. Try again in a minute.';
+  // The Network didn't answer. The edge in front of prod sends our 502 on
+  // as its own bare 504.
+  if (err instanceof PlatformApiError && (err.status === 502 || err.status === 504)) return 'Couldn’t check the address just now. Try again in a minute.';
   return friendlyPlatformError(err);
 }
 

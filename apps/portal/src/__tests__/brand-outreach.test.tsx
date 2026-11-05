@@ -25,6 +25,8 @@ let rejectFails = false;
 /** Find email: whether it has been asked, and whether it finds no one. */
 let lookedUp = false;
 let findFails = false;
+/** The edge in front of prod answers our 502 with its own bare 504. */
+let edgeTimeout = false;
 
 const SETTINGS = { enabled: true, monthlyBudgetUsd: 20, queries: ['developer tools'], lookbackDays: 7, sendAfterDays: 14, maxLaunchAgeDays: 60, readConcurrency: 4 };
 
@@ -141,6 +143,7 @@ function respond(url: string, method: string): { status: number; body: unknown }
   if (url.endsWith('/prospects/bpr_2/approve')) return { status: 200, body: { prospect: { ...HELD, status: 'qualified' } } };
   if (url.endsWith('/prospects/bpr_3/approve')) return { status: 400, body: { error: 'not_their_address' } };
   if (url.endsWith('/prospects/bpr_3/find-address')) {
+    if (edgeTimeout) return { status: 504, body: '<html>504 Gateway Time-out</html>' };
     if (findFails) return { status: 422, body: { error: 'none_found' } };
     lookedUp = true;
     return { status: 200, body: { prospect: {} } };
@@ -180,6 +183,7 @@ beforeEach(() => {
   rejectFails = false;
   lookedUp = false;
   findFails = false;
+  edgeTimeout = false;
   settingsBody = SETTINGS;
   vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -285,6 +289,13 @@ describe('brand outreach console', () => {
     wrap('admin');
     fireEvent.click(await screen.findByRole('button', { name: 'Find email' }));
     expect((await screen.findByRole('alert')).textContent).toBe('No address the verifier says delivers');
+  });
+
+  it('says to try again when the Network took too long', async () => {
+    edgeTimeout = true;
+    wrap('admin');
+    fireEvent.click(await screen.findByRole('button', { name: 'Find email' }));
+    expect((await screen.findByRole('alert')).textContent).toBe("Couldn't finish just now; try again");
   });
 
   describe('rejecting, with Undo instead of a confirm', () => {

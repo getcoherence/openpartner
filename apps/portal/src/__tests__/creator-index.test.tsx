@@ -645,8 +645,8 @@ describe('ops console: creator index settings', () => {
     await waitFor(() => expect(calls.find((c) => c.method === 'PUT')?.body).toMatchObject({ outreachStyle: 'plain' }));
   });
 
-  it('shows an address in full on request, and adds one ops found published, saying why one was refused', async () => {
-    let refuse = true;
+  it('shows an address in full on request, and adds one ops found published, saying why one was refused or not saved', async () => {
+    let saves = 0;
     respond = (url, method) => {
       if (url.endsWith('/creator-index/settings')) {
         return { status: 200, body: { settings: SETTINGS, defaults: SETTINGS, classifierModels: ['gpt-6-luna'], updatedAt: null, updatedByEmail: null, configured: {} } };
@@ -668,10 +668,10 @@ describe('ops console: creator index settings', () => {
       }
       if (url.endsWith('/creators/a/contact')) return { status: 200, body: { contact: { address: 'hello@jorivera.co', foundOn: 'via:creator-data', verified: true } } };
       if (url.endsWith('/creators/b/contact') && method === 'PUT') {
-        if (refuse) {
-          refuse = false;
-          return { status: 422, body: { error: 'refuses_unsolicited' } };
-        }
+        saves += 1;
+        // The edge in front of prod answers our 502 with its own bare 504.
+        if (saves === 1) return { status: 504, body: '<html>504 Gateway Time-out</html>' };
+        if (saves === 2) return { status: 422, body: { error: 'refuses_unsolicited' } };
         return { status: 200, body: { creator: {} } };
       }
       const base = { status: 'active', headline: null, country: 'US', region: 'US-TX', brandVisible: true, emailsSent: 0, totalReach: 5_000, platforms: [] };
@@ -696,6 +696,8 @@ describe('ops console: creator index settings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add address' }));
     fireEvent.change(screen.getByLabelText('Email address'), { target: { value: 'hello@jorivera.co' } });
     fireEvent.change(screen.getByLabelText('Page you found it on'), { target: { value: 'https://jorivera.substack.com/about' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('Couldn’t check the address just now. Try again in a minute.')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByText('That page asks not to be sent unsolicited email, so the address can’t be used.')).toBeTruthy();
     const listReads = calls.filter((c) => c.url.includes('/creator-index/creators?') || c.url.endsWith('/creator-index/creators')).length;
