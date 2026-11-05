@@ -26,6 +26,7 @@ import { Button, Card, ErrorBanner, Input, Label, Page, Select, Table, Textarea,
 import { friendlyPlatformError, papi, type PlatformOperator } from './lib.js';
 import { shortUrl } from '../../lib/partnership-signals.js';
 import { useRestOfWindow } from '../../lib/useRestOfWindow.js';
+import { useUndo } from '../../lib/useUndo.js';
 
 interface BrandSettings {
   enabled: boolean;
@@ -409,7 +410,7 @@ function HeldCell({ p }: { p: Prospect }) {
 
 /** Approve a held launch as a US company, or reject it. With no address
  *  found, an admin gives one published on their site, with its page. */
-function ReviewActions({ p, onDone }: { p: Prospect; onDone: () => void }) {
+function ReviewActions({ p, onDone, onReject }: { p: Prospect; onDone: () => void; onReject: () => void }) {
   const [adding, setAdding] = useState(false);
   const [email, setEmail] = useState('');
   const [page, setPage] = useState('');
@@ -427,12 +428,8 @@ function ReviewActions({ p, onDone }: { p: Prospect; onDone: () => void }) {
       }),
     onSuccess: onDone,
   });
-  const reject = useMutation({
-    mutationFn: () => papi(`/platform-admin/brand-outreach/prospects/${encodeURIComponent(p.id)}/reject`, { method: 'POST' }),
-    onSuccess: onDone,
-  });
   const name = p.name ?? 'this launch';
-  const busy = approve.isPending || reject.isPending;
+  const busy = approve.isPending;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 180 }}>
       {needsCountry && (p.contact || adding) && (
@@ -461,20 +458,13 @@ function ReviewActions({ p, onDone }: { p: Prospect; onDone: () => void }) {
             Add address
           </Button>
         )}
-        <Button
-          size="sm"
-          variant="ghost"
-          disabled={busy}
-          onClick={() => {
-            if (window.confirm(`Reject ${name}? It won't be read or emailed again.`)) reject.mutate();
-          }}
-        >
+        <Button size="sm" variant="ghost" disabled={busy} onClick={onReject}>
           Reject
         </Button>
       </div>
-      {(approve.error || reject.error) && (
+      {approve.error && (
         <div role="alert" style={{ color: theme.danger, fontSize: 12 }}>
-          {approve.error ? approveError(approve.error) : friendlyPlatformError(reject.error)}
+          {approveError(approve.error)}
         </div>
       )}
     </div>
@@ -703,11 +693,37 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
     getNextPageParam: (last) => last.nextCursor ?? undefined,
     refetchInterval: (query) => (watching && (query.state.data?.pages.length ?? 1) <= 1 ? 4_000 : false),
   });
-  const listed = prospects.data?.pages.flatMap((p) => p.prospects) ?? [];
-  const reject = useMutation({
-    mutationFn: (id: string) => papi(`/platform-admin/brand-outreach/prospects/${encodeURIComponent(id)}/reject`, { method: 'POST' }),
-    onSuccess: refresh,
-  });
+  // Rejecting hides the company at once, with Undo in a toast; the Network
+  // rejects it (and empties it, so there's no taking it back there) when
+  // the toast goes.
+  const { later, toast } = useUndo();
+  const [rejecting, setRejecting] = useState<ReadonlySet<string>>(new Set());
+  const [rejectError, setRejectError] = useState<unknown>(null);
+  const rejectLater = (p: Prospect) => {
+    const hide = (on: boolean) =>
+      setRejecting((ids) => {
+        const next = new Set(ids);
+        if (on) next.add(p.id);
+        else next.delete(p.id);
+        return next;
+      });
+    hide(true);
+    setRejectError(null);
+    later({
+      message: `Rejected ${p.name ?? 'this launch'}`,
+      undo: () => hide(false),
+      commit: () => {
+        papi(`/platform-admin/brand-outreach/prospects/${encodeURIComponent(p.id)}/reject`, { method: 'POST' })
+          .then(refresh)
+          .catch((err: unknown) => {
+            hide(false);
+            setRejectError(err);
+          });
+      },
+    });
+  };
+  // A rejected one stays listed under Rejected once the Network has it.
+  const listed = (prospects.data?.pages.flatMap((p) => p.prospects) ?? []).filter((p) => p.status === 'rejected' || !rejecting.has(p.id));
 
   const [params, setParams] = useSearchParams();
   const tab: Tab = TABS.find((t) => t.key === params.get('tab'))?.key ?? 'prospects';
@@ -716,7 +732,7 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
   const running = Object.values(s?.runs ?? {}).some((r) => r && !r.finishedAt);
   const unsaved = !!draft && !!state.data && JSON.stringify(draft) !== JSON.stringify(state.data.settings);
   const waitTooLong = !!draft && draft.maxLaunchAgeDays <= draft.sendAfterDays;
-  const error = save.error ?? seeds.error ?? run.error ?? reject.error;
+  const error = save.error ?? seeds.error ?? run.error ?? rejectError;
   const viewCount = (v: View): number | null => {
     if (!s) return null;
     if (v === 'ready') return s.ready;
@@ -731,7 +747,7 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
           <LaunchCell key="l" p={p} />,
           <HeldCell key="h" p={p} />,
           <ContactCell key="a" p={p} canWrite={canWrite} />,
-          canWrite ? <ReviewActions key="x" p={p} onDone={refresh} /> : <span key="x" />,
+          canWrite ? <ReviewActions key="x" p={p} onDone={refresh} onReject={() => rejectLater(p)} /> : <span key="x" />,
         ])
       : view === 'rejected'
       ? listed.map((p) => [
@@ -756,15 +772,7 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
             {p.dueAt ? formatDate(p.dueAt) : formatDate(p.updatedAt, { relative: true })}
           </span>,
           canWrite && (p.status === 'qualified' || p.status === 'queued') ? (
-            <Button
-              key="x"
-              variant="ghost"
-              size="sm"
-              disabled={reject.isPending}
-              onClick={() => {
-                if (window.confirm(`Reject ${p.name ?? 'this launch'}? It won't be read or emailed again.`)) reject.mutate(p.id);
-              }}
-            >
+            <Button key="x" variant="ghost" size="sm" onClick={() => rejectLater(p)}>
               Reject
             </Button>
           ) : (
@@ -775,6 +783,7 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
   return (
     <Page title="Brand outreach" subtitle="New Product Hunt launches with no partner program, found and checked before anyone is emailed.">
       <ErrorBanner error={error ? friendlyPlatformError(error) : state.error ?? stats.error ?? prospects.error} />
+      {toast}
       {!state.data || !draft ? (
         <Card>Loading…</Card>
       ) : (
