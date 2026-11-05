@@ -87,6 +87,10 @@ beforeAll(async () => {
           if (body?.email === 'support@acmenotes.example') return json(400, { error: 'not_their_address' });
           return json(200, { prospect: { id: 'bpr_1', status: 'qualified' } });
         }
+        if (path === '/admin/brand-outreach/prospects/bpr_1/find-address') {
+          if (body?.country === 'CA') return json(422, { error: 'published_only_country' });
+          return json(200, { prospect: { id: 'bpr_1', status: 'review', contact: { masked: 'j•@acmenotes.example', foundOn: 'via:own-domain:acmenotes.example', person: 'Jo Rivera, Founder' } } });
+        }
         if (path === '/admin/brand-outreach/seeds') return json(200, { queued: 1, duplicate: 0, invalid: 0 });
         if (path === '/admin/brand-outreach/run/discover') return json(202, { started: true });
         if (path === '/admin/brand-outreach/outreach/run') return body?.dryRun ? json(200, { due: 1, targets: [] }) : json(202, { started: true });
@@ -175,6 +179,7 @@ describe.skipIf(skipIntegration)('brand outreach: ops console', () => {
       ['post', '/platform-admin/brand-outreach/seeds'],
       ['post', '/platform-admin/brand-outreach/prospects/bpr_1/reject'],
       ['post', '/platform-admin/brand-outreach/prospects/bpr_1/approve'],
+      ['post', '/platform-admin/brand-outreach/prospects/bpr_1/find-address'],
       ['get', '/platform-admin/brand-outreach/prospects/bpr_1/contact'],
     ] as const) {
       expect({ path, status: (await request(app)[method](path).set('Cookie', support).send(SETTINGS)).status }).toEqual({ path, status: 403 });
@@ -219,6 +224,20 @@ describe.skipIf(skipIntegration)('brand outreach: ops console', () => {
     // An address goes with its page.
     expect((await request(app).post('/platform-admin/brand-outreach/prospects/bpr_1/approve').set('Cookie', admin).send({ email: 'jo@acmenotes.example' })).status).toBe(400);
     expect((await request(app).post('/platform-admin/brand-outreach/prospects/bpr_1/approve').set('Cookie', admin).send({ reviewedByEmail: 'someone@else.example' })).status).toBe(400);
+  });
+
+  it("asks the Network to find a founder's address for admins, audited, and passes its refusal back", async () => {
+    const admin = await operator();
+    const found = await request(app).post('/platform-admin/brand-outreach/prospects/bpr_1/find-address').set('Cookie', admin).send({});
+    expect(found.body.prospect.contact).toEqual({ masked: 'j•@acmenotes.example', foundOn: 'via:own-domain:acmenotes.example', person: 'Jo Rivera, Founder' });
+    expect(last('/admin/brand-outreach/prospects/bpr_1/find-address')!.body).toEqual({ reviewedByEmail: OPS_EMAIL });
+    expect(await audited('brand_outreach.find_address')).toMatchObject({ targetType: 'brand_prospect', targetId: 'bpr_1' });
+
+    const refused = await request(app).post('/platform-admin/brand-outreach/prospects/bpr_1/find-address').set('Cookie', admin).send({ country: 'ca' });
+    expect(refused.status).toBe(422);
+    expect(refused.body).toEqual({ error: 'published_only_country' });
+    expect(last('/admin/brand-outreach/prospects/bpr_1/find-address')!.body).toEqual({ country: 'CA', reviewedByEmail: OPS_EMAIL });
+    expect((await request(app).post('/platform-admin/brand-outreach/prospects/bpr_1/find-address').set('Cookie', admin).send({ email: 'jo@acmenotes.example' })).status).toBe(400);
   });
 
   it("previews a batch for support, sends one for admins, and never emails openpartner's own brands", async () => {

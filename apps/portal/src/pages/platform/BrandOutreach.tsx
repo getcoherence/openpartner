@@ -104,7 +104,9 @@ interface Prospect {
   country: string | null;
   countryEvidence: string | null;
   pricingUrl: string | null;
-  contact: { masked: string; foundOn: string | null } | null;
+  /** foundOn is the page it was published on, or `via:own-domain:<domain>`
+   *  for one Find email looked up, with whose it is (`person`). */
+  contact: { masked: string; foundOn: string | null; person?: string | null } | null;
   /** Why it was rejected, or why it's held for review. */
   rejectReason: string | null;
   /** What the classifier said, for one held for review. */
@@ -159,7 +161,12 @@ const REASONS: Record<string, string> = {
 
 const reasonLabel = (r: string) => REASONS[r] ?? r.replace(/_/g, ' ');
 
-/** The Network's refusals of an approval, as ops read them. */
+/** An address Find email looked up, not one published on a page. */
+const lookedUp = (foundOn: string) => foundOn.startsWith('via:');
+/** Where only a published address may be used: Find email isn't offered. */
+const PUBLISHED_ONLY = new Set(['CA', 'AU', 'NZ']);
+
+/** The Network's refusals of an approval or a Find email, as ops read them. */
 const APPROVE_ERRORS: Record<string, string> = {
   country_required: 'Say which country it is in',
   invalid_country: 'Not a country code',
@@ -173,6 +180,12 @@ const APPROVE_ERRORS: Record<string, string> = {
   undeliverable: "The verifier says it won't deliver",
   verify_unavailable: "The verifier isn't available; try again later",
   not_found: 'No longer waiting for review',
+  published_only_country: 'Only a published address can be used there',
+  has_address: 'It has an address already',
+  no_domain: 'No website to look up',
+  no_founder: 'No founder found',
+  none_found: 'No address the verifier says delivers',
+  lookup_unavailable: "The lookup isn't available; try again later",
 };
 const approveError = (err: unknown) => {
   const code = err instanceof Error ? err.message : String(err);
@@ -341,12 +354,16 @@ function ContactCell({ p, canWrite }: { p: Prospect; canWrite: boolean }) {
           Show
         </Button>
       )}
-      {p.contact.foundOn && (
-        <div>
-          <a href={p.contact.foundOn} target="_blank" rel="noreferrer" style={{ color: theme.textMuted, fontSize: 12 }}>
-            {shortUrl(p.contact.foundOn)}
-          </a>
-        </div>
+      {p.contact.foundOn && lookedUp(p.contact.foundOn) ? (
+        <div style={{ color: theme.textMuted, fontSize: 12 }}>{p.contact.person ? `${p.contact.person} · lookup` : 'Lookup'}</div>
+      ) : (
+        p.contact.foundOn && (
+          <div>
+            <a href={p.contact.foundOn} target="_blank" rel="noreferrer" style={{ color: theme.textMuted, fontSize: 12 }}>
+              {shortUrl(p.contact.foundOn)}
+            </a>
+          </div>
+        )
       )}
     </div>
   );
@@ -409,7 +426,8 @@ function HeldCell({ p }: { p: Prospect }) {
 }
 
 /** Approve a held launch as a US company, or reject it. With no address
- *  found, an admin gives one published on their site, with its page. */
+ *  found, an admin gives one published on their site, with its page, or
+ *  has the Network look up a founder's (Find email). */
 function ReviewActions({ p, onDone, onReject }: { p: Prospect; onDone: () => void; onReject: () => void }) {
   const [adding, setAdding] = useState(false);
   const [email, setEmail] = useState('');
@@ -417,22 +435,33 @@ function ReviewActions({ p, onDone, onReject }: { p: Prospect; onDone: () => voi
   // Its pages didn't place it: ops say where it is.
   const needsCountry = !p.country;
   const [country, setCountry] = useState('');
+  const named = country.trim().toUpperCase();
   const approve = useMutation({
     mutationFn: () =>
       papi(`/platform-admin/brand-outreach/prospects/${encodeURIComponent(p.id)}/approve`, {
         method: 'POST',
         body: {
-          ...(needsCountry ? { country: country.trim().toUpperCase() } : {}),
+          ...(needsCountry ? { country: named } : {}),
           ...(p.contact ? {} : { email: email.trim(), sourceUrl: page.trim() }),
         },
       }),
     onSuccess: onDone,
   });
+  const find = useMutation({
+    mutationFn: () =>
+      papi(`/platform-admin/brand-outreach/prospects/${encodeURIComponent(p.id)}/find-address`, {
+        method: 'POST',
+        body: needsCountry ? { country: named } : {},
+      }),
+    onSuccess: onDone,
+  });
   const name = p.name ?? 'this launch';
-  const busy = approve.isPending;
+  const busy = approve.isPending || find.isPending;
+  const canFind = !p.contact && !adding && !PUBLISHED_ONLY.has(needsCountry ? named : p.country ?? '');
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 180 }}>
-      {needsCountry && (p.contact || adding) && (
+    // The buttons wrap rather than widen the table.
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 180, maxWidth: 210 }}>
+      {needsCountry && (p.contact || adding || canFind || named) && (
         <Input aria-label="Country" placeholder="Country code, e.g. US" maxLength={2} value={country} onChange={(e) => setCountry(e.target.value.toUpperCase())} />
       )}
       {adding && !p.contact && (
@@ -441,30 +470,37 @@ function ReviewActions({ p, onDone, onReject }: { p: Prospect; onDone: () => voi
           <Input aria-label="Page it's on" placeholder="https://their.site/about" value={page} onChange={(e) => setPage(e.target.value)} />
         </>
       )}
-      <div style={{ display: 'flex', gap: 6 }}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {p.contact || adding ? (
           <Button
             size="sm"
-            disabled={busy || (!p.contact && (!email.trim() || !page.trim())) || (needsCountry && country.trim().length !== 2)}
+            disabled={busy || (!p.contact && (!email.trim() || !page.trim())) || (needsCountry && named.length !== 2)}
             onClick={() => {
-              const where = needsCountry ? country.trim().toUpperCase() : p.country;
+              const where = needsCountry ? named : p.country;
               if (window.confirm(`Approve ${name} as a software company in ${where} with paid plans and no partner program?`)) approve.mutate();
             }}
           >
             Approve
           </Button>
         ) : (
-          <Button size="sm" variant="secondary" onClick={() => setAdding(true)}>
-            Add address
-          </Button>
+          <>
+            {canFind && (
+              <Button size="sm" disabled={busy || (needsCountry && named.length !== 2)} onClick={() => find.mutate()}>
+                {find.isPending ? 'Finding…' : 'Find email'}
+              </Button>
+            )}
+            <Button size="sm" variant="secondary" disabled={busy} onClick={() => setAdding(true)}>
+              Add address
+            </Button>
+          </>
         )}
         <Button size="sm" variant="ghost" disabled={busy} onClick={onReject}>
           Reject
         </Button>
       </div>
-      {approve.error && (
+      {(approve.error || find.error) && (
         <div role="alert" style={{ color: theme.danger, fontSize: 12 }}>
-          {approveError(approve.error)}
+          {approveError(approve.error ?? find.error)}
         </div>
       )}
     </div>
@@ -579,7 +615,7 @@ function EmailTab({ canWrite, onSent }: { canWrite: boolean; onSent: () => void 
             </div>,
             <div key="a" style={{ fontSize: 13 }}>
               {t.address}
-              {t.addressFoundOn && <div style={{ fontSize: 12, color: theme.textMuted }}>{shortUrl(t.addressFoundOn)}</div>}
+              {t.addressFoundOn && <div style={{ fontSize: 12, color: theme.textMuted }}>{lookedUp(t.addressFoundOn) ? 'Lookup' : shortUrl(t.addressFoundOn)}</div>}
             </div>,
             <div key="o" style={{ fontSize: 13, maxWidth: 420, whiteSpace: 'normal' }}>{t.opening}</div>,
             <span key="s" style={{ fontSize: 12, color: t.skip ? theme.danger : theme.textMuted }}>{t.skip ? `skipped: ${SKIPS[t.skip] ?? t.skip}` : ''}</span>,
