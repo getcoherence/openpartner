@@ -28,7 +28,7 @@ import { Button, Card, EmptyState, ErrorBanner, Label, Page, Textarea, formatDat
 import { alpha, theme } from '../../theme.js';
 import { TenantLink } from '../../tenant-link.js';
 import { brandSignalLabel, type PartnershipSignal } from '../../lib/partnership-signals.js';
-import { ChannelCount, ChannelCounts, PlatformMark, compactCount, formatRate, platformName, rateInFull } from '../../lib/PlatformMark.js';
+import { ChannelCount, ChannelCounts, PlatformMark, audienceWord, compactCount, formatRate, platformName, rateInFull } from '../../lib/PlatformMark.js';
 import { FlatCards, SectionCard, useFlatCards } from '../../lib/Surface.js';
 import { ListingBanner } from '../creator/ListingBanner.js';
 import { CreatorRow, PanelBar, RowFigure } from './CreatorRow.js';
@@ -307,7 +307,7 @@ const BLOCKERS: Record<string, string> = {
 /** A channel's numbers, left out when the platform doesn't give them. */
 function channelNumbers(p: IndexedCreatorProfile['platforms'][number]): string[] {
   const out: string[] = [];
-  if (p.followerCount != null) out.push(`${p.followerCount.toLocaleString()} followers`);
+  if (p.followerCount != null) out.push(`${p.followerCount.toLocaleString()} ${audienceWord(p.platform)}`);
   if (p.engagementRate != null) out.push(`${formatRate(p.engagementRate)} engagement`);
   if (p.postsLast30d != null) out.push(`${p.postsLast30d} post${p.postsLast30d === 1 ? '' : 's'} in the last 30 days`);
   if (p.avgReactions != null) out.push(`${p.avgReactions.toLocaleString()} reactions a post`);

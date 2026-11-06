@@ -70,6 +70,9 @@ export const PLATFORM_NAMES: Record<string, string> = {
 
 export const platformName = (platform: string) => PLATFORM_NAMES[platform] ?? platform;
 
+/** What a channel's audience is called: a newsletter has subscribers. */
+export const audienceWord = (platform: string) => (platform === 'newsletter' || platform === 'substack' ? 'subscribers' : 'followers');
+
 /** 6M, 32.9K, 950. */
 export function compactCount(n: number): string {
   return new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(n);
@@ -124,6 +127,7 @@ export function ChannelCount({
   readFromProfile = false,
 }: {
   platform: string;
+  /** Followers, or a newsletter's subscribers. */
   followers: number | null;
   href?: string | null;
   verified?: boolean;
@@ -138,7 +142,7 @@ export function ChannelCount({
   const name = platformName(platform);
   const full = [
     name,
-    ...(followers != null ? [`${followers.toLocaleString()} followers${readFromProfile ? ' from their public profile' : ''}`] : []),
+    ...(followers != null ? [`${followers.toLocaleString()} ${audienceWord(platform)}${readFromProfile ? ' from their public profile' : ''}`] : []),
     ...(engagementRate != null ? [rateInFull(engagementRate, engagementPosts, platform)] : []),
     ...(verified ? ['verified'] : []),
   ].join(', ');

@@ -1696,8 +1696,27 @@ export async function adminSetIndexedCreatorState(
   return callNetworkAdmin(networkUrl, 'PUT', `/admin/creator-index/creators/${encodeURIComponent(id)}/location`, body);
 }
 
-export async function adminQueueIndexSeeds(networkUrl: string, urls: string[]): Promise<Record<string, number>> {
-  return callNetworkAdmin<Record<string, number>>(networkUrl, 'POST', '/admin/creator-index/seeds', { urls });
+/** What came of one URL ops picked, and the candidate's or listing's id to
+ *  follow it by. A Network that predates picks sends counts only. */
+export interface IndexPickItem {
+  result: string;
+  id: string | null;
+}
+
+export async function adminQueueIndexSeeds(
+  networkUrl: string,
+  urls: string[],
+  detail = false,
+): Promise<Record<string, number> & { items?: IndexPickItem[] }> {
+  return callNetworkAdmin(networkUrl, 'POST', '/admin/creator-index/seeds', { urls, ...(detail ? { detail: true } : {}) });
+}
+
+/** Where the URLs ops picked got to: queued, listed, rejected (and why). */
+export async function adminIndexPickStatus(
+  networkUrl: string,
+  ids: string[],
+): Promise<{ items: Array<{ id: string; state: string; reason: string | null; listingId: string | null }> }> {
+  return callNetworkAdmin(networkUrl, 'GET', `/admin/creator-index/seeds/status?ids=${encodeURIComponent(ids.join(','))}`);
 }
 
 /** Run one of the index jobs now. Reads take most of a minute each. */
