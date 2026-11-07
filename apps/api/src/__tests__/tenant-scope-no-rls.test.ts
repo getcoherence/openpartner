@@ -593,6 +593,13 @@ describe.skipIf(skipIntegration)('admin routes without RLS', () => {
     expect(await db(TABLES.Program).where({ id: aProgramId }).first()).toMatchObject({ name: A_PROGRAM_NAME });
   });
 
+  it("DELETE /programs/:id can't delete another tenant's unused program", async () => {
+    const unused = await seedProgram(A.id);
+    const res = await request(app).delete(`/t/${B.slug}/programs/${unused}`).set(asB());
+    expect(res.status).toBe(404);
+    expect(await db(TABLES.Program).where({ id: unused }).first()).toBeTruthy();
+  });
+
   it("GET /partners/:id/programs lists only the tenant's programs", async () => {
     const res = await request(app).get(`/t/${B.slug}/partners/${bPartnerId}/programs`).set(asB());
     expect(res.status).toBe(200);

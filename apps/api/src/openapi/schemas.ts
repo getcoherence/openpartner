@@ -227,9 +227,16 @@ export const SaveWarnings = z
 
 export const ProgramSaved = Program.extend({ warnings: SaveWarnings.optional() }).openapi('ProgramSaved');
 
+export const ListedProgram = Program.extend({
+  deletable: z.boolean().openapi({
+    description:
+      'True while nothing uses the program: no partner grant, link, click, coupon, conversion, partner commission terms, bonus, bounty or test click. Only then does `DELETE /programs/{id}` remove it.',
+  }),
+}).openapi('ListedProgram');
+
 export const ProgramList = z
   .object({
-    programs: z.array(Program),
+    programs: z.array(ListedProgram),
     customerRewardDelivery: z.enum(['stripe', 'unconfigured', 'brand']).openapi({
       description: 'How customer-side rewards reach the customer on this deployment: minted in Stripe, not configured, or applied by the brand itself.',
     }),

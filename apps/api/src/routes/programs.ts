@@ -27,6 +27,8 @@ import { commissionSlabFields, currencyCodeSchema, refineCommissionSubRule } fro
 import { destinationUrlSchema, destinationWarnings } from '../destination-url.js';
 import { tenantDefaultCurrency } from '../currency.js';
 import { programStats } from '../reporting.js';
+import { NetworkProxyError } from '../network-client.js';
+import { PROGRAM_IN_USE_SQL, programUses, takeDownNetworkOffering } from '../program-deletion.js';
 
 /**
  * Commission rule schema. The wire format is an array of triggered sub-rules.
@@ -329,11 +331,17 @@ export const programsRouter = Router();
 
 programsRouter.get('/programs', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
-  const campaigns = await db<ProgramRow>(TABLES.Program).where({ tenantId }).orderBy('createdAt', 'desc');
+  const campaigns = (await db<ProgramRow>(TABLES.Program)
+    .where({ tenantId })
+    .select('*', db.raw(`${PROGRAM_IN_USE_SQL} as "inUse"`))
+    .orderBy('createdAt', 'desc')) as Array<ProgramRow & { inUse: boolean }>;
   // Per deployment, and on hosted per Stripe App connection. The reward
   // editor is the only reader and it already loads this list — saves the
   // portal a round trip.
-  res.json({ programs: campaigns, customerRewardDelivery: await customerRewardDelivery(tenantId) });
+  res.json({
+    programs: campaigns.map(({ inUse, ...p }) => ({ ...p, deletable: !inUse })),
+    customerRewardDelivery: await customerRewardDelivery(tenantId),
+  });
 });
 
 export const programStatsQuerySchema = z.object({
@@ -632,3 +640,49 @@ programsRouter.patch('/programs/:id', requireAuth, requireAdmin, async (req, res
 
   res.json({ ...updated, ...destinationWarnings(updated.destinationUrl) });
 });
+
+/**
+ * Delete a program nothing uses yet (program-deletion.ts). Anything that
+ * names it answers 409: end it instead. Its Network listing comes down
+ * first, and if that fails the program stays, so the marketplace never
+ * lists a program that's gone. That's a 409 too, not a 502: in prod the
+ * edge replaces a 502 with a bare 504, and the brand would never see why.
+ */
+programsRouter.delete('/programs/:id', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  // Locked until the request commits: a grant, link or coupon being added
+  // to it now waits, and the check below sees it.
+  const program = await db<ProgramRow>(TABLES.Program).where({ id: req.params.id, tenantId }).forUpdate().first();
+  if (!program) return res.status(404).json({ error: 'not_found' });
+
+  const uses = await programUses(db, tenantId, program.id);
+  if (uses.length > 0) {
+    return res.status(409).json({
+      error: 'program_in_use',
+      detail: `This program has ${listOf(uses)}, so it can't be deleted. End it instead.`,
+    });
+  }
+
+  if (program.networkOfferingId) {
+    try {
+      await takeDownNetworkOffering(db, tenantId, program.networkOfferingId);
+    } catch (err) {
+      if (!(err instanceof NetworkProxyError)) throw err;
+      return res.status(409).json({
+        error: 'network_listing_not_removed',
+        detail:
+          err.message === 'network_not_configured'
+            ? "This program is listed on the Network, which is switched off. Switch it back on to delete the program, or end it instead."
+            : "The program's Network listing couldn't be taken down, so nothing was deleted. Try again.",
+      });
+    }
+  }
+
+  await db(TABLES.Program).where({ id: program.id, tenantId }).del();
+  res.json({ ok: true });
+});
+
+/** "partners, links and clicks". */
+function listOf(items: readonly string[]): string {
+  return items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`;
+}

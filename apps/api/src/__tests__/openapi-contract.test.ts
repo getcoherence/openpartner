@@ -731,6 +731,21 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     check('getPartnerProgramCommission', await admin.get(`/partners/${other.id}/programs/${program.id}/commission`));
     check('clearPartnerProgramCommission', await admin.delete(`/partners/${other.id}/programs/${program.id}/commission`));
 
+    // Only a program nothing uses can be deleted.
+    const inUse = await admin.delete(`/programs/${program.id}`);
+    expect(check('deleteProgram', inUse).error).toBe('program_in_use');
+    const duplicate = check<{ id: string }>(
+      'createProgram',
+      await admin.post('/programs', {
+        name: 'Duplicate',
+        destinationUrl: 'https://app.example.com/',
+        commissionRule: [{ trigger: 'every', type: 'percent', value: 10 }],
+        shareOnNetwork: false,
+      }),
+    );
+    expect(check('deleteProgram', await admin.delete(`/programs/${duplicate.id}`))).toEqual({ ok: true });
+    expect(check('deleteProgram', await admin.delete(`/programs/${duplicate.id}`)).error).toBe('not_found');
+
     // Partner keys act as that partner only.
     const partnerKey = check<{ id: string; plaintext: string }>('createPartnerKey', await admin.post(`/partners/${other.id}/api-keys`, { label: 'p' }));
     const asPartner = as(partnerKey.plaintext);

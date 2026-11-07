@@ -1278,7 +1278,7 @@
           "programs": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Program"
+              "$ref": "#/components/schemas/ListedProgram"
             }
           },
           "customerRewardDelivery": {
@@ -1294,6 +1294,141 @@
         "required": [
           "programs",
           "customerRewardDelivery"
+        ]
+      },
+      "ListedProgram": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Program"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "deletable": {
+                "type": "boolean",
+                "description": "True while nothing uses the program: no partner grant, link, click, coupon, conversion, partner commission terms, bonus, bounty or test click. Only then does `DELETE /programs/{id}` remove it."
+              }
+            },
+            "required": [
+              "deletable"
+            ]
+          }
+        ]
+      },
+      "CommissionRule": {
+        "anyOf": [
+          {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "trigger": {
+                  "type": "string",
+                  "enum": [
+                    "every",
+                    "first",
+                    "subsequent"
+                  ]
+                },
+                "eventType": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "percent",
+                    "fixed"
+                  ]
+                },
+                "value": {
+                  "type": "number"
+                },
+                "currency": {
+                  "type": "string"
+                },
+                "recurring": {
+                  "type": "boolean",
+                  "description": "Keeps paying on renewals, including renewals past the attribution window that the program's `renewalsStayWithPartner` carries. A rule without it pays only while the click that earned the customer is inside the window."
+                },
+                "recurringMonths": {
+                  "type": "integer",
+                  "description": "Stop paying this many months after the customer's first attributed event of the rule's type for this partner. Omitted: no cap."
+                },
+                "bands": {
+                  "$ref": "#/components/schemas/CommissionBands"
+                },
+                "tiers": {
+                  "$ref": "#/components/schemas/CommissionTiers"
+                }
+              },
+              "required": [
+                "trigger",
+                "type",
+                "value"
+              ]
+            }
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "percent",
+                  "fixed"
+                ]
+              },
+              "value": {
+                "type": "number"
+              },
+              "currency": {
+                "type": "string"
+              },
+              "recurring": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "type",
+              "value"
+            ]
+          }
+        ],
+        "description": "An array of triggered sub-rules. Programs written through this API always store the array; rows created before compound rules may still hold the legacy single-rule object."
+      },
+      "CustomerReward": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "percent_off",
+              "amount_off",
+              "free_months"
+            ]
+          },
+          "value": {
+            "type": "number"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "duration": {
+            "type": "string",
+            "enum": [
+              "once",
+              "forever",
+              "repeating"
+            ]
+          },
+          "durationInMonths": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "type",
+          "value",
+          "duration"
         ]
       },
       "Program": {
@@ -1500,122 +1635,6 @@
           "blockedReason",
           "blockedByEmail",
           "createdAt"
-        ]
-      },
-      "CommissionRule": {
-        "anyOf": [
-          {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "trigger": {
-                  "type": "string",
-                  "enum": [
-                    "every",
-                    "first",
-                    "subsequent"
-                  ]
-                },
-                "eventType": {
-                  "type": "string"
-                },
-                "type": {
-                  "type": "string",
-                  "enum": [
-                    "percent",
-                    "fixed"
-                  ]
-                },
-                "value": {
-                  "type": "number"
-                },
-                "currency": {
-                  "type": "string"
-                },
-                "recurring": {
-                  "type": "boolean",
-                  "description": "Keeps paying on renewals, including renewals past the attribution window that the program's `renewalsStayWithPartner` carries. A rule without it pays only while the click that earned the customer is inside the window."
-                },
-                "recurringMonths": {
-                  "type": "integer",
-                  "description": "Stop paying this many months after the customer's first attributed event of the rule's type for this partner. Omitted: no cap."
-                },
-                "bands": {
-                  "$ref": "#/components/schemas/CommissionBands"
-                },
-                "tiers": {
-                  "$ref": "#/components/schemas/CommissionTiers"
-                }
-              },
-              "required": [
-                "trigger",
-                "type",
-                "value"
-              ]
-            }
-          },
-          {
-            "type": "object",
-            "properties": {
-              "type": {
-                "type": "string",
-                "enum": [
-                  "percent",
-                  "fixed"
-                ]
-              },
-              "value": {
-                "type": "number"
-              },
-              "currency": {
-                "type": "string"
-              },
-              "recurring": {
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "type",
-              "value"
-            ]
-          }
-        ],
-        "description": "An array of triggered sub-rules. Programs written through this API always store the array; rows created before compound rules may still hold the legacy single-rule object."
-      },
-      "CustomerReward": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "enum": [
-              "percent_off",
-              "amount_off",
-              "free_months"
-            ]
-          },
-          "value": {
-            "type": "number"
-          },
-          "currency": {
-            "type": "string"
-          },
-          "duration": {
-            "type": "string",
-            "enum": [
-              "once",
-              "forever",
-              "repeating"
-            ]
-          },
-          "durationInMonths": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "type",
-          "value",
-          "duration"
         ]
       },
       "ProgramStatsList": {
@@ -11114,6 +11133,98 @@
           },
           "404": {
             "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteProgram",
+        "tags": [
+          "Programs"
+        ],
+        "summary": "Delete an unused program",
+        "description": "For a program made by mistake, such as a duplicate. Only a program nothing uses can be deleted (`deletable` in `GET /programs`): no partner grant, link, click, coupon, conversion, partner commission terms, bonus, bounty or test click. Anything else answers `409 program_in_use`; end the program instead by setting `endsAt`.\n\nA program listed on the OpenPartner Network has its listing taken down first. If the Network can't be reached, or is switched off for this brand, nothing is deleted and the answer is `409 network_listing_not_removed`.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The id."
+            },
+            "required": true,
+            "description": "The id.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`program_in_use`, `network_listing_not_removed`",
             "content": {
               "application/json": {
                 "schema": {
