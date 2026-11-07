@@ -63,6 +63,7 @@ export const HANDLER_GUARDED_ROUTES_OUTSIDE_SPEC: Record<string, string> = {
   'GET /me/bounties': "The calling partner's performance bounties and progress (partner portal); the handler refuses anyone but a partner.",
   'GET /config/program': 'Program branding the portal renders; any authenticated caller.',
   'GET /network/discover': NETWORK_PROXY,
+  'GET /network/discover/brands': NETWORK_PROXY,
   'GET /network/offerings/:id': NETWORK_PROXY,
   'POST /network/offerings/:id/apply': NETWORK_PROXY,
   'GET /network/vendors/:id': NETWORK_PROXY,

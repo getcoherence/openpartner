@@ -14,7 +14,13 @@ import {
 } from '../../lib/commission-summary.js';
 import { PROGRAM_CATEGORIES, categoryLabel } from '@openpartner/db';
 import { ListingBanner, type OfferingVideo } from './ListingBanner.js';
-import { commissionLineOf, summarizeBrandTerms } from './brand-summary.js';
+import {
+  commissionLineOf,
+  groupByBrand,
+  summarizeBrandTerms,
+  type BrandEntry,
+  type VendorFields,
+} from './brand-summary.js';
 
 export type MyStatus = 'none' | 'pending' | 'approved' | 'rejected' | 'cancelled';
 type AttributionModel = 'last_click' | 'first_click' | 'linear' | 'position';
@@ -71,18 +77,10 @@ interface OfferingListItem {
 }
 
 /** One program inside a brand entry: the vendor fields live on the brand. */
-type BrandProgram = Omit<OfferingListItem, 'vendorId' | 'vendorName' | 'vendorLogoUrl' | 'vendorPartnerCount' | 'featured'>;
+type BrandProgram = Omit<OfferingListItem, keyof VendorFields>;
 
 /** One brand with its programs — the Network's GET /marketplace/brands. */
-interface BrandListItem {
-  vendorId: string;
-  vendorName: string;
-  vendorLogoUrl: string | null;
-  vendorPartnerCount: number;
-  featured: boolean;
-  programCount: number;
-  offerings: BrandProgram[];
-}
+type BrandListItem = BrandEntry<BrandProgram>;
 
 /** Discover's feed, one entry per brand so a brand with many programs takes
  *  one card. A Network predating /marketplace/brands 404s it; then its
@@ -95,22 +93,7 @@ async function loadBrands(sort: 'newest' | 'popular'): Promise<BrandListItem[]> 
     if (!(err instanceof ApiError && err.status === 404)) throw err;
   }
   const { offerings } = await creatorApi<{ offerings: OfferingListItem[] }>(`/offerings?limit=100${qs}`);
-  const byVendor = new Map<string, BrandListItem>();
-  for (const { vendorId, vendorName, vendorLogoUrl, vendorPartnerCount, featured, ...program } of offerings) {
-    const brand = byVendor.get(vendorId) ?? {
-      vendorId,
-      vendorName,
-      vendorLogoUrl,
-      vendorPartnerCount,
-      featured: !!featured,
-      programCount: 0,
-      offerings: [],
-    };
-    brand.offerings.push(program);
-    brand.programCount += 1;
-    byVendor.set(vendorId, brand);
-  }
-  return [...byVendor.values()];
+  return groupByBrand(offerings);
 }
 
 const MODEL_LABELS: Record<AttributionModel, string> = {

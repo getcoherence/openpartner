@@ -177,7 +177,17 @@ networkPartnerRouter.get('/network/discover', requireAuth, async (req, res) => {
   const qs = new URLSearchParams();
   if (typeof req.query.q === 'string') qs.set('q', req.query.q);
   if (typeof req.query.sort === 'string') qs.set('sort', req.query.sort);
+  if (typeof req.query.limit === 'string') qs.set('limit', req.query.limit);
   return proxy(req, res, (db, tenantId) => partnerProxy.listOfferings(db, tenantId, qs.toString()));
+});
+
+// The same feed one entry per brand. A Network predating it answers 404,
+// which passes through; the portal then groups /network/discover instead.
+networkPartnerRouter.get('/network/discover/brands', requireAuth, async (req, res) => {
+  const qs = new URLSearchParams();
+  if (typeof req.query.sort === 'string') qs.set('sort', req.query.sort);
+  if (typeof req.query.limit === 'string') qs.set('limit', req.query.limit);
+  return proxy(req, res, (db, tenantId) => partnerProxy.listBrands(db, tenantId, qs.toString()));
 });
 
 networkPartnerRouter.get('/network/offerings/:id', requireAuth, async (req, res) =>
