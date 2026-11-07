@@ -2,7 +2,8 @@
 /**
  * Admin → Programs offers Delete only on a program nothing uses yet
  * (`deletable` from GET /programs), such as a duplicate made by mistake.
- * It asks first, and a refusal from the API shows on the page.
+ * It asks on the row first (not window.confirm), and a refusal from the API
+ * shows on that row.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -72,23 +73,35 @@ describe('Delete on Admin → Programs', () => {
     expect(screen.getAllByRole('button', { name: 'End now' })).toHaveLength(2);
   });
 
-  it('deletes after the admin confirms', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  it('asks on the row, then deletes', async () => {
     renderPrograms();
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Partners (copy)'));
+    expect(screen.getByText('Delete for good?')).toBeTruthy();
+    expect(deleteCalls()).toEqual([]);
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, delete' }));
     await waitFor(() => expect(deleteCalls()).toEqual([['/programs/prog_dup', { method: 'DELETE' }]]));
   });
 
-  it('does nothing when the admin cancels', () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false);
+  // A scripted or agent-driven browser dismisses window.confirm, which then
+  // returns false: Delete must not depend on it.
+  it('works where the browser dismisses dialogs', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
     renderPrograms();
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    expect(deleteCalls()).toEqual([]);
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, delete' }));
+    await waitFor(() => expect(deleteCalls()).toHaveLength(1));
+    expect(confirm).not.toHaveBeenCalled();
   });
 
-  it("shows why the API refused", async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+  it('does nothing when the admin cancels', () => {
+    renderPrograms();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(deleteCalls()).toEqual([]);
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeTruthy();
+  });
+
+  it('shows why the API refused, on the row', async () => {
     vi.mocked(api).mockImplementation(async (_path, opts) => {
       if ((opts as { method?: string } | undefined)?.method === 'DELETE') {
         throw new ApiError(409, "program_in_use: This program has links, so it can't be deleted. End it instead.");
@@ -97,11 +110,27 @@ describe('Delete on Admin → Programs', () => {
     });
     renderPrograms();
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    expect(await screen.findByText(/End it instead/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, delete' }));
+    expect((await screen.findByRole('alert')).textContent).toMatch(/End it instead/);
   });
 
   it('is hidden from a view-only seat', () => {
     renderPrograms(VIEWER);
     expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
+  });
+});
+
+const patchCalls = () =>
+  vi.mocked(api).mock.calls.filter((c) => (c[1] as { method?: string } | undefined)?.method === 'PATCH');
+
+describe('End now on Admin → Programs', () => {
+  it('asks on the row, then ends that program', async () => {
+    renderPrograms();
+    fireEvent.click(screen.getAllByRole('button', { name: 'End now' })[0]!);
+    expect(screen.getByText('End now?')).toBeTruthy();
+    expect(patchCalls()).toEqual([]);
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, end' }));
+    await waitFor(() => expect(patchCalls()).toHaveLength(1));
+    expect(patchCalls()[0]![0]).toBe('/programs/prog_used');
   });
 });
