@@ -137,6 +137,8 @@ const ALLOWED_EXACT = new Set([
   // Messages from OpenPartner's operators (the Network's creator-review.ts).
   '/creators/me/messages',
   '/offerings',
+  // Discover's feed, one entry per brand with its programs.
+  '/marketplace/brands',
   // Claiming a profile the Network's creator index built (its
   // docs/creator-index.md §5.3). The emailed token is the credential; the
   // claim may sign the creator in, so its Set-Cookie comes back through here.

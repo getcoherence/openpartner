@@ -119,6 +119,16 @@ describe('creator-api proxy: platform verification', () => {
     ]);
   });
 
+  it('forwards Discover’s brand feed with the creator cookie', async () => {
+    const res = await request(app)
+      .get('/creator-api/marketplace/brands?sort=popular')
+      .set('Cookie', 'op_network_creator_session=abc');
+    expect(res.status).toBe(200);
+    expect(calls).toEqual([
+      { method: 'GET', path: '/marketplace/brands?sort=popular', cookie: 'op_network_creator_session=abc' },
+    ]);
+  });
+
   it('still refuses paths off the allowlist without calling the Network', async () => {
     const res = await request(app).post('/creator-api/vendors/me/discover/creators').send({});
     expect(res.status).toBe(404);
