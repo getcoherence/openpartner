@@ -139,6 +139,12 @@ export function AdminBilling() {
   );
 }
 
+/** Whole days until a timestamp, or null when it's unset or past. */
+function daysUntil(ms: number | null): number | null {
+  if (ms == null || Number.isNaN(ms) || ms <= Date.now()) return null;
+  return Math.ceil((ms - Date.now()) / (24 * 60 * 60 * 1000));
+}
+
 /** Does this tenant pay by invoice: its live subscription, or the terms a
  *  new one would get? */
 function payingByInvoice(status: BillingStatus): boolean {
@@ -232,15 +238,14 @@ function PlanCard({ status }: { status: BillingStatus }) {
   const plan = status.plan;
   const planMeta = plan ? PLAN_LABELS[plan] : null;
   const subscribed = !!status.subscribed;
-  const trialEndsAtMs = status.trialEnd
-    ? status.trialEnd * 1000
-    : status.trialEndsAt
-      ? Date.parse(status.trialEndsAt)
-      : null;
-  const daysLeftInTrial =
-    trialEndsAtMs && trialEndsAtMs > Date.now()
-      ? Math.ceil((trialEndsAtMs - Date.now()) / (24 * 60 * 60 * 1000))
-      : null;
+  // The 14-day trial runs from signup (signup.ts), not from Checkout, and
+  // Checkout always asks for a payment method. So the trial's own dates
+  // decide what an unsubscribed brand sees, on either plan.
+  const trialOver = !!status.trialEndsAt && !status.inTrial;
+  const trialDaysLeft = daysUntil(status.trialEndsAt ? Date.parse(status.trialEndsAt) : null);
+  // A Stripe-side trial on a live subscription (legacy: Checkout no longer
+  // grants one).
+  const stripeTrialDaysLeft = daysUntil(status.trialEnd ? status.trialEnd * 1000 : null);
 
   return (
     <Card>
@@ -259,7 +264,7 @@ function PlanCard({ status }: { status: BillingStatus }) {
           <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 14px' }}>
             {byInvoice
               ? 'Pick a tier. You’ll pay by invoice: nothing is charged automatically.'
-              : 'Pick a tier to start your 14-day free trial. No card required up front.'}
+              : 'Pick a tier. Stripe then asks for a payment method to activate it.'}
           </p>
           <PlanPicker
             disabled={pickPlan.isPending || startCheckout.isPending}
@@ -276,7 +281,7 @@ function PlanCard({ status }: { status: BillingStatus }) {
       {error && <ErrorBanner error={error} />}
 
       {plan && !subscribed && byInvoice && status.collection && (
-        <InvoiceSubscribe collection={status.collection} trialExpired={!!status.trialExpiredWithoutSubscription} />
+        <InvoiceSubscribe collection={status.collection} trialExpired={trialOver} />
       )}
 
       {plan && !subscribed && !byInvoice && status.collection?.gstinRequired && !status.collection.gstin && (
@@ -288,7 +293,7 @@ function PlanCard({ status }: { status: BillingStatus }) {
 
       {plan && !subscribed && !byInvoice && (
         <div>
-          {status.trialExpiredWithoutSubscription ? (
+          {trialOver ? (
             <>
               <div
                 style={{
@@ -303,31 +308,11 @@ function PlanCard({ status }: { status: BillingStatus }) {
               >
                 <strong style={{ color: theme.danger }}>Trial expired.</strong> Your 14-day free trial
                 has ended without a payment method. New programs, partners, coupons, and offerings
-                are paused until you re-subscribe — but click ingestion + attribution still run, so
+                are paused until you subscribe — but click ingestion + attribution still run, so
                 no data is being lost.
               </div>
               <Button onClick={() => startCheckout.mutate()} disabled={startCheckout.isPending}>
-                {startCheckout.isPending ? 'Opening Stripe…' : 'Re-subscribe (card required)'}
-              </Button>
-            </>
-          ) : status.hasUsedTrial ? (
-            <>
-              <div
-                style={{
-                  background: `${theme.accentA10}`,
-                  border: `1px solid ${theme.accentA55}`,
-                  borderRadius: theme.radiusSm,
-                  padding: 12,
-                  marginBottom: 14,
-                  fontSize: 13,
-                  color: theme.text,
-                }}
-              >
-                You've previously used your free trial. Re-subscribing requires a payment method up
-                front — the trial doesn't reset.
-              </div>
-              <Button onClick={() => startCheckout.mutate()} disabled={startCheckout.isPending}>
-                {startCheckout.isPending ? 'Opening Stripe…' : 'Subscribe (card required)'}
+                {startCheckout.isPending ? 'Opening Stripe…' : 'Subscribe'}
               </Button>
             </>
           ) : (
@@ -343,10 +328,18 @@ function PlanCard({ status }: { status: BillingStatus }) {
                   color: theme.text,
                 }}
               >
-                Your trial hasn't started yet. Activate it now — no card required for the first 14 days.
+                {trialDaysLeft !== null && (
+                  <>
+                    Free trial: <strong>{trialDaysLeft} day{trialDaysLeft === 1 ? '' : 's'}</strong> left.{' '}
+                  </>
+                )}
+                Activate your plan to bring in partners. Stripe asks for a payment method.{' '}
+                {plan === 'revshare'
+                  ? 'Nothing is charged now: each month you pay the platform fee on partner-attributed sales.'
+                  : 'Your first month is charged when you activate.'}
               </div>
               <Button onClick={() => startCheckout.mutate()} disabled={startCheckout.isPending}>
-                {startCheckout.isPending ? 'Opening Stripe…' : 'Activate 14-day free trial'}
+                {startCheckout.isPending ? 'Opening Stripe…' : 'Activate plan'}
               </Button>
             </>
           )}
@@ -355,7 +348,7 @@ function PlanCard({ status }: { status: BillingStatus }) {
 
       {plan && subscribed && (
         <div>
-          {daysLeftInTrial !== null && (
+          {stripeTrialDaysLeft !== null && (
             <div
               style={{
                 background: `${theme.accentA10}`,
@@ -367,7 +360,7 @@ function PlanCard({ status }: { status: BillingStatus }) {
                 color: theme.text,
               }}
             >
-              Trial active — <strong>{daysLeftInTrial} day{daysLeftInTrial === 1 ? '' : 's'}</strong> left.
+              Trial active — <strong>{stripeTrialDaysLeft} day{stripeTrialDaysLeft === 1 ? '' : 's'}</strong> left.
               Stripe will email you ~3 days before it ends to add a payment method.
             </div>
           )}
