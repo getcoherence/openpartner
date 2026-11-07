@@ -4,6 +4,7 @@ import { Check, Copy, Globe, RefreshCw, Trash2 } from 'lucide-react';
 import { api, ApiError } from '../../api.js';
 import { theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, SectionHeading, StatusPill } from '../../ui.js';
+import { ConfirmAction } from '../../lib/ConfirmAction.js';
 
 /**
  * White-label wizard (spec Phase 3): enable the billing add-on, register a
@@ -151,29 +152,47 @@ function AddOnCard({ billing }: { billing: WhiteLabelBilling }) {
   // there. Everyone else needs a live subscription for the add-on item to
   // attach to.
   const needsCheckout = !selfhost && !billing.subscribed && billing.plan !== 'enterprise';
+  // Enabling asks first when it charges, or hides a Network the install pays for.
+  const enableAsk = selfhost
+    ? billing.networkConnected
+      ? {
+          prompt: 'Enable white-label?',
+          title: 'It hides all Network pages, including Network billing, but doesn’t cancel your Network subscription. Cancel that under Network → Billing first if you no longer need it.',
+        }
+      : null
+    : billing.plan === 'enterprise'
+      ? null
+      : billing.collectionMethod === 'send_invoice'
+        ? {
+            prompt: 'Invoice the add-on now?',
+            title: 'The rest of this billing period is invoiced now, then it’s on each monthly invoice with your plan.',
+          }
+        : {
+            prompt: 'Charge the add-on now?',
+            title: 'Your payment method is charged now for the rest of this billing period, then monthly with your plan.',
+          };
 
   return (
     <Card>
       <SectionHeading
         actions={
           billing.provisioned ? (
-            <Button
-              variant="ghost"
-              onClick={() => {
-                if (
-                  window.confirm(
-                    selfhost
-                      ? 'Disable white-label? OpenPartner branding returns to your portal and emails, and the Network becomes available again.'
-                      : 'Disable white-label? Your custom domain will stop resolving and platform branding returns. The add-on is removed from your subscription, and the unused time is credited on your next invoice.',
-                  )
-                ) {
-                  disable.mutate();
-                }
-              }}
-              disabled={disable.isPending}
+            <ConfirmAction
+              prompt={selfhost ? 'Disable white-label?' : 'Disable the add-on?'}
+              confirmLabel="Yes, disable"
+              title={
+                selfhost
+                  ? 'OpenPartner branding returns to your portal and emails, and the Network becomes available again.'
+                  : 'Your custom domain stops resolving and platform branding returns. The unused time is credited on your next invoice.'
+              }
+              onConfirm={() => disable.mutate()}
             >
-              {disable.isPending ? 'Disabling…' : selfhost ? 'Disable white-label' : 'Disable add-on'}
-            </Button>
+              {(ask) => (
+                <Button variant="ghost" onClick={ask} disabled={disable.isPending}>
+                  {disable.isPending ? 'Disabling…' : selfhost ? 'Disable white-label' : 'Disable add-on'}
+                </Button>
+              )}
+            </ConfirmAction>
           ) : needsCheckout ? (
             <Button
               onClick={() => subscribeWithAddOn.mutate()}
@@ -182,34 +201,22 @@ function AddOnCard({ billing }: { billing: WhiteLabelBilling }) {
               {subscribeWithAddOn.isPending ? 'Opening checkout…' : 'Subscribe with white-label included'}
             </Button>
           ) : (
-            <Button
-              onClick={() => {
-                if (
-                  selfhost &&
-                  billing.networkConnected &&
-                  !window.confirm(
-                    'Enable white-label? This install is connected to the OpenPartner Network. White-label hides all Network pages, including Network billing, but does not cancel your Network subscription. Cancel it under Network → Billing first if you no longer need it.',
-                  )
-                ) {
-                  return;
-                }
-                if (
-                  !selfhost &&
-                  billing.plan !== 'enterprise' &&
-                  !window.confirm(
-                    billing.collectionMethod === 'send_invoice'
-                      ? 'Enable the white-label add-on? The rest of this billing period is invoiced now, then it’s on each monthly invoice with your plan.'
-                      : 'Enable the white-label add-on? Your payment method is charged now for the rest of this billing period, then monthly with your plan.',
-                  )
-                ) {
-                  return;
-                }
-                enable.mutate();
-              }}
-              disabled={enable.isPending || (!selfhost && !billing.priceConfigured)}
+            <ConfirmAction
+              prompt={enableAsk?.prompt}
+              confirmLabel="Yes, enable"
+              tone="accent"
+              title={enableAsk?.title}
+              onConfirm={() => enable.mutate()}
             >
-              {enable.isPending ? 'Enabling…' : selfhost ? 'Enable white-label' : 'Enable white-label add-on'}
-            </Button>
+              {(ask) => (
+                <Button
+                  onClick={enableAsk ? ask : () => enable.mutate()}
+                  disabled={enable.isPending || (!selfhost && !billing.priceConfigured)}
+                >
+                  {enable.isPending ? 'Enabling…' : selfhost ? 'Enable white-label' : 'Enable white-label add-on'}
+                </Button>
+              )}
+            </ConfirmAction>
           )
         }
       >
@@ -377,17 +384,18 @@ function DomainRowView({ row, onChanged }: { row: DomainRow; onChanged: () => vo
         <Button variant="ghost" onClick={() => verify.mutate()} disabled={verify.isPending}>
           <RefreshCw size={13} /> {verify.isPending ? 'Checking…' : row.status === 'verified' ? 'Re-verify' : 'Verify'}
         </Button>
-        <Button
-          variant="ghost"
-          onClick={() => {
-            if (window.confirm(`Remove ${row.domain}? The portal stops serving from this domain immediately.`)) {
-              remove.mutate();
-            }
-          }}
-          disabled={remove.isPending}
+        <ConfirmAction
+          prompt={`Remove ${row.domain}?`}
+          confirmLabel="Yes, remove"
+          title="The portal stops serving from this domain at once."
+          onConfirm={() => remove.mutate()}
         >
-          <Trash2 size={13} />
-        </Button>
+          {(ask) => (
+            <Button variant="ghost" onClick={ask} disabled={remove.isPending}>
+              <Trash2 size={13} />
+            </Button>
+          )}
+        </ConfirmAction>
       </div>
       {error && <div style={{ color: theme.danger, fontSize: 13, marginTop: 8 }}>{error}</div>}
       {verifyNote && <div style={{ color: theme.success, fontSize: 13, marginTop: 8 }}>{verifyNote}</div>}

@@ -5,6 +5,7 @@ import { ApiError, api, apiDownload, saveBlob } from '../api.js';
 import { TenantLink } from '../tenant-link.js';
 import { alpha, theme } from '../theme.js';
 import { Button, Card, ErrorBanner, Input, Select, Table, formatDate, money } from '../ui.js';
+import { ConfirmAction, ConfirmError, ConfirmPrompt } from '../lib/ConfirmAction.js';
 import { HOLD_REASON, type HoldReason } from './payout-holds.js';
 import { usePaypalConnections, type PaypalEnvironment } from './admin/PaypalPayoutsCard.js';
 import { rateDateLabel, rateLabel, withdrawalNote } from './payout-sent.js';
@@ -152,23 +153,29 @@ function quoteError(err: unknown): unknown {
   return err;
 }
 
-/** What the brand confirms before a converted batch goes. */
-function conversionAsk(q: ConversionQuote): string {
+/** What the brand sees, and is asked, before a converted batch goes. */
+function conversionAsk(q: ConversionQuote): { question: string; details: string[] } {
   const what = `${q.count === 1 ? '1 payout' : `${q.count.toLocaleString()} payouts`} totalling ${money(q.sourceTotal, q.currency)} as ${money(q.sentTotal, q.sendAs)}`;
-  const lines = [
-    q.environment === 'sandbox'
-      ? `Test ${what} with your PayPal sandbox app? PayPal’s sandbox moves test money only: nothing is marked paid, and the payouts come back to send when it’s done.`
-      : `Send ${what} from your live PayPal account now? PayPal moves the money as soon as it accepts the batch.`,
+  const details = [
     `Rate: ${rateLabel(q.rate, q.currency, q.sendAs, { exact: true })}, the European Central Bank reference rate of ${rateDateLabel(q.rateDate)}. Each payout is converted and rounded to the cent on its own.`,
     withdrawalNote(q.sendAs, q.currency, 'brand'),
   ];
   const over = q.leftOut.filter((l) => l.reason === 'over_paypal_limit').length;
   const tiny = q.leftOut.length - over;
-  if (over > 0) lines.push(`${over === 1 ? '1 payout is' : `${over} payouts are`} over PayPal’s per-payment limit in ${q.sendAs} and stay out of this batch. Pay them another way.`);
-  if (tiny > 0) lines.push(`${tiny === 1 ? '1 payout is' : `${tiny} payouts are`} under a cent in ${q.sendAs} and stay out.`);
-  lines.push(`This rate holds until ${new Date(q.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`);
-  return lines.join('\n\n');
+  if (over > 0) details.push(`${over === 1 ? '1 payout is' : `${over} payouts are`} over PayPal’s per-payment limit in ${q.sendAs} and stay out of this batch. Pay them another way.`);
+  if (tiny > 0) details.push(`${tiny === 1 ? '1 payout is' : `${tiny} payouts are`} under a cent in ${q.sendAs} and stay out.`);
+  details.push(`This rate holds until ${new Date(q.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`);
+  return { question: sendQuestion(what, q.environment), details };
 }
+
+/** The question before a Pay with PayPal batch goes; SEND_DETAIL is its hover text. */
+function sendQuestion(what: string, environment: PaypalEnvironment): string {
+  return environment === 'sandbox' ? `Test ${what} with your PayPal sandbox app?` : `Send ${what} from your live PayPal account now?`;
+}
+const SEND_DETAIL: Record<PaypalEnvironment, string> = {
+  sandbox: 'PayPal’s sandbox moves test money only: nothing is marked paid, and the payouts come back to send when it’s done.',
+  live: 'PayPal moves the money as soon as it accepts the batch.',
+};
 
 /** POST /payouts/runs/:runId/exports */
 interface ExportFile {
@@ -289,21 +296,29 @@ export function ManualPayoutFiles() {
     onSettled: refresh,
   });
 
-  // Balances PayPal can't send (INR): quote the rate, show it, then send
-  // at exactly that rate.
-  const payConverted = useMutation({
-    mutationFn: async (g: { currency: string; sendAs: string }) => {
-      const { quote } = await api<{ quote: ConversionQuote }>(`/payouts/runs/${runId}/paypal-batches/quote`, {
+  // Balances PayPal can't send (INR): quote the rate, show it on the row
+  // with Yes / Cancel, then send at exactly that rate.
+  const [quoted, setQuoted] = useState<ConversionQuote | null>(null);
+  useEffect(() => setQuoted(null), [runId]);
+  const getQuote = useMutation({
+    mutationFn: (g: { currency: string; sendAs: string }) =>
+      api<{ quote: ConversionQuote }>(`/payouts/runs/${runId}/paypal-batches/quote`, {
         method: 'POST',
         body: { currency: g.currency, sendAs: g.sendAs },
-      });
-      if (!window.confirm(conversionAsk(quote))) return null;
-      return api<{ batch: PaypalBatch }>(`/payouts/runs/${runId}/paypal-batches`, {
+      }),
+    onSuccess: ({ quote }) => setQuoted(quote),
+  });
+  const payConverted = useMutation({
+    mutationFn: (q: ConversionQuote) =>
+      api<{ batch: PaypalBatch }>(`/payouts/runs/${runId}/paypal-batches`, {
         method: 'POST',
-        body: { currency: g.currency, sendAs: g.sendAs, quoteId: quote.quoteId },
-      });
+        body: { currency: q.currency, sendAs: q.sendAs, quoteId: q.quoteId },
+      }),
+    // Sent or refused, the quote is spent: a retry quotes afresh.
+    onSettled: () => {
+      setQuoted(null);
+      refresh();
     },
-    onSettled: refresh,
   });
 
   const syncBatch = useMutation({
@@ -349,6 +364,7 @@ export function ManualPayoutFiles() {
   const busy =
     makeFile.isPending ||
     payWithPaypal.isPending ||
+    getQuote.isPending ||
     payConverted.isPending ||
     syncBatch.isPending ||
     resolveBatch.isPending ||
@@ -411,14 +427,8 @@ export function ManualPayoutFiles() {
           payouts.error ??
           batches.error ??
           makeFile.error ??
-          payWithPaypal.error ??
-          quoteError(payConverted.error) ??
           syncBatch.error ??
-          resolveBatch.error ??
-          cancelUnclaimed.error ??
           downloadAgain.error ??
-          confirmFile.error ??
-          discardFile.error ??
           confirmOne.error
         }
       />
@@ -440,6 +450,7 @@ export function ManualPayoutFiles() {
                     key={b.batchId}
                     b={b}
                     busy={busy}
+                    error={resolveBatch.variables?.batchId === b.batchId && resolveBatch.error}
                     onSync={() => syncBatch.mutate(b.batchId)}
                     onResolve={(body) => resolveBatch.mutate({ batchId: b.batchId, body })}
                   />
@@ -473,30 +484,36 @@ export function ManualPayoutFiles() {
                     <Button size="sm" variant="ghost" icon={<Download size={13} />} onClick={() => downloadAgain.mutate(e)} disabled={busy}>
                       Download again
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      icon={<Trash2 size={13} />}
-                      onClick={() => {
-                        if (window.confirm('Discard this file? Only do this if you never uploaded it. Its payouts can then go into a new file.')) {
-                          discardFile.mutate(e.exportId);
-                        }
-                      }}
-                      disabled={busy}
+                    <ConfirmAction
+                      prompt="Discard it? Only if you never uploaded it."
+                      confirmLabel="Yes, discard"
+                      title="Its payouts can then go into a new file."
+                      onConfirm={() => discardFile.mutate(e.exportId)}
                     >
-                      Discard
-                    </Button>
-                    <Button
-                      size="sm"
-                      icon={<CheckCheck size={13} />}
-                      onClick={() => {
-                        const what = e.pendingCount === 1 ? `this ${PROVIDER[e.provider]} file’s payout` : `this ${PROVIDER[e.provider]} file’s ${e.pendingCount} payouts`;
-                        if (window.confirm(`Mark ${what} as sent? Only do this once the batch has gone out.`)) confirmFile.mutate(e.exportId);
-                      }}
-                      disabled={busy}
+                      {(ask) => (
+                        <Button size="sm" variant="ghost" icon={<Trash2 size={13} />} onClick={ask} disabled={busy}>
+                          Discard
+                        </Button>
+                      )}
+                    </ConfirmAction>
+                    <ConfirmAction
+                      prompt="Has the batch gone out?"
+                      confirmLabel={e.pendingCount === 1 ? 'Yes, mark its payout sent' : `Yes, mark ${e.pendingCount} payouts sent`}
+                      tone="accent"
+                      onConfirm={() => confirmFile.mutate(e.exportId)}
                     >
-                      Mark sent
-                    </Button>
+                      {(ask) => (
+                        <Button size="sm" icon={<CheckCheck size={13} />} onClick={ask} disabled={busy}>
+                          Mark sent
+                        </Button>
+                      )}
+                    </ConfirmAction>
+                    <ConfirmError
+                      error={
+                        (discardFile.variables === e.exportId && discardFile.error) ||
+                        (confirmFile.variables === e.exportId && confirmFile.error)
+                      }
+                    />
                   </Row>
                 ))}
               </Section>
@@ -518,14 +535,24 @@ export function ManualPayoutFiles() {
                           before anything is sent. No file can do this.
                         </div>
                       </div>
-                      {activePaypal ? (
+                      {activePaypal && quoted?.currency === g.currency && quoted.sendAs === g.sendAs ? (
+                        <QuotePrompt
+                          quote={quoted}
+                          busy={payConverted.isPending}
+                          onSend={() => payConverted.mutate(quoted)}
+                          onCancel={() => setQuoted(null)}
+                        />
+                      ) : activePaypal ? (
                         <Button
                           size="sm"
                           icon={<Send size={13} />}
-                          onClick={() => payConverted.mutate({ currency: g.currency, sendAs: g.sendAs! })}
+                          onClick={() => {
+                            payConverted.reset();
+                            getQuote.mutate({ currency: g.currency, sendAs: g.sendAs! });
+                          }}
                           disabled={busy}
                         >
-                          {payConverted.isPending
+                          {getQuote.isPending
                             ? 'Getting the rate…'
                             : activePaypal.environment === 'sandbox'
                               ? `Test with PayPal sandbox in ${g.sendAs}`
@@ -536,6 +563,12 @@ export function ManualPayoutFiles() {
                           <TenantLink to="/admin/settings">Connect your PayPal app</TenantLink> to send these.
                         </span>
                       )}
+                      <ConfirmError
+                        error={
+                          (getQuote.variables?.currency === g.currency && quoteError(getQuote.error)) ||
+                          (payConverted.variables?.currency === g.currency && quoteError(payConverted.error))
+                        }
+                      />
                     </Row>
                   ) : (
                     <Row key={`${g.provider}:${g.currency}`}>
@@ -550,22 +583,25 @@ export function ManualPayoutFiles() {
                         Make file
                       </Button>
                       {g.provider === 'paypal' && activePaypal && (
-                        <Button
-                          size="sm"
-                          icon={<Send size={13} />}
-                          onClick={() => {
-                            const n = Math.min(g.count, 5000);
-                            const what = n === g.count ? `${plural(n, 'payout')} totalling ${money(g.total, g.currency)}` : `the first ${n.toLocaleString()} of these payouts`;
-                            const ask =
-                              activePaypal.environment === 'sandbox'
-                                ? `Test ${what} with your PayPal sandbox app? PayPal’s sandbox moves test money only: nothing is marked paid, and the payouts come back to send when it’s done.`
-                                : `Send ${what} from your live PayPal account now? PayPal moves the money as soon as it accepts the batch.`;
-                            if (window.confirm(ask)) payWithPaypal.mutate(g.currency);
-                          }}
-                          disabled={busy}
+                        <ConfirmAction
+                          prompt={sendQuestion(
+                            g.count <= 5000
+                              ? `${plural(g.count, 'payout')} totalling ${money(g.total, g.currency)}`
+                              : `the first ${(5000).toLocaleString()} of these payouts`,
+                            activePaypal.environment,
+                          )}
+                          confirmLabel={activePaypal.environment === 'sandbox' ? 'Yes, test' : 'Yes, send'}
+                          tone="accent"
+                          title={SEND_DETAIL[activePaypal.environment]}
+                          onConfirm={() => payWithPaypal.mutate(g.currency)}
+                          error={payWithPaypal.variables === g.currency && payWithPaypal.error}
                         >
-                          {payWithPaypal.isPending ? 'Sending…' : activePaypal.environment === 'sandbox' ? 'Test with PayPal sandbox' : 'Pay with PayPal'}
-                        </Button>
+                          {(ask) => (
+                            <Button size="sm" icon={<Send size={13} />} onClick={ask} disabled={busy}>
+                              {payWithPaypal.isPending ? 'Sending…' : activePaypal.environment === 'sandbox' ? 'Test with PayPal sandbox' : 'Pay with PayPal'}
+                            </Button>
+                          )}
+                        </ConfirmAction>
                       )}
                     </Row>
                   ),
@@ -606,11 +642,8 @@ export function ManualPayoutFiles() {
                       p={p}
                       busy={busy}
                       onConfirm={(reference) => confirmOne.mutate({ payoutId: p.payoutId, reference })}
-                      onCancelUnclaimed={() => {
-                        if (window.confirm(`Cancel the unclaimed PayPal payment to ${p.partnerName}? PayPal returns the money to your balance, and the payout goes back to “to send”.`)) {
-                          cancelUnclaimed.mutate(p.payoutId);
-                        }
-                      }}
+                      onCancelUnclaimed={() => cancelUnclaimed.mutate(p.payoutId)}
+                      cancelError={cancelUnclaimed.variables === p.payoutId && cancelUnclaimed.error}
                     />,
                   ])}
                 />
@@ -633,11 +666,14 @@ export function ManualPayoutFiles() {
 function BatchRow({
   b,
   busy,
+  error,
   onSync,
   onResolve,
 }: {
   b: PaypalBatch;
   busy: boolean;
+  /** A refused link, retry or release of this batch. */
+  error: unknown;
   onSync: () => void;
   onResolve: (body: { action: 'retry' | 'release' } | { action: 'link'; payoutBatchId: string }) => void;
 }) {
@@ -712,22 +748,44 @@ function BatchRow({
         </>
       )}
       {(b.state === 'reconcile_required' || b.state === 'intent' || (b.environment === 'sandbox' && open)) && (
-        <Button
-          size="sm"
-          variant="danger"
-          onClick={() => {
-            const ask =
-              b.environment === 'sandbox'
-                ? 'Release these payouts from the sandbox test now? They go back to “to send”.'
-                : 'Release these payouts? Only do this if you checked your PayPal account and this batch never went out. They go back to “to send”.';
-            if (window.confirm(ask)) onResolve({ action: 'release' });
-          }}
-          disabled={busy}
+        <ConfirmAction
+          prompt={b.environment === 'sandbox' ? 'Release them from the test now?' : 'Release? Only if this batch never went out.'}
+          confirmLabel="Yes, release"
+          title={b.environment === 'sandbox' ? 'They go back to “to send”.' : 'Check your PayPal account first. The payouts go back to “to send”.'}
+          onConfirm={() => onResolve({ action: 'release' })}
         >
-          Release
-        </Button>
+          {(ask) => (
+            <Button size="sm" variant="danger" onClick={ask} disabled={busy}>
+              Release
+            </Button>
+          )}
+        </ConfirmAction>
       )}
+      <ConfirmError error={error} />
     </Row>
+  );
+}
+
+/** A converted batch's quote, shown on its row with Yes / Cancel. */
+function QuotePrompt({ quote, busy, onSend, onCancel }: { quote: ConversionQuote; busy: boolean; onSend: () => void; onCancel: () => void }) {
+  const { question, details } = conversionAsk(quote);
+  return (
+    <div style={{ flexBasis: '100%' }}>
+      <div style={{ fontSize: 12, color: theme.textMuted, lineHeight: 1.5, marginBottom: 6 }}>
+        {details.map((line) => (
+          <div key={line}>{line}</div>
+        ))}
+      </div>
+      <ConfirmPrompt
+        prompt={question}
+        confirmLabel={quote.environment === 'sandbox' ? 'Yes, test' : 'Yes, send'}
+        tone="accent"
+        title={SEND_DETAIL[quote.environment]}
+        disabled={busy}
+        onConfirm={onSend}
+        onCancel={onCancel}
+      />
+    </div>
   );
 }
 
@@ -777,11 +835,13 @@ function FileCell({
   busy,
   onConfirm,
   onCancelUnclaimed,
+  cancelError,
 }: {
   p: RunPayout;
   busy: boolean;
   onConfirm: (reference: string) => void;
   onCancelUnclaimed: () => void;
+  cancelError: unknown;
 }) {
   // Marking a payout sent by hand asks for its payment reference first.
   const [confirming, setConfirming] = useState(false);
@@ -796,9 +856,22 @@ function FileCell({
           {p.export.paypal?.error && ` (${p.export.paypal.error})`}
         </div>
         {status === 'UNCLAIMED' && (
-          <Button size="sm" variant="ghost" style={{ marginTop: 4, marginLeft: -10 }} onClick={onCancelUnclaimed} disabled={busy}>
-            Cancel and get it back
-          </Button>
+          <div style={{ marginTop: 4 }}>
+            <ConfirmAction
+              prompt={`Cancel the payment to ${p.partnerName}?`}
+              confirmLabel="Yes, get it back"
+              cancelLabel="Keep it"
+              title="PayPal returns the money to your balance, and the payout goes back to “to send”."
+              onConfirm={onCancelUnclaimed}
+              error={cancelError}
+            >
+              {(ask) => (
+                <Button size="sm" variant="ghost" style={{ marginLeft: -10 }} onClick={ask} disabled={busy}>
+                  Cancel and get it back
+                </Button>
+              )}
+            </ConfirmAction>
+          </div>
         )}
       </div>
     );

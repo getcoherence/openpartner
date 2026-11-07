@@ -195,11 +195,17 @@ describe('admin: a program’s bounties', () => {
     expect((form.getByRole('button', { name: /^Launch/ }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('ends a bounty after confirming', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+  // A scripted or agent-driven browser dismisses window.confirm, which then
+  // returns false: End now asks on the card instead.
+  it('ends a bounty after asking on the card, where the browser dismisses dialogs', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
     const page = adminPage();
     fireEvent.click(await page.findByRole('button', { name: 'End now' }));
+    expect(page.getByText('End now?')).toBeTruthy();
+    expect(requests.some((r) => r.method === 'PATCH')).toBe(false);
+    fireEvent.click(page.getByRole('button', { name: 'Yes, end' }));
     await waitFor(() => expect(requests.find((r) => r.method === 'PATCH')?.body).toEqual({ status: 'ended' }));
+    expect(confirm).not.toHaveBeenCalled();
   });
 });
 

@@ -15,6 +15,7 @@ import { ArrowLeft, MessagesSquare } from 'lucide-react';
 import { Button, EmptyState, ErrorBanner, Input, Label, Select, Textarea, formatDate } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { useIsMobile } from '../../lib/useMediaQuery.js';
+import { ConfirmAction } from '../../lib/ConfirmAction.js';
 import { creatorApi, creatorApiBlob } from './creator-api.js';
 import { creatorErrorCode, usePayments } from './CreatorPayments.js';
 import { PACKAGE_CURRENCIES, type OwnPackage } from './storefront-shared.js';
@@ -331,18 +332,23 @@ function CreatorThread({ id }: { id: string }) {
                 Send an offer
               </Button>
             )}
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={block.isPending}
-              onClick={() => {
-                if (t.conversation.blocked || window.confirm(`Block ${t.conversation.brand?.name ?? 'this brand'}? They won’t be able to message or book you.`)) {
-                  block.mutate(!t.conversation.blocked);
-                }
-              }}
+            <ConfirmAction
+              prompt={`Block ${t.conversation.brand?.name ?? 'this brand'}?`}
+              confirmLabel="Yes, block"
+              title="They can’t message or book you."
+              onConfirm={() => block.mutate(true)}
             >
-              {t.conversation.blocked ? 'Unblock' : 'Block'}
-            </Button>
+              {(ask) => (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={block.isPending}
+                  onClick={t.conversation.blocked ? () => block.mutate(false) : ask}
+                >
+                  {t.conversation.blocked ? 'Unblock' : 'Block'}
+                </Button>
+              )}
+            </ConfirmAction>
           </div>
         }
       >
@@ -502,15 +508,18 @@ function CreatorBookingCard({
             >
               {amountOk ? `Accept at ${formatWholeAmount(Number(amount), currency)}` : 'Accept'}
             </Button>
-            <Button
-              variant="secondary"
-              disabled={act.isPending}
-              onClick={() => {
-                if (window.confirm('Decline this request? The brand is told.')) act.mutate({ action: 'decline', body: note.trim() ? { message: note.trim() } : {} });
-              }}
+            <ConfirmAction
+              prompt="Decline this request?"
+              confirmLabel="Yes, decline"
+              title="The brand is told."
+              onConfirm={() => act.mutate({ action: 'decline', body: note.trim() ? { message: note.trim() } : {} })}
             >
-              Decline
-            </Button>
+              {(ask) => (
+                <Button variant="secondary" disabled={act.isPending} onClick={ask}>
+                  Decline
+                </Button>
+              )}
+            </ConfirmAction>
           </div>
         </div>
       )}
@@ -543,28 +552,32 @@ function CreatorBookingCard({
           </Button>
         )}
         {b.status === 'awaiting_payment' && !b.paymentProcessing && (
-          <Button
-            variant="secondary"
-            disabled={act.isPending}
-            onClick={() => {
-              if (window.confirm('Withdraw this? Nothing has been charged.')) act.mutate({ action: 'withdraw' });
-            }}
+          <ConfirmAction
+            prompt="Withdraw this?"
+            confirmLabel="Yes, withdraw"
+            title="Nothing has been charged."
+            onConfirm={() => act.mutate({ action: 'withdraw' })}
           >
-            Withdraw
-          </Button>
+            {(ask) => (
+              <Button variant="secondary" disabled={act.isPending} onClick={ask}>
+                Withdraw
+              </Button>
+            )}
+          </ConfirmAction>
         )}
         {['paid', 'delivered', 'completed'].includes(b.status) && (
-          <Button
-            variant="ghost"
-            disabled={act.isPending}
-            onClick={() => {
-              if (window.confirm(`Refund ${brand} in full? The money goes back to them from your Stripe account, and OpenPartner refunds its fee.`)) {
-                act.mutate({ action: 'refund' });
-              }
-            }}
+          <ConfirmAction
+            prompt={`Refund ${brand} in full?`}
+            confirmLabel="Yes, refund"
+            title="The money goes back to them from your Stripe account, and OpenPartner refunds its fee."
+            onConfirm={() => act.mutate({ action: 'refund' })}
           >
-            Refund
-          </Button>
+            {(ask) => (
+              <Button variant="ghost" disabled={act.isPending} onClick={ask}>
+                Refund
+              </Button>
+            )}
+          </ConfirmAction>
         )}
         {b.hasReport && (
           <Link to={`/creator/bookings/${encodeURIComponent(b.id)}/report`} style={{ textDecoration: 'none', marginLeft: 'auto' }}>

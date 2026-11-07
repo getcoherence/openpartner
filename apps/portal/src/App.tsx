@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import { createBrowserRouter, Link, Navigate, Route, RouterProvider, Routes, useLocation, useNavigate, useRouteError } from 'react-router';
 import {
   LayoutDashboard,
@@ -42,6 +42,7 @@ import { clearApiKey, api, type Principal } from './api.js';
 import { useTenantBase } from './tenant-base.js';
 import { alpha, theme } from './theme.js';
 import { useIsMobile } from './lib/useMediaQuery.js';
+import { ConfirmPrompt } from './lib/ConfirmAction.js';
 import { useBrand, useConnectPayouts, usePublicBrand } from './lib/useBrand.js';
 import { Dashboard } from './pages/Dashboard.js';
 import { LinksPage } from './pages/Links.js';
@@ -751,6 +752,8 @@ interface IdentityList {
 function IdentitySwitcher({ principal }: { principal: Principal }) {
   const [open, setOpen] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  // Asked under the row, not with window.confirm: see ConfirmAction.
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const { label, initial, hue } = describePrincipal(principal);
   // On a white-label portal the multi-workspace machinery is platform UX
   // that must not leak: "Add another account" / "Create a new brand" talk
@@ -895,7 +898,10 @@ function IdentitySwitcher({ principal }: { principal: Principal }) {
   return (
     <div style={{ position: 'relative', marginBottom: 18 }}>
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          setOpen((v) => !v);
+          setConfirmRemove(null);
+        }}
         style={{
           width: '100%',
           background: theme.surface,
@@ -1016,37 +1022,49 @@ function IdentitySwitcher({ principal }: { principal: Principal }) {
                 {otherIdentities.map((id) => {
                   const busy = busyAction === `switch:${id.sessionId}` || busyAction === `remove:${id.sessionId}`;
                   return (
-                    <SwitcherRow
-                      key={id.sessionId}
-                      active={false}
-                      busy={busy}
-                      disabled={busyAction !== null}
-                      onClick={() => switchIdentity(id.sessionId)}
-                      title={id.email}
-                      subtitle="Click to switch"
-                      right={
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (window.confirm(`Sign out ${id.email} from this device?`)) {
+                    <Fragment key={id.sessionId}>
+                      <SwitcherRow
+                        active={false}
+                        busy={busy}
+                        disabled={busyAction !== null}
+                        onClick={() => switchIdentity(id.sessionId)}
+                        title={id.email}
+                        subtitle="Click to switch"
+                        right={
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setConfirmRemove(id.sessionId);
+                            }}
+                            disabled={busyAction !== null}
+                            title="Remove account from this device"
+                            style={{
+                              background: 'transparent',
+                              border: 'none',
+                              cursor: busyAction === null ? 'pointer' : 'wait',
+                              color: theme.textDim,
+                              padding: 2,
+                              display: 'flex',
+                            }}
+                          >
+                            {busy ? <Spinner /> : <X size={14} />}
+                          </button>
+                        }
+                      />
+                      {confirmRemove === id.sessionId && (
+                        <div style={{ padding: '0 10px 8px' }}>
+                          <ConfirmPrompt
+                            prompt="Sign out on this device?"
+                            confirmLabel="Yes, sign out"
+                            onConfirm={() => {
+                              setConfirmRemove(null);
                               void removeIdentity(id.sessionId);
-                            }
-                          }}
-                          disabled={busyAction !== null}
-                          title="Remove account from this device"
-                          style={{
-                            background: 'transparent',
-                            border: 'none',
-                            cursor: busyAction === null ? 'pointer' : 'wait',
-                            color: theme.textDim,
-                            padding: 2,
-                            display: 'flex',
-                          }}
-                        >
-                          {busy ? <Spinner /> : <X size={14} />}
-                        </button>
-                      }
-                    />
+                            }}
+                            onCancel={() => setConfirmRemove(null)}
+                          />
+                        </div>
+                      )}
+                    </Fragment>
                   );
                 })}
               </>

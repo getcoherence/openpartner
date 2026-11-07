@@ -4,6 +4,7 @@ import { CheckCircle2, RefreshCw, Send, Unplug } from 'lucide-react';
 import { api } from '../../api.js';
 import { alpha, theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Input, formatDate } from '../../ui.js';
+import { ConfirmAction } from '../../lib/ConfirmAction.js';
 
 export type PaypalEnvironment = 'live' | 'sandbox';
 
@@ -95,15 +96,7 @@ export function PaypalPayoutsCard() {
               conn={conn}
               onActivate={() => activate.mutate(env)}
               onVerify={() => verify.mutate(env)}
-              onDisconnect={() => {
-                if (
-                  window.confirm(
-                    `Disconnect your ${PAYPAL_ENV_LABEL[env].toLowerCase()} PayPal app? OpenPartner forgets its secret and stops using it, including checking batches it already sent for late refunds. Connect the same app again to pick them back up.`,
-                  )
-                ) {
-                  disconnect.mutate(env);
-                }
-              }}
+              onDisconnect={() => disconnect.mutate(env)}
               busy={activate.isPending || verify.isPending || disconnect.isPending}
             />
           ) : (
@@ -220,9 +213,18 @@ function ConnectedRow({
         <Button size="sm" variant="ghost" icon={<RefreshCw size={13} />} onClick={onVerify} disabled={busy}>
           Check again
         </Button>
-        <Button size="sm" variant="ghost" icon={<Unplug size={13} />} onClick={onDisconnect} disabled={busy || conn.openBatches > 0}>
-          Disconnect
-        </Button>
+        <ConfirmAction
+          prompt={`Disconnect your ${PAYPAL_ENV_LABEL[conn.environment].toLowerCase()} app?`}
+          confirmLabel="Yes, disconnect"
+          title="OpenPartner forgets its secret and stops checking batches it sent for late refunds. Connect the same app again to pick them back up."
+          onConfirm={onDisconnect}
+        >
+          {(ask) => (
+            <Button size="sm" variant="ghost" icon={<Unplug size={13} />} onClick={ask} disabled={busy || conn.openBatches > 0}>
+              Disconnect
+            </Button>
+          )}
+        </ConfirmAction>
       </div>
       {!conn.payoutsEnabled && (
         <Note tone="warn">

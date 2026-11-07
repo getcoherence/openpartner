@@ -102,10 +102,12 @@ describe('the PayPal payments card', () => {
   });
 
   it('points at Pay with PayPal when no payouts app is connected, and disconnects a checkout app', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
     renderCard([app({ purpose: 'checkout', tracking: true })]);
     expect(text()).toContain('Settings → Pay with PayPal');
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    expect(text()).toContain('Disconnect this live app?');
+    expect(api).not.toHaveBeenCalledWith('/config/paypal-payments/live', { method: 'DELETE' });
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, disconnect' }));
     await waitFor(() => expect(api).toHaveBeenCalledWith('/config/paypal-payments/live', { method: 'DELETE' }));
   });
 });

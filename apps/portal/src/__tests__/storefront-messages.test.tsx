@@ -222,6 +222,26 @@ describe('brand thread', () => {
     expect(sent.find((s) => s.url.endsWith('/checkout'))!.body).toEqual({ returnPath: '/admin/network/messages/cnv_1' });
   });
 
+  // Asked on the booking, not with window.confirm.
+  it('declines an offer after asking on the booking', async () => {
+    routes['GET /api/t/acme/admin/network/conversations/cnv_1'] = () => [
+      200,
+      {
+        conversation: { id: 'cnv_1', creator: OFFER.creator, blocked: false, canWrite: true, cannotWriteReason: null, canBook: true },
+        messages: [{ id: 'cnm_2', author: 'creator', authorName: null, kind: 'event', body: null, event: 'offered', bookingId: 'bkr_1', createdAt: '2026-10-25T10:00:00Z' }],
+        hasMore: false,
+        bookings: [OFFER],
+      },
+    ];
+    routes['POST /api/t/acme/admin/network/bookings/bkr_1/cancel'] = () => [200, { booking: { ...OFFER, status: 'cancelled' } }];
+    renderAt('/t/acme/admin/network/messages/cnv_1', <Route path="/t/:slug/admin/network/messages/:id" element={<AdminNetworkThread />} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Decline offer' }));
+    expect(screen.getByText('Decline this offer?')).toBeTruthy();
+    expect(sent.some((s) => s.url.endsWith('/cancel'))).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, decline' }));
+    await waitFor(() => expect(sent.some((s) => s.method === 'POST' && s.url.endsWith('/bookings/bkr_1/cancel'))).toBe(true));
+  });
+
   it('says a payment is processing instead of offering Pay, and the return banner follows the booking', async () => {
     let booking: Record<string, unknown> = { ...OFFER, paymentProcessing: true };
     routes['GET /api/t/acme/admin/network/conversations/cnv_1'] = () => [
@@ -436,26 +456,22 @@ describe('creator thread', () => {
       },
     ];
     routes['POST /api/creator-api/creators/me/bookings/bkr_old/decline'] = () => [200, { booking: { ...REQUEST, id: 'bkr_old', status: 'declined' } }];
-    const confirm = window.confirm;
-    window.confirm = () => true;
-    try {
-      renderAt(
-        '/creator/bookings',
-        <>
-          <Route path="/creator/bookings" element={<CreatorBookingsPage />} />
-          <Route path="/creator/messages/:id" element={<div>thread page</div>} />
-        </>,
-      );
-      expect(await screen.findByText('Repost with comment')).toBeTruthy();
-      expect(screen.getByText(/with no brand account behind it/)).toBeTruthy();
-      fireEvent.click(screen.getByRole('button', { name: 'Decline' }));
-      await waitFor(() => expect(sent.some((s) => s.url.endsWith('/bookings/bkr_old/decline'))).toBe(true));
-      fireEvent.click(screen.getByRole('button', { name: 'Open' }));
-      expect(await screen.findByText('thread page')).toBeTruthy();
-      expect(window.location.pathname).toBe('/creator/messages/cnv_2');
-    } finally {
-      window.confirm = confirm;
-    }
+    renderAt(
+      '/creator/bookings',
+      <>
+        <Route path="/creator/bookings" element={<CreatorBookingsPage />} />
+        <Route path="/creator/messages/:id" element={<div>thread page</div>} />
+      </>,
+    );
+    expect(await screen.findByText('Repost with comment')).toBeTruthy();
+    expect(screen.getByText(/with no brand account behind it/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Decline' }));
+    expect(sent.some((s) => s.url.endsWith('/decline'))).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, decline' }));
+    await waitFor(() => expect(sent.some((s) => s.url.endsWith('/bookings/bkr_old/decline'))).toBe(true));
+    fireEvent.click(screen.getByRole('button', { name: 'Open' }));
+    expect(await screen.findByText('thread page')).toBeTruthy();
+    expect(window.location.pathname).toBe('/creator/messages/cnv_2');
   });
 
   it('says before accepting that a tracked request shares their name and email, and when a brand tracks one', async () => {
@@ -474,5 +490,27 @@ describe('creator thread', () => {
     ];
     renderAt('/creator/messages/cnv_2', <Route path="/creator/messages/:id" element={<CreatorThreadPage />} />);
     expect(await screen.findByText(/tracks this booking on Acme Pro: you’re its partner there, and it has your name and email/)).toBeTruthy();
+  });
+
+  // Asked on the page, not with window.confirm.
+  it('declines a request with the note, and blocks the brand, each after asking', async () => {
+    routes['GET /api/creator-api/creators/me/payments'] = () => [200, { connected: true, ready: true, cardPayments: 'active', country: 'US', currency: 'USD', checkedAt: null }];
+    routes['GET /api/creator-api/creators/me/conversations/cnv_2'] = () => [200, creatorThread()];
+    routes['POST /api/creator-api/creators/me/bookings/bkr_2/decline'] = () => [200, { booking: { ...REQUEST, status: 'declined' } }];
+    routes['POST /api/creator-api/creators/me/conversations/cnv_2/block'] = () => [200, { ok: true }];
+    renderAt('/creator/messages/cnv_2', <Route path="/creator/messages/:id" element={<CreatorThreadPage />} />);
+
+    fireEvent.change(await screen.findByPlaceholderText('Timing, what you’ll need from them…'), { target: { value: 'Booked up this month.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Decline' }));
+    expect(screen.getByText('Decline this request?')).toBeTruthy();
+    expect(sent.some((s) => s.url.endsWith('/decline'))).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, decline' }));
+    await waitFor(() => expect(sent.find((s) => s.url.endsWith('/bookings/bkr_2/decline'))?.body).toEqual({ message: 'Booked up this month.' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Block' }));
+    expect(screen.getByText('Block New Brand Co?')).toBeTruthy();
+    expect(sent.some((s) => s.url.endsWith('/block'))).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, block' }));
+    await waitFor(() => expect(sent.some((s) => s.method === 'POST' && s.url.endsWith('/conversations/cnv_2/block'))).toBe(true));
   });
 });

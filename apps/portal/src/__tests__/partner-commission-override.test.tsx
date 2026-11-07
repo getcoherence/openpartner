@@ -232,12 +232,13 @@ describe('per-program terms', () => {
   });
 
   it('clears only the program terms', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
     const page = show(PARTNER_WIDE, [
       { id: 'a', name: 'Alpha', granted: true, commissionRule: rule(10), holdbackDays: null, commission: scoped('a', 50, null) },
     ]);
     fireEvent.click(page.getByText('Edit terms'));
     fireEvent.click(page.getByText('Clear program terms'));
+    expect(page.getByText('Clear the program terms?')).toBeTruthy();
+    fireEvent.click(page.getByRole('button', { name: 'Yes, clear' }));
     await waitFor(() =>
       expect(vi.mocked(api)).toHaveBeenCalledWith('/partners/p1/programs/a/commission', { method: 'DELETE' }),
     );
@@ -325,5 +326,47 @@ describe('rulesLeftUnpaid / sharedRules', () => {
     expect(sharedRules([])).toBeNull();
     expect(sharedRules([[r('a')], [r('a')]])).toEqual([r('a')]);
     expect(sharedRules([[r('a')], [r('b')]])).toBeNull();
+  });
+});
+
+// Asked on the page, not with window.confirm.
+describe('the recruiter', () => {
+  const RECRUITS = {
+    partnerId: 'p1',
+    recruitCode: null,
+    recruitUrl: null,
+    signupOpen: false,
+    programs: [],
+    recruitedBy: { id: 'p_rex', name: 'Rex', recruitedAt: '2026-10-01T00:00:00Z' },
+    recruits: [],
+    total: 0,
+  };
+  const patches = () => vi.mocked(api).mock.calls.filter((c) => (c[1] as { method?: string } | undefined)?.method === 'PATCH');
+
+  beforeEach(() => {
+    vi.mocked(api).mockImplementation(async (path) => {
+      if (path === '/partners/p1/recruits') return RECRUITS;
+      if (String(path).startsWith('/partners?')) return { partners: [{ id: 'p_sam', name: 'Sam', email: 'sam@example.com', revokedAt: null }], nextCursor: null };
+      return {};
+    });
+  });
+
+  it('is removed after asking', async () => {
+    const page = show(null);
+    fireEvent.click(await page.findByRole('button', { name: 'Remove' }));
+    expect(page.getByText('Remove Rex?')).toBeTruthy();
+    expect(patches()).toEqual([]);
+    fireEvent.click(page.getByRole('button', { name: 'Yes, remove' }));
+    await waitFor(() => expect(patches()).toEqual([['/partners/p1', { method: 'PATCH', body: { recruitedByPartnerId: null } }]]));
+  });
+
+  it('is replaced after asking under the picker', async () => {
+    const page = show(null);
+    fireEvent.click(await page.findByRole('button', { name: 'Change recruiter' }));
+    fireEvent.click(await page.findByRole('button', { name: /^Sam/ }));
+    expect(page.getByText('Replace Rex with Sam?')).toBeTruthy();
+    expect(patches()).toEqual([]);
+    fireEvent.click(page.getByRole('button', { name: 'Yes, replace' }));
+    await waitFor(() => expect(patches()).toEqual([['/partners/p1', { method: 'PATCH', body: { recruitedByPartnerId: 'p_sam' } }]]));
   });
 });
