@@ -4,6 +4,9 @@
  * src/lib/offerings.ts). Programs with the same terms read exactly as one
  * program would; otherwise the commission is the range across them, so the
  * card never promises a rate only some programs pay.
+ *
+ * Creator Discover and the brand portal's partner Discover
+ * (pages/partner/Discover.tsx) both read it.
  */
 import {
   formatCustomerReward,
@@ -65,6 +68,47 @@ export function brandCommissionLine(programs: SummaryTerms[]): string | null {
   }
   const flat = fixedRange(fixed);
   return flat ? `${flat} ${varies}` : 'Varies by program';
+}
+
+/** The brand fields an /offerings feed item carries on every program. */
+export interface VendorFields {
+  vendorId: string;
+  vendorName: string;
+  vendorLogoUrl: string | null;
+  vendorPartnerCount: number;
+  featured?: boolean;
+}
+
+/** One brand with its programs: an entry of the Network's GET /marketplace/brands. */
+export interface BrandEntry<P> {
+  vendorId: string;
+  vendorName: string;
+  vendorLogoUrl: string | null;
+  vendorPartnerCount: number;
+  featured: boolean;
+  programCount: number;
+  offerings: P[];
+}
+
+/** An /offerings feed grouped by brand, in feed order: Discover's feed on a
+ *  Network predating GET /marketplace/brands. */
+export function groupByBrand<O extends VendorFields>(offerings: O[]): BrandEntry<Omit<O, keyof VendorFields>>[] {
+  const byVendor = new Map<string, BrandEntry<Omit<O, keyof VendorFields>>>();
+  for (const { vendorId, vendorName, vendorLogoUrl, vendorPartnerCount, featured, ...program } of offerings) {
+    const brand = byVendor.get(vendorId) ?? {
+      vendorId,
+      vendorName,
+      vendorLogoUrl,
+      vendorPartnerCount,
+      featured: !!featured,
+      programCount: 0,
+      offerings: [],
+    };
+    brand.offerings.push(program);
+    brand.programCount += 1;
+    byVendor.set(vendorId, brand);
+  }
+  return [...byVendor.values()];
 }
 
 /** One value when every program agrees, else null. */

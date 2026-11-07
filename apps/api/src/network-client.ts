@@ -1989,6 +1989,9 @@ export const partnerProxy = {
   // Discovery (public on Network — no acting header needed)
   listOfferings: (db: Knex, tenantId: string, qs: string) =>
     callNetwork<{ offerings: unknown[] }>(db, tenantId, 'GET', `/offerings${qs ? `?${qs}` : ''}`),
+  /** The same feed, one entry per brand with its programs. */
+  listBrands: (db: Knex, tenantId: string, qs: string) =>
+    callNetwork<{ brands: unknown[] }>(db, tenantId, 'GET', `/marketplace/brands${qs ? `?${qs}` : ''}`),
   getOffering: (db: Knex, tenantId: string, id: string) =>
     callNetwork<unknown>(db, tenantId, 'GET', `/offerings/${encodeURIComponent(id)}`),
   getVendor: (db: Knex, tenantId: string, id: string) =>
