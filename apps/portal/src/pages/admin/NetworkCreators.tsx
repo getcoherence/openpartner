@@ -83,6 +83,9 @@ interface DirectoryRow {
   /** This brand's invitations to the creator, one per offering. Absent on
    *  an older Network. */
   invitations?: Array<{ offeringId: string; status: 'pending' | 'consumed' | 'expired'; expiresAt?: string }>;
+  /** Whether their storefront takes bookings: bookings on and a Stripe
+   *  account that can take card payments. Absent on an older Network. */
+  bookingsOpen?: boolean;
 }
 
 const CATEGORIES = [
@@ -780,10 +783,12 @@ interface OfferingOption {
   published: boolean;
 }
 
-/** Book one of the creator's storefront packages as a tracked deal. */
+/** Book one of the creator's storefront packages as a tracked deal. Hidden
+ *  for a creator not taking bookings; an older Network doesn't say, so it
+ *  shows and the dialog tells them. */
 function BookButton({ creator }: { creator: DirectoryRow }) {
   const [open, setOpen] = useState(false);
-  if (useViewOnly()) return null;
+  if (useViewOnly() || creator.bookingsOpen === false) return null;
   return (
     <>
       <Button size="sm" variant="secondary" onClick={() => setOpen(true)}>
