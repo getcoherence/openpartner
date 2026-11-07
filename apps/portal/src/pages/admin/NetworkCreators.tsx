@@ -45,6 +45,7 @@ import {
   type ExternalFilters,
 } from './NetworkIndexedCreators.js';
 import { useViewOnly } from '../../lib/viewOnly.js';
+import { TenantLink } from '../../tenant-link.js';
 
 interface PlatformRow {
   id: string;
@@ -817,9 +818,25 @@ function pendingInvites(creator: DirectoryRow): Set<string> {
   return new Set((creator.invitations ?? []).filter((i) => i.status === 'pending').map((i) => i.offeringId));
 }
 
+/** Inviting needs an active plan: the invited creator applies, and the API
+ *  approves applications only with one (402 plan_required). Billing says
+ *  `subscribed: false` when the brand has none; Enterprise and self-host
+ *  don't say, and neither does an answer that hasn't come, which leaves
+ *  the check to the API. */
+function usePlanActive(): boolean {
+  const { data } = useQuery({
+    queryKey: ['billing-status'],
+    queryFn: () => api<{ subscribed?: boolean }>('/billing/status'),
+    staleTime: 60_000,
+    retry: false,
+  });
+  return data?.subscribed !== false;
+}
+
 function InviteButton({ creator }: { creator: DirectoryRow }) {
   const [open, setOpen] = useState(false);
   const { published } = useOfferings();
+  const planActive = usePlanActive();
   if (useViewOnly()) return null;
   const invited = pendingInvites(creator);
   const allInvited = published.length > 0 && published.every((o) => invited.has(o.id));
@@ -829,6 +846,15 @@ function InviteButton({ creator }: { creator: DirectoryRow }) {
         <Button size="sm" disabled>
           Invited
         </Button>
+      ) : !planActive ? (
+        <>
+          <TenantLink to="/admin/billing" style={{ alignSelf: 'center', fontSize: 12, color: theme.accentText }}>
+            Activate your plan to invite
+          </TenantLink>
+          <Button size="sm" disabled>
+            Invite
+          </Button>
+        </>
       ) : (
         <Button size="sm" onClick={() => setOpen(true)}>
           Invite
@@ -842,6 +868,7 @@ function InviteButton({ creator }: { creator: DirectoryRow }) {
 const INVITE_ERROR_TEXT: Record<string, string> = {
   creator_not_found: 'This creator is no longer available (deleted account?).',
   already_invited: 'You already invited them to this offering.',
+  plan_required: 'Activate your plan on Billing to invite creators.',
 };
 
 function InviteDialog({ creator, onClose }: { creator: DirectoryRow; onClose: () => void }) {

@@ -33,9 +33,14 @@ const app = createApp({ enableLogger: false });
 const DAY_MS = 24 * 60 * 60 * 1000;
 const createdTenantIds: string[] = [];
 
-/** A hosted (Flex) brand that took its 14-day trial, with one partner and
- *  one program to grant. */
-async function seedBrand(billing: { trialEndsAt: Date; stripeSubscriptionId: string | null }) {
+/** A hosted (Flex unless named) brand that took its 14-day trial, with one
+ *  partner and one program to grant. No plan at all is a self-hosted
+ *  tenant here: the suite runs with OPENPARTNER_MODE=selfhost. */
+async function seedBrand(billing: {
+  trialEndsAt: Date;
+  stripeSubscriptionId: string | null;
+  plan?: 'flex' | 'enterprise' | null;
+}) {
   const tenantId = ulid();
   const slug = `trial${ulid().slice(-8).toLowerCase()}`;
   createdTenantIds.push(tenantId);
@@ -45,7 +50,7 @@ async function seedBrand(billing: { trialEndsAt: Date; stripeSubscriptionId: str
     displayName: 'Trial Gate Brand',
     status: 'active',
     approvalStatus: 'approved',
-    billingPlan: 'flex',
+    billingPlan: billing.plan === undefined ? 'flex' : billing.plan,
     trialEndsAt: billing.trialEndsAt,
     firstTrialActivatedAt: new Date(billing.trialEndsAt.getTime() - 14 * DAY_MS),
     stripeSubscriptionId: billing.stripeSubscriptionId,
@@ -154,5 +159,43 @@ describe.skipIf(skipIntegration)('trial gate — POST /bonuses', () => {
     const res = await pay(slug, '/bonuses', partnerId);
     expect(res.status).toBe(201);
     expect(res.body.bonus.partnerId).toBe(partnerId);
+  });
+});
+
+// An invited creator applies, and approving the application needs a plan,
+// so a brand without one would leave the creator waiting.
+describe.skipIf(skipIntegration)('trial gate — POST /admin/network/offerings/:id/invite-creator', () => {
+  const invite = (slug: string, path = '/admin/network/offerings/off_1/invite-creator') =>
+    request(app)
+      .post(`/t/${slug}${path}`)
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ creatorId: 'crt_1' });
+
+  /** Past both gates, the route proxies to the Network, which this suite
+   *  has none of. */
+  const expectReachedNetwork = (res: request.Response) => {
+    expect(res.status).toBe(503);
+    expect(res.body.detail).toBe('network_not_configured');
+  };
+
+  it('needs an active plan, even during the trial', async () => {
+    const { slug } = await seedBrand({ trialEndsAt: new Date(Date.now() + 7 * DAY_MS), stripeSubscriptionId: null });
+    for (const path of ['/admin/network/offerings/off_1/invite-creator', '/Admin/Network/Offerings/off_1/Invite-Creator/']) {
+      const res = await invite(slug, path);
+      expect(res.status).toBe(402);
+      expect(res.body.error).toBe('plan_required');
+    }
+  });
+
+  it('invites once the brand has a plan', async () => {
+    const { slug } = await seedBrand({ trialEndsAt: new Date(Date.now() - DAY_MS), stripeSubscriptionId: 'sub_trialgate_invite' });
+    expectReachedNetwork(await invite(slug));
+  });
+
+  it('lets Enterprise and self-hosted brands invite', async () => {
+    for (const plan of ['enterprise', null] as const) {
+      const { slug } = await seedBrand({ trialEndsAt: new Date(Date.now() - DAY_MS), stripeSubscriptionId: null, plan });
+      expectReachedNetwork(await invite(slug));
+    }
   });
 });

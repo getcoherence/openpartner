@@ -4,6 +4,8 @@ import { api, ApiError } from '../../api.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { useViewOnly } from '../../lib/viewOnly.js';
+import { TenantLink } from '../../tenant-link.js';
+import { networkErrorCode } from './BookCreatorDialog.js';
 
 interface PartnershipRequest {
   id: string;
@@ -52,18 +54,27 @@ function RequestList({ statusFilter }: { statusFilter: string }) {
     retry: false,
   });
   const [actionError, setActionError] = useState<string | null>(null);
+  // Approving makes the creator a partner, which needs an active plan.
+  const [planNeeded, setPlanNeeded] = useState(false);
 
   const approve = useMutation({
     mutationFn: ({ id, decisionNote }: { id: string; decisionNote?: string }) =>
       api(`/admin/network/requests/${id}/approve`, { method: 'POST', body: { decisionNote } }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['network-requests'] }),
-    onError: (err) => setActionError(approveErrorMessage(err)),
+    onError: (err) => {
+      const plan = networkErrorCode(err) === 'plan_required';
+      setPlanNeeded(plan);
+      setActionError(plan ? null : approveErrorMessage(err));
+    },
   });
   const reject = useMutation({
     mutationFn: ({ id, decisionNote }: { id: string; decisionNote?: string }) =>
       api(`/admin/network/requests/${id}/reject`, { method: 'POST', body: { decisionNote } }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['network-requests'] }),
-    onError: (err) => setActionError(err instanceof ApiError ? err.message : 'failed'),
+    onError: (err) => {
+      setPlanNeeded(false);
+      setActionError(err instanceof ApiError ? err.message : 'failed');
+    },
   });
 
   if (error) {
@@ -80,6 +91,13 @@ function RequestList({ statusFilter }: { statusFilter: string }) {
   return (
     <>
       {actionError && <ErrorBanner error={actionError} />}
+      {planNeeded && (
+        <Card style={{ marginBottom: 16 }}>
+          <TenantLink to="/admin/billing" style={{ fontSize: 13, color: theme.accentText }}>
+            Activate your plan to approve
+          </TenantLink>
+        </Card>
+      )}
       {requests.map((r) => (
         <RequestRow
           key={r.id}

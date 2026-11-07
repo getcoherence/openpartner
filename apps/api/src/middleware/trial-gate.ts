@@ -21,6 +21,12 @@
  *   - POST /admin/network/requests/:id/approve  (approve creator
  *                                            application coming through
  *                                            the Network)
+ *   - POST /admin/network/offerings/:id/invite-creator  (invite an
+ *                                            OpenPartner creator to apply:
+ *                                            their application could only
+ *                                            be approved with a plan)
+ *   - POST /admin/network/bookings/:id/track  (tracking a booking adds
+ *                                            the creator as a partner)
  *   - POST /bonuses                         (pay a partner a bonus: the
  *                                            platform fee bills it through
  *                                            the plan's meter)
@@ -76,6 +82,10 @@ const PLAN_REQUIRED: GatedRoute[] = [
   // the real cause on its Billing page.
   { method: 'POST', test: (p) => p === '/partner-signup' },
   { method: 'POST', test: (p) => /^\/admin\/network\/requests\/[^/]+\/approve$/.test(p) },
+  // Inviting a creator asks them to apply, and approving the application
+  // needs a plan, so without one the creator would wait on a brand that
+  // can't take them.
+  { method: 'POST', test: (p) => /^\/admin\/network\/offerings\/[^/]+\/invite-creator$/.test(p) },
   // Paying a bonus moves money, and on a hosted plan the platform fee bills
   // it, so it needs a plan as onboarding does.
   { method: 'POST', test: (p) => p === '/bonuses' },
