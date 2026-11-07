@@ -510,6 +510,21 @@ Clicks, partners, conversions, attributed revenue and commission by status for e
     errors: { 404: ['not_found'] },
   });
 
+  r.operation({
+    method: 'delete',
+    path: '/programs/:id',
+    tag: 'Programs',
+    operationId: 'deleteProgram',
+    summary: 'Delete an unused program',
+    description: `
+For a program made by mistake, such as a duplicate. Only a program nothing uses can be deleted (\`deletable\` in \`GET /programs\`): no partner grant, link, click, coupon, conversion, partner commission terms, bonus, bounty or test click. Anything else answers \`409 program_in_use\`; end the program instead by setting \`endsAt\`.
+
+A program listed on the OpenPartner Network has its listing taken down first. If the Network can't be reached, or is switched off for this brand, nothing is deleted and the answer is \`409 network_listing_not_removed\`.`,
+    access: { kind: 'admin' },
+    responses: { 200: { description: 'Deleted.', schema: S.Ok } },
+    errors: { 404: ['not_found'], 409: ['program_in_use', 'network_listing_not_removed'] },
+  });
+
   // ------------------------------------------------------ Program assignments
   r.operation({
     method: 'get',

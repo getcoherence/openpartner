@@ -68,6 +68,9 @@ interface Program {
   networkOfferingId: string | null;
   categories: string[];
   createdAt: string;
+  /** Nothing uses it yet (no partners, links, clicks, coupons…), so it can
+   *  be deleted. GET /programs only; absent from older APIs. */
+  deletable?: boolean;
 }
 
 /** Mirror of the API's customerRewardDelivery(): who puts the customer
@@ -124,6 +127,16 @@ export function AdminPrograms() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['campaigns'] }),
   });
 
+  // Only for a program nothing uses yet, such as a duplicate: the API
+  // refuses anything with partners, links or clicks (End it instead).
+  const remove = useMutation({
+    mutationFn: (id: string) => api(`/programs/${id}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['campaigns'] });
+      qc.invalidateQueries({ queryKey: ['program-stats'] });
+    },
+  });
+
   return (
     <Page
       title="Programs"
@@ -136,7 +149,7 @@ export function AdminPrograms() {
         </EditOnly>
       }
     >
-      <ErrorBanner error={campaigns.error ?? endNow.error} />
+      <ErrorBanner error={campaigns.error ?? endNow.error ?? remove.error} />
       {showCreate && (
         <CreateProgram
           rewardDelivery={rewardDelivery}
@@ -215,6 +228,20 @@ export function AdminPrograms() {
                     style={smallActionStyle(theme.danger)}
                   >
                     End now
+                  </button>
+                )}
+                {c.deletable && !viewOnly && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (confirm(`Delete "${c.name}"? This can't be undone.`)) {
+                        remove.mutate(c.id);
+                      }
+                    }}
+                    disabled={remove.isPending}
+                    style={smallActionStyle(theme.danger)}
+                  >
+                    Delete
                   </button>
                 )}
               </div>,
