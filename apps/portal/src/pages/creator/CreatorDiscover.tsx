@@ -4,22 +4,22 @@ import { Link, useNavigate } from 'react-router';
 import { Circle, Globe, HelpCircle } from 'lucide-react';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
 import { theme } from '../../theme.js';
-import { creatorApi } from './creator-api.js';
+import { ApiError, creatorApi } from './creator-api.js';
 import {
   formatCustomerReward,
   formatPercent,
-  renderCommissionSummary,
   type CommissionSubRuleLike,
   type CustomerRewardLike,
   type RecruiterShareLike,
 } from '../../lib/commission-summary.js';
 import { PROGRAM_CATEGORIES, categoryLabel } from '@openpartner/db';
 import { ListingBanner, type OfferingVideo } from './ListingBanner.js';
+import { commissionLineOf, summarizeBrandTerms } from './brand-summary.js';
 
-type MyStatus = 'none' | 'pending' | 'approved' | 'rejected' | 'cancelled';
+export type MyStatus = 'none' | 'pending' | 'approved' | 'rejected' | 'cancelled';
 type AttributionModel = 'last_click' | 'first_click' | 'linear' | 'position';
 
-interface OfferingTerms {
+export interface OfferingTerms {
   commissionDescription?: string;
   cookieWindowDays?: number;
   payoutCadence?: string;
@@ -68,6 +68,49 @@ interface OfferingListItem {
   /** Brand's banner; null = logo-wash fallback. */
   coverImageUrl?: string | null;
   video?: OfferingVideo | null;
+}
+
+/** One program inside a brand entry: the vendor fields live on the brand. */
+type BrandProgram = Omit<OfferingListItem, 'vendorId' | 'vendorName' | 'vendorLogoUrl' | 'vendorPartnerCount' | 'featured'>;
+
+/** One brand with its programs — the Network's GET /marketplace/brands. */
+interface BrandListItem {
+  vendorId: string;
+  vendorName: string;
+  vendorLogoUrl: string | null;
+  vendorPartnerCount: number;
+  featured: boolean;
+  programCount: number;
+  offerings: BrandProgram[];
+}
+
+/** Discover's feed, one entry per brand so a brand with many programs takes
+ *  one card. A Network predating /marketplace/brands 404s it; then its
+ *  /offerings feed is grouped here instead. */
+async function loadBrands(sort: 'newest' | 'popular'): Promise<BrandListItem[]> {
+  const qs = sort === 'newest' ? '' : `&sort=${sort}`;
+  try {
+    return (await creatorApi<{ brands: BrandListItem[] }>(`/marketplace/brands?limit=100${qs}`)).brands;
+  } catch (err) {
+    if (!(err instanceof ApiError && err.status === 404)) throw err;
+  }
+  const { offerings } = await creatorApi<{ offerings: OfferingListItem[] }>(`/offerings?limit=100${qs}`);
+  const byVendor = new Map<string, BrandListItem>();
+  for (const { vendorId, vendorName, vendorLogoUrl, vendorPartnerCount, featured, ...program } of offerings) {
+    const brand = byVendor.get(vendorId) ?? {
+      vendorId,
+      vendorName,
+      vendorLogoUrl,
+      vendorPartnerCount,
+      featured: !!featured,
+      programCount: 0,
+      offerings: [],
+    };
+    brand.offerings.push(program);
+    brand.programCount += 1;
+    byVendor.set(vendorId, brand);
+  }
+  return [...byVendor.values()];
 }
 
 const MODEL_LABELS: Record<AttributionModel, string> = {
@@ -152,21 +195,20 @@ export function CreatorDiscoverPage() {
     return () => window.clearTimeout(t);
   }, [q]);
 
-  const params = new URLSearchParams();
-  if (debouncedQ) params.set('q', debouncedQ);
-  if (sort !== 'newest') params.set('sort', sort);
-  const qs = params.toString();
-
   const { data, isLoading, error } = useQuery({
-    queryKey: ['creator-discover', debouncedQ, sort],
-    queryFn: () => creatorApi<{ offerings: OfferingListItem[] }>(`/offerings${qs ? '?' + qs : ''}`),
+    queryKey: ['creator-discover', sort],
+    queryFn: () => loadBrands(sort),
     retry: false,
   });
 
+  // A brand shows when any of its programs passes the search and filters,
+  // and its card says how many do.
   const filtered = useMemo(() => {
     if (!data) return [];
-    return data.offerings.filter((o) => {
+    const query = debouncedQ.toLowerCase();
+    const programMatches = (o: BrandProgram, vendorName: string) => {
       const t = o.terms ?? {};
+      if (query && ![vendorName, o.title, o.description ?? ''].join(' ').toLowerCase().includes(query)) return false;
       if (model !== 'any' && t.attributionModel !== model) return false;
       if (maxHoldback !== 'any') {
         const cap = Number(maxHoldback);
@@ -201,8 +243,11 @@ export function CreatorDiscoverPage() {
         if (!cats.includes(category)) return false;
       }
       return true;
-    });
-  }, [data, model, maxHoldback, minWindow, recurringOnly, recruitsOnly, minCommission, minDuration, category]);
+    };
+    return data
+      .map((brand) => ({ brand, matching: brand.offerings.filter((o) => programMatches(o, brand.vendorName)) }))
+      .filter((b) => b.matching.length > 0);
+  }, [data, debouncedQ, model, maxHoldback, minWindow, recurringOnly, recruitsOnly, minCommission, minDuration, category]);
 
   const activeFilterCount =
     (model !== 'any' ? 1 : 0) +
@@ -234,7 +279,7 @@ export function CreatorDiscoverPage() {
         <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <div style={{ flex: 1, minWidth: 240 }}>
             <Label>Search</Label>
-            <Input placeholder="Title or description…" value={q} onChange={(e) => setQ(e.target.value)} />
+            <Input placeholder="Brand, program or description…" value={q} onChange={(e) => setQ(e.target.value)} />
           </div>
           <div style={{ minWidth: 160 }}>
             <Label>Sort</Label>
@@ -398,9 +443,13 @@ export function CreatorDiscoverPage() {
         />
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16 }}>
-          {filtered.map((o) => (
-            <OfferingDiscoverCard key={o.id} offering={o} />
-          ))}
+          {filtered.map(({ brand, matching }) =>
+            brand.programCount === 1 ? (
+              <OfferingDiscoverCard key={brand.vendorId} offering={{ ...brand, ...brand.offerings[0]! }} />
+            ) : (
+              <BrandDiscoverCard key={brand.vendorId} brand={brand} matching={matching.length} />
+            ),
+          )}
         </div>
       )}
     </Page>
@@ -430,9 +479,7 @@ function OfferingDiscoverCard({ offering: o }: { offering: OfferingListItem }) {
   // from formatCustomerReward independently. Falls back to the legacy
   // commissionDescription when the rule snapshot is absent (older
   // offerings predating the May 2026 refactor).
-  const commissionLine = o.terms.commissionRules
-    ? renderCommissionSummary(o.terms.commissionRules, null)
-    : o.terms.commissionDescription ?? null;
+  const commissionLine = commissionLineOf(o.terms);
   const customerRewardLine = o.terms.customerReward
     ? formatCustomerReward(o.terms.customerReward)
     : null;
@@ -471,25 +518,7 @@ function OfferingDiscoverCard({ offering: o }: { offering: OfferingListItem }) {
             </div>
           )}
         </div>
-        {/* Featured brands sort to the top of the feed — say so, rather
-            than leave the placement looking organic. */}
-        {o.featured && (
-          <span
-            style={{
-              flexShrink: 0,
-              fontSize: 10.5,
-              fontWeight: 700,
-              textTransform: 'uppercase',
-              letterSpacing: '0.04em',
-              color: theme.accentText,
-              background: theme.accentA15,
-              borderRadius: 4,
-              padding: '2px 6px',
-            }}
-          >
-            Featured
-          </span>
-        )}
+        {o.featured && <FeaturedPill />}
       </div>
 
       {o.description && (
@@ -533,6 +562,117 @@ function OfferingDiscoverCard({ offering: o }: { offering: OfferingListItem }) {
         )}
       </div>
     </Card>
+  );
+}
+
+/**
+ * A brand with several programs: one card naming them, with the commission
+ * summarised across them (summarizeBrandTerms), opening the brand's page.
+ * While search or filters narrow it, it says how many of its programs match.
+ */
+function BrandDiscoverCard({ brand, matching }: { brand: BrandListItem; matching: number }) {
+  const s = summarizeBrandTerms(brand.offerings.map((o) => o.terms));
+  const names = [...new Set(brand.offerings.map((o) => o.title))].slice(0, 3);
+  const more = brand.programCount - names.length;
+  const active = brand.offerings.filter((o) => o.myStatus === 'approved').length;
+  const pending = brand.offerings.filter((o) => o.myStatus === 'pending').length;
+  const cover = brand.offerings.find((o) => o.coverImageUrl)?.coverImageUrl ?? null;
+  const to = `/creator/vendors/${brand.vendorId}`;
+  const chips: Chip[] = [];
+  if (s.commissionLine) chips.push({ label: s.commissionLine, tone: 'lead' });
+  if (s.reward) chips.push({ label: s.reward, tone: 'accent' });
+  if (s.recruits) chips.push({ label: s.recruits, tone: 'accent' });
+  for (const slug of s.categories) chips.push({ label: categoryLabel(slug), tone: 'muted' });
+  if (s.window) chips.push({ label: s.window, tone: 'muted' });
+
+  return (
+    <Card style={{ display: 'flex', flexDirection: 'column', minHeight: 280, overflow: 'hidden' }}>
+      <ListingBanner coverUrl={cover} logoUrl={brand.vendorLogoUrl} style={{ margin: '-20px -20px 14px' }} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+        <BrandMark logoUrl={brand.vendorLogoUrl} name={brand.vendorName} />
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <Link
+            to={to}
+            style={{
+              color: theme.text,
+              fontSize: 15,
+              fontWeight: 600,
+              display: 'block',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {brand.vendorName}
+          </Link>
+          <div style={{ color: theme.textDim, fontSize: 11 }}>
+            {brand.programCount} programs
+            {brand.vendorPartnerCount > 0 &&
+              ` · ${brand.vendorPartnerCount} partner${brand.vendorPartnerCount === 1 ? '' : 's'}`}
+          </div>
+        </div>
+        {brand.featured && <FeaturedPill />}
+      </div>
+
+      <Link
+        to={to}
+        style={{
+          color: theme.textMuted,
+          fontSize: 13,
+          lineHeight: 1.45,
+          display: '-webkit-box',
+          WebkitLineClamp: 3,
+          WebkitBoxOrient: 'vertical',
+          overflow: 'hidden',
+          marginBottom: 12,
+          textDecoration: 'none',
+        }}
+      >
+        {names.join(', ')}
+        {more > 0 && ` + ${more} more`}
+      </Link>
+
+      <div style={{ flex: 1 }} />
+
+      <ChipRow chips={chips} />
+
+      <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+        <Link to={to}>
+          <Button>View programs</Button>
+        </Link>
+        {matching < brand.offerings.length ? (
+          <span style={{ fontSize: 12, color: theme.textMuted }}>
+            {matching} of {brand.offerings.length} match
+          </span>
+        ) : active > 0 ? (
+          <span style={{ fontSize: 12, color: theme.success }}>✓ Active on {active}</span>
+        ) : pending > 0 ? (
+          <span style={{ fontSize: 12, color: theme.textMuted }}>{pending} awaiting brand review</span>
+        ) : null}
+      </div>
+    </Card>
+  );
+}
+
+/** Featured brands sort to the top of the feed — say so, rather than
+ *  leave the placement looking organic. */
+function FeaturedPill() {
+  return (
+    <span
+      style={{
+        flexShrink: 0,
+        fontSize: 10.5,
+        fontWeight: 700,
+        textTransform: 'uppercase',
+        letterSpacing: '0.04em',
+        color: theme.accentText,
+        background: theme.accentA15,
+        borderRadius: 4,
+        padding: '2px 6px',
+      }}
+    >
+      Featured
+    </span>
   );
 }
 
@@ -630,7 +770,7 @@ function CardField({ label, value, emphasize }: { label: string; value: string; 
  *  client-side from the rule snapshot when present, while still falling back
  *  to whatever the Network stored.
  */
-function OfferingChips({
+export function OfferingChips({
   terms,
   commissionLine,
   customerRewardLine,
@@ -642,7 +782,7 @@ function OfferingChips({
    *  partner-side and customer-side terms are visually separable. */
   customerRewardLine?: string | null;
 }) {
-  const chips: Array<{ label: string; tone?: 'accent' | 'muted' | 'lead' }> = [];
+  const chips: Chip[] = [];
   if (commissionLine) chips.push({ label: commissionLine, tone: 'lead' });
   if (customerRewardLine) chips.push({ label: `Customers: ${customerRewardLine}`, tone: 'accent' });
   if (terms.recruiterCommission) {
@@ -663,6 +803,17 @@ function OfferingChips({
   if (terms.payoutCadence) chips.push({ label: `${terms.payoutCadence} payouts`, tone: 'muted' });
   const duration = formatDuration(terms.campaignEndsAt);
   if (duration) chips.push({ label: duration.label, tone: duration.kind === 'soon' ? 'accent' : 'muted' });
+  return <ChipRow chips={chips} />;
+}
+
+interface Chip {
+  label: string;
+  tone?: 'accent' | 'muted' | 'lead';
+}
+
+/** A card's chips: the lead (commission) and accent ones tinted, the rest
+ *  muted. */
+function ChipRow({ chips }: { chips: Chip[] }) {
   if (chips.length === 0) return null;
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
@@ -755,7 +906,7 @@ function RecommendedStrip() {
   );
 }
 
-function ctaForStatus(s: MyStatus): string {
+export function ctaForStatus(s: MyStatus): string {
   switch (s) {
     case 'approved':
       return 'View link';

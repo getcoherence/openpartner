@@ -1,8 +1,12 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router';
-import { Card, EmptyState, ErrorBanner, Page } from '../../ui.js';
+import { Button, Card, EmptyState, ErrorBanner, Input, Page } from '../../ui.js';
 import { theme } from '../../theme.js';
+import { formatCustomerReward } from '../../lib/commission-summary.js';
 import { creatorApi } from './creator-api.js';
+import { commissionLineOf } from './brand-summary.js';
+import { OfferingChips, ctaForStatus, type MyStatus, type OfferingTerms } from './CreatorDiscover.js';
 
 interface Vendor {
   id: string;
@@ -13,15 +17,6 @@ interface Vendor {
   createdAt: string;
 }
 
-interface OfferingTerms {
-  commissionDescription?: string;
-  cookieWindowDays?: number;
-  payoutCadence?: string;
-  payoutHoldbackDays?: number;
-  recurring?: boolean;
-  campaignEndsAt?: string | null;
-}
-
 interface VendorOffering {
   id: string;
   title: string;
@@ -29,7 +24,12 @@ interface VendorOffering {
   productUrl: string;
   terms: OfferingTerms;
   createdAt: string;
+  /** Absent from a Network predating it; read as 'none'. */
+  myStatus?: MyStatus;
 }
+
+/** Past this many programs the page offers a search box. */
+const SEARCH_FROM = 7;
 
 interface VendorResponse {
   vendor: Vendor;
@@ -45,8 +45,14 @@ export function CreatorVendorDetailPage() {
     retry: false,
   });
 
+  const [q, setQ] = useState('');
+
   const vendor = data?.vendor;
   const offerings = data?.offerings ?? [];
+  const query = q.trim().toLowerCase();
+  const shown = query
+    ? offerings.filter((o) => `${o.title} ${o.description ?? ''}`.toLowerCase().includes(query))
+    : offerings;
 
   return (
     <Page title={vendor?.displayName ?? 'Brand'} subtitle={vendor ? 'Network member' : undefined}>
@@ -73,40 +79,70 @@ export function CreatorVendorDetailPage() {
           <h3 style={{ fontSize: 14, fontWeight: 500, color: theme.textMuted, marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
             Programs from {vendor.displayName}
           </h3>
+          {offerings.length >= SEARCH_FROM && (
+            <div style={{ maxWidth: 360, marginBottom: 14 }}>
+              <Input
+                placeholder={`Search ${offerings.length} programs…`}
+                aria-label="Search programs"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+              />
+            </div>
+          )}
           {offerings.length === 0 ? (
             <EmptyState
               title="No programs published"
               hint="This brand hasn't published any offerings yet. Check back later."
             />
+          ) : shown.length === 0 ? (
+            <EmptyState title={`No programs match "${q.trim()}"`} hint="Try a different keyword." />
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 14 }}>
-              {offerings.map((o) => (
-                <Card key={o.id}>
-                  <h4 style={{ marginTop: 0, marginBottom: 6 }}>
-                    <Link to={`/creator/offerings/${o.id}`}>{o.title}</Link>
-                  </h4>
-                  {o.terms.commissionDescription && (
-                    <div style={{ marginTop: 6 }}>
-                      <div style={{ fontSize: 10, color: theme.textDim, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
-                        Commission
-                      </div>
-                      <div style={{ fontSize: 13, color: theme.text, marginTop: 2 }}>
-                        {o.terms.commissionDescription}
-                      </div>
+              {shown.map((o) => {
+                const status = o.myStatus ?? 'none';
+                return (
+                  <Card key={o.id} style={{ display: 'flex', flexDirection: 'column' }}>
+                    <h4 style={{ marginTop: 0, marginBottom: 6 }}>
+                      <Link to={`/creator/offerings/${o.id}`}>{o.title}</Link>
+                    </h4>
+                    {o.description && (
+                      <p
+                        style={{
+                          fontSize: 13,
+                          color: theme.textMuted,
+                          margin: '0 0 12px',
+                          lineHeight: 1.45,
+                          display: '-webkit-box',
+                          WebkitLineClamp: 3,
+                          WebkitBoxOrient: 'vertical',
+                          overflow: 'hidden',
+                        }}
+                        title={o.description}
+                      >
+                        {o.description}
+                      </p>
+                    )}
+                    <div style={{ flex: 1 }} />
+                    <OfferingChips
+                      terms={o.terms}
+                      commissionLine={commissionLineOf(o.terms)}
+                      customerRewardLine={o.terms.customerReward ? formatCustomerReward(o.terms.customerReward) : null}
+                    />
+                    <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <Link to={`/creator/offerings/${o.id}`}>
+                        <Button variant={status === 'approved' || status === 'pending' ? 'secondary' : 'primary'}>
+                          {ctaForStatus(status)}
+                        </Button>
+                      </Link>
+                      {(status === 'approved' || status === 'pending') && (
+                        <span style={{ fontSize: 12, color: status === 'approved' ? theme.success : theme.textMuted }}>
+                          {status === 'approved' ? '✓ Active' : 'Awaiting brand review'}
+                        </span>
+                      )}
                     </div>
-                  )}
-                  {o.description && (
-                    <p style={{ fontSize: 13, color: theme.textMuted, margin: '10px 0 0', lineHeight: 1.5 }}>
-                      {o.description.length > 160 ? `${o.description.slice(0, 160)}…` : o.description}
-                    </p>
-                  )}
-                  <div style={{ marginTop: 12 }}>
-                    <Link to={`/creator/offerings/${o.id}`} style={{ fontSize: 13, color: theme.accentText }}>
-                      View &amp; apply →
-                    </Link>
-                  </div>
-                </Card>
-              ))}
+                  </Card>
+                );
+              })}
             </div>
           )}
         </>

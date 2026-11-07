@@ -182,7 +182,7 @@ export function formatRecruiterShare(share: RecruiterShareLike): string {
   return share.months ? `${base}, for ${share.months} ${share.months === 1 ? 'month' : 'months'} after each one joins` : base;
 }
 
-function trimNumber(n: number): string {
+export function trimNumber(n: number): string {
   if (Number.isInteger(n)) return String(n);
   return n.toFixed(2).replace(/\.?0+$/, '');
 }
