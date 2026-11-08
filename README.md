@@ -110,6 +110,7 @@ v1. End-to-end attribution, payouts, and export are working; API surface is stab
 - Partner accounts via admin-invited magic-link — no admin-visible credentials, partners create their own API keys
 - `ADMIN_API_KEY` env stays as bootstrap / headless / CI path
 - Revoke flow for both admins and partners: sessions killed, reason stored, optional email notification
+- Audit log of what admins and API keys did (writes, sign-ins, exports), written in the same transaction as the change ([docs/audit-log.md](./docs/audit-log.md))
 
 **Configuration**
 

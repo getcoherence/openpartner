@@ -16,6 +16,7 @@ import { TABLES, type AdminRole, type AdminRow, type PlatformSessionRow, type Te
 import { db, appDb } from '../db.js';
 import { clearSessionCookie, consumeMagicLink, createSession, SESSION_COOKIE_NAME, sessionCookieOptions } from '../auth-sessions.js';
 import { RESERVED_SLUGS, getTenancyMode } from '../tenancy.js';
+import { recordSignin } from '../audit-log.js';
 import { newTrialEnd } from '../billing-plan.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
 import { autoEnrollBrandOnNetwork } from './signup.js';
@@ -429,6 +430,7 @@ platformAuthRouter.post('/workspaces/enter', async (req, res) => {
     await trx.raw(`set local app.tenant_id = '${tenant.id.replace(/'/g, "''")}'`);
     const created = await createSession(trx, { tenantId: tenant.id, principalKind: 'admin', principalId: admin.id });
     sessionPlaintext = created.plaintext;
+    await recordSignin(trx, { tenantId: tenant.id, adminId: admin.id, email: admin.email, ip: req.ip ?? null, via: 'workspace' });
     await trx.commit();
   } catch (err) {
     await trx.rollback();

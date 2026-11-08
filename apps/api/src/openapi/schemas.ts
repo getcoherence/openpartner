@@ -1585,6 +1585,45 @@ export const ApiKeySummary = z
   })
   .openapi('ApiKeySummary');
 
+// ---------- Audit log ----------
+
+const AuditActorKind = z.enum(['admin', 'api_key', 'operator_key']).openapi({
+  description: '`admin`: a signed-in admin. `api_key`: an API key, scoped keys included. `operator_key`: the deployment\'s `ADMIN_API_KEY`.',
+});
+
+export const AuditLogEntry = z
+  .object({
+    id,
+    createdAt: ts,
+    actorKind: AuditActorKind,
+    actorId: z.string().nullable().openapi({ description: 'The admin or key; null for the operator key.' }),
+    actorLabel: z.string().nullable().openapi({ description: "The admin's email or the key's label when it happened." }),
+    action: z.string().openapi({ description: 'The route as registered (`PATCH /programs/:id`), or `signin`.', example: 'PATCH /programs/:id' }),
+    label: z.string().nullable().openapi({ example: 'Updated a program' }),
+    targetId: z.string().nullable().openapi({ description: "The record acted on: the route's first parameter, or the id a create returned." }),
+    targetName: z.string().nullable().openapi({ description: "The program's, partner's, admin's, bounty's or key's name now, while it exists." }),
+    params: z.record(z.string(), z.string()).nullable(),
+    fields: z.array(z.string()).nullable().openapi({ description: "The request body's top-level field names. Never their values." }),
+    detail: z
+      .object({
+        changes: z.record(z.string(), z.object({ from: z.unknown(), to: z.unknown() })).optional(),
+        via: z.enum(['link', 'workspace', 'claim']).optional(),
+      })
+      .nullable()
+      .openapi({ description: '`changes`: old and new values, on program, bounty, admin and partner-commission changes. `via`: how a sign-in happened.' }),
+    status: z.number().int().nullable(),
+    ip: z.string().nullable(),
+  })
+  .openapi('AuditLogEntry');
+
+export const AuditLogPage = z
+  .object({ entries: z.array(AuditLogEntry), nextCursor: z.string().nullable() })
+  .openapi('AuditLogPage');
+
+export const AuditLogActors = z
+  .object({ actors: z.array(z.object({ actorId: id, actorKind: AuditActorKind, actorLabel: z.string().nullable() })) })
+  .openapi('AuditLogActors');
+
 // ---------- Settings ----------
 
 export const NetworkMembership = z

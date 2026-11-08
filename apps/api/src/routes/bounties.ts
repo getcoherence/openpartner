@@ -34,6 +34,7 @@ import {
   reachesThreshold,
 } from '../performance-bounties.js';
 import { tenantOf } from '../tenancy.js';
+import { auditChanges } from '../audit-log.js';
 
 export const bountiesRouter = Router();
 
@@ -213,6 +214,7 @@ bountiesRouter.patch('/bounties/:id', requireAuth, requireAdmin, async (req, res
   const d = body.data;
   const b = await db<BountyRow>(TABLES.Bounty).where({ id: req.params.id, tenantId }).forUpdate().first();
   if (!b) return res.status(404).json({ error: 'not_found' });
+  auditChanges(req, TABLES.Bounty, { id: b.id, tenantId }, b);
 
   const awarded = (await awardCounts(db, tenantId, [b.id])).get(b.id) ?? 0;
   if (awarded > 0) {

@@ -38,6 +38,7 @@ import { db, appDb } from '../db.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
 import { createSession, SESSION_COOKIE_NAME, sessionCookieOptions } from '../auth-sessions.js';
 import { RESERVED_SLUGS, getTenancyMode } from '../tenancy.js';
+import { recordSignin } from '../audit-log.js';
 import { newTrialEnd } from '../billing-plan.js';
 import { checkCountryAccess, countryAccessStatus, countryCodeSchema, recordLocationDeclaration } from '../country-access.js';
 import { findBlockingEntry, notifyOpsNewBrand, workEmailRequiredFor } from '../brand-review.js';
@@ -268,6 +269,7 @@ bookingClaimsRouter.post('/booking-claims/signup', claimLimit, async (req, res) 
   try {
     await trx.raw(`set local app.tenant_id = '${tenantId.replace(/'/g, "''")}'`);
     sessionPlaintext = (await createSession(trx, { tenantId, principalKind: 'admin', principalId: adminId })).plaintext;
+    await recordSignin(trx, { tenantId, adminId, email, ip: req.ip ?? null, via: 'claim' });
     await trx.commit();
   } catch (err) {
     await trx.rollback();

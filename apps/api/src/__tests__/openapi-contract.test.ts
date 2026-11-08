@@ -998,6 +998,13 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     check('exportAllSql', await admin.get('/export.sql'));
     check('importBundle', await admin.post('/import', bundle));
     check('importBundle', await admin.post('/import', { ...bundle, schemaVersion: 999 }));
+
+    // The audit log, with all of the above on record.
+    const log = check<{ entries: Array<{ action: string }> }>('listAuditLog', await admin.get('/audit-log?limit=200'));
+    expect(log.entries.map((e) => e.action)).toContain('POST /import');
+    check('listAuditLog', await admin.get('/audit-log?cursor=nope'));
+    check('listAuditLogActors', await admin.get('/audit-log/actors'));
+    check('downloadAuditLog', await admin.get('/audit-log.csv?action=POST%20/import'));
   }, 30_000);
 
   it("enforces every operation's documented access, credential by credential", async () => {

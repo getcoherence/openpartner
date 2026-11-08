@@ -667,7 +667,7 @@ logs — not customer data):
 `PlatformSessionBundle`, `PlatformAdmin`, `PlatformAdminSession`,
 `PlatformAuditLog`, `SignupBlocklist`, `WebhookDelivery`, `NetworkOutbox`,
 `StripeWebhookInbox`, `LocationDeclaration`, `SanctionsScreening`,
-`PartnerSigninLinkLog`, `TrackingIssue`, `TrackingAlert`, `StripeEventLog`,
+`PartnerSigninLinkLog`, `AuditLog`, `TrackingIssue`, `TrackingAlert`, `StripeEventLog`,
 `PaymentEventLog`, `PaypalSubscription`, `TestClick`.
 
 `TrackingIssue` counts, per day, the input this deployment had to drop: a
@@ -717,6 +717,12 @@ the raw `paypalCustomId`), with the click's `Identity`.
 a partner (`POST /partners/{id}/signin-link`): which partner, which key,
 when. Like `Session` and `MagicLinkToken` it is a record of access to one
 deployment, and the `ApiKey` ids it names never travel.
+
+`AuditLog` is the brand's [audit log](audit-log.md): what its admins and
+API keys did on this deployment. The same reasons apply, and one more: a
+restore that could write the log could write history, so a bundle never
+carries it. The brand keeps a copy with `GET /audit-log.csv` (Admin →
+Audit log → Download CSV).
 
 `LocationDeclaration` is the hosted platform's record of where each brand
 and partner said it is based ([country-access.md](country-access.md)), and
