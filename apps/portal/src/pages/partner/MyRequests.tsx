@@ -4,6 +4,7 @@ import { api } from '../../api.js';
 import { TenantLink } from '../../tenant-link.js';
 import { Button, Card, EmptyState, ErrorBanner, Page, StatusPill, formatDate } from '../../ui.js';
 import { theme } from '../../theme.js';
+import { ConfirmAction } from '../../lib/ConfirmAction.js';
 import { useBrand } from '../../lib/useBrand.js';
 import { NetworkPortalLink } from '../../lib/network-portal.js';
 
@@ -74,9 +75,19 @@ export function MyRequestsPage() {
             )}
             {r.status === 'pending' && (
               <div style={{ marginTop: 12 }}>
-                <Button variant="secondary" onClick={() => cancel.mutate(r.id)} disabled={cancel.isPending}>
-                  Cancel application
-                </Button>
+                <ConfirmAction
+                  prompt={`Cancel your application to ${r.vendorName}?`}
+                  confirmLabel="Yes, cancel it"
+                  cancelLabel="Keep it"
+                  onConfirm={() => cancel.mutate(r.id)}
+                  error={cancel.variables === r.id && cancel.error}
+                >
+                  {(ask) => (
+                    <Button variant="secondary" onClick={ask} disabled={cancel.isPending}>
+                      Cancel application
+                    </Button>
+                  )}
+                </ConfirmAction>
               </div>
             )}
           </Card>
