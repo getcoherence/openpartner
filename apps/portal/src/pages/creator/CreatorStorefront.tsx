@@ -15,6 +15,7 @@ import { ArrowDown, ArrowUp, Download, ExternalLink, Plus, Sparkles } from 'luci
 import { Button, Card, ErrorBanner, Input, Label, Page, Select, StatusPill, Textarea, formatDate } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { useMediaQuery } from '../../lib/useMediaQuery.js';
+import { ConfirmAction } from '../../lib/ConfirmAction.js';
 import { MARKETPLACE_CREATORS_URL, publicStorefrontUrl } from '../../lib/public-site.js';
 import { PLATFORMS, VERIFIABLE, VerifyAccountDialog, type NetworkProfile, type Platform } from '../../lib/NetworkProfileEditor.js';
 import { creatorApi } from './creator-api.js';
@@ -875,16 +876,18 @@ function PackageCard({
         <Button size="sm" variant="ghost" onClick={() => onMove(-1)} disabled={first || busy} icon={<ArrowUp size={14} />}>Up</Button>
         <Button size="sm" variant="ghost" onClick={() => onMove(1)} disabled={last || busy} icon={<ArrowDown size={14} />}>Down</Button>
         <div style={{ flex: 1 }} />
-        <Button
-          size="sm"
-          variant="danger"
-          disabled={remove.isPending}
-          onClick={() => {
-            if (window.confirm(`Delete “${pkg.title}”? Requests already sent for it keep what was asked for.`)) remove.mutate();
-          }}
+        <ConfirmAction
+          prompt="Delete for good?"
+          confirmLabel="Yes, delete"
+          title="Requests already sent for it keep what was asked for."
+          onConfirm={() => remove.mutate()}
         >
-          Delete
-        </Button>
+          {(ask) => (
+            <Button size="sm" variant="danger" disabled={remove.isPending} onClick={ask}>
+              Delete
+            </Button>
+          )}
+        </ConfirmAction>
       </div>
     </div>
   );

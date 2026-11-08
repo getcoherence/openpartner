@@ -4,6 +4,7 @@ import { Plus, Webhook as WebhookIcon, Copy, Check, Trash2, Play, KeyRound } fro
 import { api } from '../../api.js';
 import { alpha, theme } from '../../theme.js';
 import { useIsMobile } from '../../lib/useMediaQuery.js';
+import { ConfirmAction } from '../../lib/ConfirmAction.js';
 import {
   Button,
   Card,
@@ -275,19 +276,18 @@ function EndpointCard({
           <Button size="sm" variant="secondary" onClick={() => toggleActive.mutate()} disabled={toggleActive.isPending}>
             {endpoint.active ? 'Disable' : 'Enable'}
           </Button>
-          <Button
-            size="sm"
-            variant="secondary"
-            icon={<KeyRound size={12} />}
-            onClick={() => {
-              if (confirm('Rotate the signing secret? The current one stops working immediately — deliveries fail until your receiver has the new one.')) {
-                rotate.mutate();
-              }
-            }}
-            disabled={rotate.isPending}
+          <ConfirmAction
+            prompt="Rotate the secret?"
+            confirmLabel="Yes, rotate"
+            title="The current one stops working at once. Deliveries fail until your receiver has the new one."
+            onConfirm={() => rotate.mutate()}
           >
-            Rotate secret
-          </Button>
+            {(ask) => (
+              <Button size="sm" variant="secondary" icon={<KeyRound size={12} />} onClick={ask} disabled={rotate.isPending}>
+                Rotate secret
+              </Button>
+            )}
+          </ConfirmAction>
           <Button size="sm" variant="danger" icon={<Trash2 size={12} />} onClick={() => del.mutate()} disabled={del.isPending} />
         </div>
       </div>

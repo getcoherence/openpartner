@@ -158,15 +158,14 @@ describe('Manual payouts to send', () => {
   it('offers Pay with PayPal for a ready PayPal group once an app is connected, and asks first', async () => {
     withRun();
     connections = [{ ...CONNECTED, environment: 'live' }];
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
     const view = renderWithClient(<PayoutsPage principal={{ role: 'admin' }} />);
-    const button = await view.findByRole('button', { name: 'Pay with PayPal' });
-    fireEvent.click(button);
-    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/Send 2 payouts totalling \$35\.50 from your live PayPal account now\?/));
+    fireEvent.click(await view.findByRole('button', { name: 'Pay with PayPal' }));
+    expect(view.getByText('Send 2 payouts totalling $35.50 from your live PayPal account now?')).toBeTruthy();
+    fireEvent.click(view.getByRole('button', { name: 'Cancel' }));
     expect(requests.some((r) => r.method === 'POST' && r.path.endsWith('/paypal-batches'))).toBe(false);
 
-    confirm.mockReturnValue(true);
-    fireEvent.click(button);
+    fireEvent.click(view.getByRole('button', { name: 'Pay with PayPal' }));
+    fireEvent.click(view.getByRole('button', { name: 'Yes, send' }));
     await waitFor(() =>
       expect(requests.find((r) => r.method === 'POST' && r.path === `/payouts/runs/${RUN_ID}/paypal-batches`)?.body).toEqual({ currency: 'USD' }),
     );
@@ -177,10 +176,11 @@ describe('Manual payouts to send', () => {
   it('calls a sandbox send what it is: a test that marks nothing paid', async () => {
     withRun();
     connections = [CONNECTED];
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
     const view = renderWithClient(<PayoutsPage principal={{ role: 'admin' }} />);
     fireEvent.click(await view.findByRole('button', { name: 'Test with PayPal sandbox' }));
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('nothing is marked paid'));
+    const ask = view.getByText('Test 2 payouts totalling $35.50 with your PayPal sandbox app?');
+    expect(ask.getAttribute('title')).toContain('nothing is marked paid');
+    expect(view.getByRole('button', { name: 'Yes, test' })).toBeTruthy();
     expect(view.getByText(/batches are tests with test money/)).toBeTruthy();
   });
 
@@ -195,7 +195,6 @@ describe('Manual payouts to send', () => {
     withRun();
     connections = [CONNECTED];
     batches = [HELD];
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     const prompt = vi.spyOn(window, 'prompt').mockReturnValue('PB123456');
     const view = renderWithClient(<PayoutsPage principal={{ role: 'admin' }} />);
     await view.findByText('Sent with PayPal');
@@ -210,8 +209,24 @@ describe('Manual payouts to send', () => {
 
     expect(view.getByText(/Unclaimed: PayPal emailed the partner/)).toBeTruthy();
     fireEvent.click(view.getByRole('button', { name: 'Cancel and get it back' }));
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('PayPal returns the money to your balance'));
+    expect(view.getByText(/^Cancel the payment to /).getAttribute('title')).toContain('PayPal returns the money to your balance');
+    expect(requests.some((r) => r.path.endsWith('/paypal-cancel'))).toBe(false);
+    fireEvent.click(view.getByRole('button', { name: 'Yes, get it back' }));
     await waitFor(() => expect(requests.some((r) => r.method === 'POST' && r.path === '/payouts/po_una/paypal-cancel')).toBe(true));
+  });
+
+  it('releases a held batch only after asking on its row', async () => {
+    withRun();
+    connections = [CONNECTED];
+    batches = [HELD];
+    const view = renderWithClient(<PayoutsPage principal={{ role: 'admin' }} />);
+    fireEvent.click(await view.findByRole('button', { name: 'Release' }));
+    expect(view.getByText('Release them from the test now?')).toBeTruthy();
+    expect(requests.some((r) => r.path.endsWith('/resolve'))).toBe(false);
+    fireEvent.click(view.getByRole('button', { name: 'Yes, release' }));
+    await waitFor(() =>
+      expect(requests.find((r) => r.path === '/payouts/paypal-batches/batch_1/resolve')?.body).toEqual({ action: 'release' }),
+    );
   });
 });
 
@@ -239,5 +254,15 @@ describe('Settings: Pay with PayPal', () => {
     connections = [{ ...CONNECTED, payoutsEnabled: false }];
     const view = renderWithClient(<PaypalPayoutsCard />);
     await view.findByText(/hasn’t given this app the Payouts permission/);
+  });
+
+  it('disconnects an app only after asking on its row', async () => {
+    connections = [CONNECTED];
+    const view = renderWithClient(<PaypalPayoutsCard />);
+    fireEvent.click(await view.findByRole('button', { name: 'Disconnect' }));
+    expect(view.getByText('Disconnect your sandbox app?')).toBeTruthy();
+    expect(requests.some((r) => r.method === 'DELETE')).toBe(false);
+    fireEvent.click(view.getByRole('button', { name: 'Yes, disconnect' }));
+    await waitFor(() => expect(requests.some((r) => r.method === 'DELETE' && r.path === '/config/paypal/sandbox')).toBe(true));
   });
 });

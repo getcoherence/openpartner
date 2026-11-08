@@ -17,6 +17,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Inbox } from 'lucide-react';
 import { Button, Card, EmptyState, ErrorBanner, Page, formatDate } from '../../ui.js';
 import { theme } from '../../theme.js';
+import { ConfirmAction } from '../../lib/ConfirmAction.js';
 import { creatorApi } from './creator-api.js';
 import { BookingStatusPill, formatMinor, formatWholeAmount, type BookingStatus } from './conversation-shared.js';
 import type { CreatorBooking } from './CreatorMessages.js';
@@ -65,7 +66,7 @@ export function CreatorBookingsPage() {
           </Button>
         ))}
       </div>
-      <ErrorBanner error={list.error ?? remove.error ?? decline.error} />
+      <ErrorBanner error={list.error} />
       {list.isLoading ? (
         <Card>Loading…</Card>
       ) : !list.data || list.data.bookings.length === 0 ? (
@@ -105,28 +106,32 @@ export function CreatorBookingsPage() {
                   <Button size="sm" variant="secondary">Open</Button>
                 </Link>
               ) : b.status === 'pending' ? (
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  disabled={decline.isPending}
-                  onClick={() => {
-                    if (window.confirm('Decline this request?')) decline.mutate(b.id);
-                  }}
+                <ConfirmAction
+                  prompt="Decline this request?"
+                  confirmLabel="Yes, decline"
+                  onConfirm={() => decline.mutate(b.id)}
+                  error={decline.variables === b.id && decline.error}
                 >
-                  Decline
-                </Button>
+                  {(ask) => (
+                    <Button size="sm" variant="secondary" disabled={decline.isPending} onClick={ask}>
+                      Decline
+                    </Button>
+                  )}
+                </ConfirmAction>
               ) : (
                 DELETABLE.includes(b.status) && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={remove.isPending}
-                    onClick={() => {
-                      if (window.confirm('Delete this request for good?')) remove.mutate(b.id);
-                    }}
+                  <ConfirmAction
+                    prompt="Delete for good?"
+                    confirmLabel="Yes, delete"
+                    onConfirm={() => remove.mutate(b.id)}
+                    error={remove.variables === b.id && remove.error}
                   >
-                    Delete
-                  </Button>
+                    {(ask) => (
+                      <Button size="sm" variant="ghost" disabled={remove.isPending} onClick={ask}>
+                        Delete
+                      </Button>
+                    )}
+                  </ConfirmAction>
                 )
               )}
             </div>

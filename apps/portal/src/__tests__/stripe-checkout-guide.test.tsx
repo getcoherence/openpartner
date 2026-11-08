@@ -7,7 +7,7 @@
  * Session the brand's app creates.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { api } from '../api.js';
@@ -24,7 +24,11 @@ beforeEach(() => {
   vi.mocked(api).mockResolvedValue({});
 });
 
-function renderConnected(rewards = true, codes: { notInStripe?: number; syncing?: boolean; checked?: boolean } = {}) {
+function renderConnected(
+  rewards = true,
+  codes: { notInStripe?: number; syncing?: boolean; checked?: boolean } = {},
+  rest: { apiKeys?: unknown[]; postbackToken?: unknown } = {},
+) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   qc.setQueryData(['stripe-app'], {
     available: true,
@@ -43,8 +47,8 @@ function renderConnected(rewards = true, codes: { notInStripe?: number; syncing?
       rewardCodesChecked: codes.checked ?? true,
     },
   });
-  qc.setQueryData(['integration-keys'], { apiKeys: [] });
-  qc.setQueryData(['conversion-postback'], { token: null });
+  qc.setQueryData(['integration-keys'], { apiKeys: rest.apiKeys ?? [] });
+  qc.setQueryData(['conversion-postback'], { token: rest.postbackToken ?? null });
   qc.setQueryData(['program-settings'], {
     programName: 'Acme Partners',
     supportEmail: null,
@@ -133,5 +137,49 @@ describe('the connection line on customer discounts', () => {
 
     renderConnected(false, { notInStripe: 0 });
     expect(text()).toContain('customer discounts set up by you');
+  });
+});
+
+describe('Disconnect', () => {
+  // Asked on the card, not with window.confirm (which a browser that
+  // dismisses dialogs answers false).
+  it('asks on the card, then disconnects', async () => {
+    renderConnected();
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    expect(screen.getByText('Disconnect Stripe?')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(api).not.toHaveBeenCalledWith('/stripe-app/connection', { method: 'DELETE' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, disconnect' }));
+    await waitFor(() => expect(api).toHaveBeenCalledWith('/stripe-app/connection', { method: 'DELETE' }));
+  });
+});
+
+describe('CRM keys and the postback URL', () => {
+  const KEY = { id: 'key_1', prefix: 'opk_ab', label: 'HubSpot', createdAt: '2026-10-01T00:00:00Z', lastUsedAt: null, revokedAt: null, scopes: ['events:write'] };
+  const TOKEN = { prefix: 'opcp_ab', ipAllowlist: [], createdAt: '2026-10-01T00:00:00Z', lastUsedAt: null };
+
+  it('revokes a key, rotates the token and turns postbacks off, each after asking', async () => {
+    renderConnected(true, {}, { apiKeys: [KEY], postbackToken: TOKEN });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke' }));
+    expect(screen.getByText('Revoke this key?')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, revoke' }));
+    await waitFor(() => expect(api).toHaveBeenCalledWith('/api-keys/key_1', { method: 'DELETE' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rotate token' }));
+    expect(screen.getByText('Rotate the token?')).toBeTruthy();
+    expect(api).not.toHaveBeenCalledWith('/conversion-postback/token', { method: 'POST', body: {} });
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, rotate' }));
+    await waitFor(() => expect(api).toHaveBeenCalledWith('/conversion-postback/token', { method: 'POST', body: {} }));
+    cleanup();
+
+    // A rotation refetches the token, which the mock no longer has.
+    renderConnected(true, {}, { postbackToken: TOKEN });
+    fireEvent.click(screen.getByRole('button', { name: 'Turn off' }));
+    expect(screen.getByText('Turn off postbacks?')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, turn off' }));
+    await waitFor(() => expect(api).toHaveBeenCalledWith('/conversion-postback/token', { method: 'DELETE' }));
   });
 });

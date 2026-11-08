@@ -4,6 +4,7 @@ import { CheckCircle2, Unplug } from 'lucide-react';
 import { api } from '../../api.js';
 import { alpha, theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Input, formatDate } from '../../ui.js';
+import { ConfirmAction } from '../../lib/ConfirmAction.js';
 import { PAYPAL_ENV_LABEL, type PaypalEnvironment } from './PaypalPayoutsCard.js';
 
 /** GET /config/paypal-payments */
@@ -121,11 +122,7 @@ export function PaypalPaymentsCard() {
               app={a}
               busy={busy}
               onTrack={(tracking) => track.mutate({ environment: a.environment, tracking })}
-              onDisconnect={() => {
-                if (window.confirm(`Disconnect this ${PAYPAL_ENV_LABEL[a.environment].toLowerCase()} checkout app? Conversions it recorded stay.`)) {
-                  disconnect.mutate(a.environment);
-                }
-              }}
+              onDisconnect={() => disconnect.mutate(a.environment)}
             />
           ))}
           {!apps.some((a) => a.purpose === 'payouts') && (
@@ -193,9 +190,18 @@ function AppRow({
             {app.tracking ? 'Stop recording' : 'Record its payments'}
           </Button>
         ) : (
-          <Button size="sm" variant="ghost" icon={<Unplug size={13} />} onClick={onDisconnect} disabled={busy}>
-            Disconnect
-          </Button>
+          <ConfirmAction
+            prompt={`Disconnect this ${PAYPAL_ENV_LABEL[app.environment].toLowerCase()} app?`}
+            confirmLabel="Yes, disconnect"
+            title="Conversions it recorded stay."
+            onConfirm={onDisconnect}
+          >
+            {(ask) => (
+              <Button size="sm" variant="ghost" icon={<Unplug size={13} />} onClick={ask} disabled={busy}>
+                Disconnect
+              </Button>
+            )}
+          </ConfirmAction>
         )}
       </div>
       {app.tracking && (

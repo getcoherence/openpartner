@@ -170,7 +170,9 @@ describe('admin manual payout files', () => {
     expect(view.getByText('Payout details changed since this file was made.')).toBeTruthy();
   });
 
-  it('marks a file as sent only after asking, and confirms that file’s payouts', async () => {
+  // Asked on the file's row, not with window.confirm: a browser that
+  // dismisses dialogs (a scripted or agent-driven one) gets false back.
+  it('marks a file as sent only after asking on its row, and confirms that file’s payouts', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
     const view = renderWithClient(<PayoutsPage principal={{ role: 'admin' }} />);
     await view.findByText('PayPal a•••@pay.test');
@@ -179,13 +181,15 @@ describe('admin manual payout files', () => {
     const buttons = view.getAllByRole('button', { name: 'Mark sent' });
     expect(buttons).toHaveLength(2);
     fireEvent.click(buttons[0]!);
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Mark this PayPal file’s payout as sent?'));
+    expect(view.getByText('Has the batch gone out?')).toBeTruthy();
+    fireEvent.click(view.getByRole('button', { name: 'Cancel' }));
     expect(requests.some((r) => r.path.includes('/confirm'))).toBe(false);
 
-    confirm.mockReturnValue(true);
-    fireEvent.click(buttons[0]!);
+    fireEvent.click(view.getAllByRole('button', { name: 'Mark sent' })[0]!);
+    fireEvent.click(view.getByRole('button', { name: 'Yes, mark its payout sent' }));
     await waitFor(() => expect(requests.some((r) => r.method === 'POST' && r.path === '/payouts/exports/exp_1/confirm')).toBe(true));
     expect(requests.some((r) => r.path === '/payouts/confirm')).toBe(false);
+    expect(confirm).not.toHaveBeenCalled();
   });
 
   it('marks a payout in no file as sent with its payment reference, which may be left blank', async () => {
@@ -222,7 +226,6 @@ describe('admin manual payout files', () => {
   });
 
   it('makes a file from what’s ready, and discards one only after asking', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
     const view = renderWithClient(<PayoutsPage principal={{ role: 'admin' }} />);
     fireEvent.click(await view.findByRole('button', { name: 'Make file' }));
     await waitFor(() =>
@@ -234,10 +237,9 @@ describe('admin manual payout files', () => {
     await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalled());
 
     fireEvent.click(view.getByRole('button', { name: 'Discard' }));
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Only do this if you never uploaded it'));
+    expect(view.getByText('Discard it? Only if you never uploaded it.')).toBeTruthy();
     expect(requests.some((r) => r.path.endsWith('/discard'))).toBe(false);
-    confirm.mockReturnValue(true);
-    fireEvent.click(view.getByRole('button', { name: 'Discard' }));
+    fireEvent.click(view.getByRole('button', { name: 'Yes, discard' }));
     await waitFor(() => expect(requests.some((r) => r.method === 'POST' && r.path === '/payouts/exports/exp_1/discard')).toBe(true));
   });
 });

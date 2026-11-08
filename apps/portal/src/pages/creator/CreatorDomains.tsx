@@ -4,6 +4,7 @@ import { Globe } from 'lucide-react';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page } from '../../ui.js';
 import { alpha, softText, theme } from '../../theme.js';
 import { creatorApi, ApiError } from './creator-api.js';
+import { ConfirmAction } from '../../lib/ConfirmAction.js';
 
 type DomainStatus = 'pending' | 'verified' | 'failed';
 
@@ -134,23 +135,25 @@ function DomainCard({ domain }: { domain: Domain }) {
           {verifyError && <VerifyErrorBox error={verifyError} />}
         </>
       )}
-      <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+      <div style={{ display: 'flex', gap: 8, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>
         {domain.status !== 'verified' && (
           <Button onClick={() => verify.mutate()} disabled={verify.isPending}>
             {verify.isPending ? 'Verifying…' : 'Verify'}
           </Button>
         )}
-        <Button
-          variant="danger"
-          onClick={() => {
-            if (confirm(`Remove ${domain.domain}? Existing share links on this domain will stop working immediately.`)) {
-              remove.mutate();
-            }
-          }}
-          disabled={remove.isPending}
+        <ConfirmAction
+          prompt={`Remove ${domain.domain}?`}
+          confirmLabel="Yes, remove"
+          title="Share links on this domain stop working at once."
+          onConfirm={() => remove.mutate()}
+          error={remove.error}
         >
-          Remove
-        </Button>
+          {(ask) => (
+            <Button variant="danger" onClick={ask} disabled={remove.isPending}>
+              Remove
+            </Button>
+          )}
+        </ConfirmAction>
       </div>
     </Card>
   );

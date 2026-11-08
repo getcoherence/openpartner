@@ -5,6 +5,7 @@ import { api, ApiError, type Principal } from '../../api.js';
 import { theme } from '../../theme.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, StatusPill, Table, formatDate } from '../../ui.js';
 import { EditOnly, useViewOnly, ViewOnlyBadge } from '../../lib/viewOnly.js';
+import { ConfirmAction } from '../../lib/ConfirmAction.js';
 
 type Role = 'admin' | 'viewer';
 
@@ -162,11 +163,6 @@ function AdminActions({ admin, isSelf }: { admin: Admin; isSelf: boolean }) {
   const isRevoked = !!admin.revokedAt;
   const isPending = !admin.activatedAt && !admin.revokedAt;
 
-  function confirmRevoke() {
-    const ok = window.confirm(`Revoke ${admin.name}? They'll be signed out and lose admin access.`);
-    if (ok) revoke.mutate();
-  }
-
   const error = guardMessage(changeRole.error ?? revoke.error);
   const nextRole: Role = admin.role === 'viewer' ? 'admin' : 'viewer';
 
@@ -205,13 +201,22 @@ function AdminActions({ admin, isSelf }: { admin: Admin; isSelf: boolean }) {
           {reinstate.isPending ? '…' : 'Reinstate'}
         </button>
       ) : (
-        <button
-          onClick={confirmRevoke}
-          disabled={revoke.isPending}
-          style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.danger, cursor: 'pointer' }}
+        <ConfirmAction
+          prompt={`Revoke ${admin.name}?`}
+          confirmLabel="Yes, revoke"
+          title="They're signed out and lose admin access."
+          onConfirm={() => revoke.mutate()}
         >
-          {revoke.isPending ? '…' : 'Revoke'}
-        </button>
+          {(ask) => (
+            <button
+              onClick={ask}
+              disabled={revoke.isPending}
+              style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.danger, cursor: 'pointer' }}
+            >
+              {revoke.isPending ? '…' : 'Revoke'}
+            </button>
+          )}
+        </ConfirmAction>
       )}
       {error && <span style={{ fontSize: 12, color: theme.danger }}>{error}</span>}
     </div>

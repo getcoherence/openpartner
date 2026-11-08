@@ -11,6 +11,7 @@ import { renderCommissionSummary } from '../lib/commission-summary.js';
 import { rulesLeftUnpaid, sharedRules } from '../lib/commission-override.js';
 import { useDefaultCurrency } from '../lib/useBrand.js';
 import { useIsMobile } from '../lib/useMediaQuery.js';
+import { ConfirmAction } from '../lib/ConfirmAction.js';
 import { PartnerBonusSection } from './AdminPartnerBonus.js';
 import { AdminPartnerRecruitingSection } from './PartnerRecruiting.js';
 
@@ -386,7 +387,8 @@ const SCOPE_COPY = {
     save: (hasCurrent: boolean) => (hasCurrent ? 'Update override' : 'Set override'),
     clear: 'Clear override',
     clearing: 'Clearing…',
-    confirm: 'Clear this partner’s partner-wide override? Programs without their own terms fall back to the live program rule.',
+    ask: 'Clear the override?',
+    askDetail: 'Programs without their own terms fall back to the live program rule.',
     holdback: "Holdback (days, blank = program's)",
     applies: 'this partner’s commissions on every program without its own terms accrue on the terms below',
     replaces: 'the rules of every program without its own terms below',
@@ -396,7 +398,8 @@ const SCOPE_COPY = {
     save: () => 'Save program terms',
     clear: 'Clear program terms',
     clearing: 'Clearing…',
-    confirm: 'Clear this program’s terms? Its commissions fall back to the partner-wide default, or the program rule.',
+    ask: 'Clear the program terms?',
+    askDetail: 'Its commissions fall back to the partner-wide default, or the program rule.',
     holdback: "Holdback (days, blank = program's)",
     applies: 'this partner’s commissions on this program accrue on the terms below, whatever the partner-wide default or program rule says',
     replaces: 'this program’s rules (or the partner-wide default) for this partner',
@@ -509,26 +512,26 @@ function EditCard({
           {save.isPending ? 'Saving…' : copy.save(!!current)}
         </Button>
         {current && (
-          <button
-            type="button"
-            onClick={() => {
-              if (confirm(copy.confirm)) {
-                clear.mutate();
-              }
-            }}
-            disabled={clear.isPending}
-            style={{
-              background: 'transparent',
-              border: `1px solid ${alpha(theme.danger, 0.333)}`,
-              borderRadius: 6,
-              padding: '8px 14px',
-              fontSize: 13,
-              color: theme.danger,
-              cursor: 'pointer',
-            }}
-          >
-            {clear.isPending ? copy.clearing : copy.clear}
-          </button>
+          <ConfirmAction prompt={copy.ask} confirmLabel="Yes, clear" title={copy.askDetail} onConfirm={() => clear.mutate()}>
+            {(ask) => (
+              <button
+                type="button"
+                onClick={ask}
+                disabled={clear.isPending}
+                style={{
+                  background: 'transparent',
+                  border: `1px solid ${alpha(theme.danger, 0.333)}`,
+                  borderRadius: 6,
+                  padding: '8px 14px',
+                  fontSize: 13,
+                  color: theme.danger,
+                  cursor: 'pointer',
+                }}
+              >
+                {clear.isPending ? copy.clearing : copy.clear}
+              </button>
+            )}
+          </ConfirmAction>
         )}
       </div>
     </Card>
