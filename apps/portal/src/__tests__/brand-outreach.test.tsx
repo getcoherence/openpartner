@@ -27,6 +27,8 @@ let lookedUp = false;
 let findFails = false;
 /** The edge in front of prod answers our 502 with its own bare 504. */
 let edgeTimeout = false;
+/** The review queue, when a test sets it: one approved leaves it. */
+let reviewList: Array<{ id: string }> | null = null;
 
 const SETTINGS = { enabled: true, monthlyBudgetUsd: 20, queries: ['developer tools'], lookbackDays: 7, sendAfterDays: 14, maxLaunchAgeDays: 60, readConcurrency: 4 };
 
@@ -135,6 +137,12 @@ function respond(url: string, method: string): { status: number; body: unknown }
     };
   }
   if (url.endsWith('/brand-outreach/stats')) return { status: 200, body: STATS };
+  if (reviewList && url.includes('/brand-outreach/prospects?view=review')) return { status: 200, body: { prospects: reviewList, nextCursor: null } };
+  const approved = reviewList && /\/prospects\/([^/]+)\/approve$/.exec(url)?.[1];
+  if (reviewList && approved) {
+    reviewList = reviewList.filter((p) => p.id !== approved);
+    return { status: 200, body: { prospect: {} } };
+  }
   if (url.includes('/brand-outreach/prospects?')) {
     const shipcheck = lookedUp ? { ...HELD_NO_ADDRESS, contact: { masked: 'j•@shipcheck.example', foundOn: 'via:own-domain:shipcheck.example', person: 'Jo Rivera, Founder' } } : HELD_NO_ADDRESS;
     const prospects = url.includes('view=review') ? [HELD, shipcheck] : url.includes('view=rejected') ? [] : [ACME];
@@ -184,6 +192,7 @@ beforeEach(() => {
   lookedUp = false;
   findFails = false;
   edgeTimeout = false;
+  reviewList = null;
   settingsBody = SETTINGS;
   vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -246,6 +255,37 @@ describe('brand outreach console', () => {
       expect(calls.find((c) => c.url.endsWith('/prospects/bpr_3/approve'))?.body).toEqual({ email: 'support@shipcheck.example', sourceUrl: 'https://shipcheck.example/about' }),
     );
     expect((await screen.findByRole('alert')).textContent).toMatch(/not support@ or the like/);
+  });
+
+  it('starts the next company afresh when an approved one leaves the queue', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    reviewList = [{ ...HELD_NO_ADDRESS, id: 'bpr_4', name: 'Docklet', siteUrl: 'https://docklet.example', country: null, countryEvidence: null }, HELD_NO_ADDRESS];
+    wrap('admin');
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Add address' }))[0]!);
+    fireEvent.change(screen.getByLabelText('Country'), { target: { value: 'gb' } });
+    fireEvent.change(screen.getByLabelText('Address'), { target: { value: 'founders@docklet.example' } });
+    fireEvent.change(screen.getByLabelText("Page it's on"), { target: { value: 'https://docklet.example' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(screen.queryByText('Docklet')).toBeNull());
+    expect(screen.getByText('Shipcheck')).toBeTruthy();
+    expect(screen.queryByLabelText('Address')).toBeNull();
+    expect(screen.queryByDisplayValue('GB')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Add address' })).toBeTruthy();
+  });
+
+  it('shows the next company its own address masked when one shown in full leaves the queue', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    reviewList = [
+      { ...HELD, id: 'bpr_1', name: 'Acme Notes', country: 'US', rejectReason: 'not_software', reviewNote: null },
+      { ...HELD, country: 'US', rejectReason: 'not_software', reviewNote: null, contact: { masked: 'f••••@pipewise.example', foundOn: 'https://pipewise.example/about', person: null } },
+    ];
+    wrap('admin');
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Show' }))[0]!);
+    expect(await screen.findByText('hello@acmenotes.example')).toBeTruthy();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Approve' })[0]!);
+    await waitFor(() => expect(screen.queryByText('Acme Notes')).toBeNull());
+    expect(screen.queryByText('hello@acmenotes.example')).toBeNull();
+    expect(screen.getByText('f••••@pipewise.example')).toBeTruthy();
   });
 
   it('lists ready companies with the words that place them and the address masked, shown in full on request', async () => {

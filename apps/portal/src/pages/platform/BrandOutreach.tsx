@@ -780,14 +780,17 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
     return s.byStatus[v] ?? 0;
   };
 
+  // The table keys rows by position, so the cells that hold state (an
+  // address shown, what ops typed) are keyed by prospect: when one leaves
+  // the list, the one moving up starts afresh.
   const rows =
     view === 'review'
       ? listed.map((p) => [
           <CompanyCell key="c" p={p} />,
           <LaunchCell key="l" p={p} />,
           <HeldCell key="h" p={p} />,
-          <ContactCell key="a" p={p} canWrite={canWrite} />,
-          canWrite ? <ReviewActions key="x" p={p} onDone={refresh} onReject={() => rejectLater(p)} /> : <span key="x" />,
+          <ContactCell key={`a-${p.id}`} p={p} canWrite={canWrite} />,
+          canWrite ? <ReviewActions key={`x-${p.id}`} p={p} onDone={refresh} onReject={() => rejectLater(p)} /> : <span key="x" />,
         ])
       : view === 'rejected'
       ? listed.map((p) => [
@@ -807,7 +810,7 @@ export function BrandOutreachPage({ operator }: { operator: PlatformOperator }) 
             {p.country ?? '—'}
             {p.countryEvidence && <div style={{ color: theme.textDim, fontSize: 12, maxWidth: 220 }}>“{p.countryEvidence}”</div>}
           </span>,
-          <ContactCell key="a" p={p} canWrite={canWrite} />,
+          <ContactCell key={`a-${p.id}`} p={p} canWrite={canWrite} />,
           <span key="d" style={{ fontSize: 13, whiteSpace: 'nowrap' }}>
             {p.dueAt ? formatDate(p.dueAt) : formatDate(p.updatedAt, { relative: true })}
           </span>,
