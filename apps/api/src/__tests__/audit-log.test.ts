@@ -8,7 +8,7 @@
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
-import express, { type RequestHandler } from 'express';
+import type { RequestHandler } from 'express';
 import { ulid } from 'ulid';
 
 process.env.OPENPARTNER_TENANCY = 'single';
@@ -21,7 +21,6 @@ const { createApp } = await import('../app.js');
 const { createSession, issueMagicLink } = await import('../auth-sessions.js');
 const { createApiKeyRow } = await import('../auth.js');
 const { AUDIT_ACTION_LABELS, AUDITED_READS, NOT_AUDITED } = await import('../audit-log.js');
-const { beforeCommit, tenantMiddleware } = await import('../tenancy.js');
 const { __setMailerForTests } = await import('../mailer.js');
 __setMailerForTests({ send: async () => {} });
 
@@ -231,22 +230,22 @@ describe.skipIf(skipIntegration)('the audit log', () => {
     expect(csv.text).toContain('Created a program');
     expect((await entries())[0]).toMatchObject({ action: 'GET /audit-log.csv' });
   });
-});
 
-describe.skipIf(skipIntegration)('beforeCommit', () => {
-  it('rolls the request back when a job fails, so nothing lands unlogged', async () => {
-    const key = `audit_test_${ulid().toLowerCase()}`;
-    const mini = express();
-    mini.use(tenantMiddleware);
-    mini.post('/x', async (req, res) => {
-      await req.db!(TABLES.Config).insert({ tenantId: T, key, value: JSON.stringify(true) });
-      beforeCommit(req, async () => {
-        throw new Error('audit insert failed');
-      });
-      res.status(201).json({ key });
-    });
-    const res = await request(mini).post('/x');
-    expect(res.status).toBe(500);
-    expect(await db(TABLES.Config).where({ tenantId: T, key }).first()).toBeUndefined();
+  it('rolls the change back when its entry fails to write, so nothing lands unlogged', async () => {
+    const id = await newProgram();
+    // The entry's insert fails for this one action, as a broken insert would.
+    await db.raw(`create or replace function audit_log_test_refuse() returns trigger language plpgsql as $$
+      begin raise exception 'audit insert refused'; end $$`);
+    await db.raw(`create trigger audit_log_test_refuse before insert on "AuditLog" for each row
+      when (new.action = 'PATCH /programs/:id') execute function audit_log_test_refuse()`);
+    try {
+      const res = await request(app).patch(`/programs/${id}`).set('Cookie', admin.cookie).send({ name: 'Never' });
+      expect(res.status).toBe(500);
+    } finally {
+      await db.raw('drop trigger if exists audit_log_test_refuse on "AuditLog"');
+      await db.raw('drop function if exists audit_log_test_refuse()');
+    }
+    expect((await db(TABLES.Program).where({ id }).first())?.name).toBe('Pro plan');
+    expect((await entries()).map((e) => e.action)).toEqual(['POST /programs']);
   });
 });
