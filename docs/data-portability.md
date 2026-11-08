@@ -398,7 +398,8 @@ see the default referral stages with no customer labels (less than before,
 never more), and an instance that predates the alert email sends none.
 
 `stripe_connect` also needs no version bump: older instances skip the key and
-use Standard accounts for new partners. Existing destination settings take
+use Standard accounts for new partners. A hosted instance keeps the imported
+key but reads Custom as Standard, since Custom accounts are self-hosted only. Existing destination settings take
 precedence over imported settings, as with the other Config keys.
 
 Payout statements themselves aren't exported: each is built from the

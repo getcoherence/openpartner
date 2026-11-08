@@ -174,13 +174,17 @@ curl -s -X POST http://localhost:4601/payouts/run \
 Stripe Connect uses **Standard accounts by default**. Stripe may ask partners
 for a website and details about products or services they sell.
 
-For Custom accounts, go to **Settings → Stripe Connect**, select **Custom accounts
-(configurable)**, adjust the options, and save. Transfers are required; settings
-also cover card payments, US tax information, verification collection, and the
-prefilled activity description. Custom accounts use the platform's country and
-the full service agreement. Review [Stripe Connect pricing](https://stripe.com/connect/pricing)
+Self-hosted (`OPENPARTNER_MODE=selfhost`) only: for Custom accounts, go to
+**Settings → Stripe Connect**, select **Custom accounts**, adjust the options,
+and save. Your Stripe account then carries the partners' negative balances,
+Custom-account fees and verification, so review [Stripe Connect pricing](https://stripe.com/connect/pricing)
 and complete your [platform profile](https://dashboard.stripe.com/settings/connect/platform-profile)
-before enabling them. Tax-information collection does not file tax forms.
+first. Custom accounts request transfers only, never card payments. Partners pick
+their country before onboarding; one outside your platform's country is onboarded
+under the `recipient` service agreement. US tax information is requested only
+from US partners, and collecting it does not file tax forms. Partners change
+their bank or details later with **Update payout details** on the Connect page.
+Hosted modes (`flat`, `revshare`) always use Standard accounts.
 
 Settings are per company. Account type and capabilities apply only to new
 accounts; verification collection options also apply when existing Custom
@@ -220,9 +224,9 @@ Set `OPENPARTNER_MODE` in `.env`:
 
 | Mode | Billing | Partner payouts |
 | --- | --- | --- |
-| `selfhost` | none | manual (operator pays out-of-band), or Stripe Connect accounts (Standard by default; Custom payouts optional) from the operator's own Stripe account |
-| `flat` | Flex subscription via Stripe Checkout (`POST /billing/checkout`): a monthly base price (`STRIPE_FLAT_PRICE_ID`), plus 1.5% of attributed GMV on the attributed-GMV usage meter when `STRIPE_FLAT_USAGE_PRICE_ID` is set. Without it, Checkout bills only the base. `apps/api/scripts/setup-stripe.mjs` creates both ($49/mo + 1.5%). | Stripe Connect accounts (Standard by default; Custom payouts optional) |
-| `revshare` | 3% of attributed GMV, billed to the merchant through a Stripe usage meter (`STRIPE_REVSHARE_USAGE_PRICE_ID`; usage is reported daily by the scheduler when it's enabled, or on demand via `POST /billing/report-usage`). Partners receive their full commission — `Payout.metadata.platformFee` is a ledger note, not a deduction. | Stripe Connect accounts (Standard by default; Custom payouts optional) |
+| `selfhost` | none | manual (operator pays out-of-band), or Stripe Connect accounts (Standard by default; Custom optional) from the operator's own Stripe account |
+| `flat` | Flex subscription via Stripe Checkout (`POST /billing/checkout`): a monthly base price (`STRIPE_FLAT_PRICE_ID`), plus 1.5% of attributed GMV on the attributed-GMV usage meter when `STRIPE_FLAT_USAGE_PRICE_ID` is set. Without it, Checkout bills only the base. `apps/api/scripts/setup-stripe.mjs` creates both ($49/mo + 1.5%). | Stripe Connect Standard |
+| `revshare` | 3% of attributed GMV, billed to the merchant through a Stripe usage meter (`STRIPE_REVSHARE_USAGE_PRICE_ID`; usage is reported daily by the scheduler when it's enabled, or on demand via `POST /billing/report-usage`). Partners receive their full commission — `Payout.metadata.platformFee` is a ledger note, not a deduction. | Stripe Connect Standard |
 
 See `/billing/status` for the current state, and `/billing/portal` in `flat` mode for the merchant's Stripe customer portal.
 
