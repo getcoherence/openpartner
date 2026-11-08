@@ -6,7 +6,7 @@ import { StripeConnectSettingsSection } from '../pages/admin/StripeConnectSettin
 
 const defaults = {
   accountMode: 'standard', collectTaxInformation: true, collectEventuallyDue: true,
-  requestCardPayments: false, collect1099KTaxInformation: false, collectFutureRequirements: false,
+  collect1099KTaxInformation: false, collectFutureRequirements: false,
   productDescription: 'Affiliate marketing and referral commissions.',
 };
 let stored = { ...defaults };
@@ -22,7 +22,7 @@ beforeEach(() => {
       if (failSave) return new Response(JSON.stringify({ error: 'save_failed' }), { status: 500 });
       stored = JSON.parse(String(init.body));
     }
-    return new Response(JSON.stringify(stored), { status: 200 });
+    return new Response(JSON.stringify({ ...stored, customAccountsAvailable: true }), { status: 200 });
   }) as typeof fetch;
 });
 afterEach(cleanup);
@@ -45,15 +45,13 @@ describe('Stripe Connect settings', () => {
     const page = mount();
     const select = await page.findByLabelText('Accounts for new partners') as HTMLSelectElement;
     expect(select.value).toBe('standard');
-    expect(page.getByText(/such as a website and the products or services they sell/)).toBeTruthy();
-    expect(page.queryByText(/This is OpenPartner’s original setup/)).toBeNull();
     expect(page.queryByRole('checkbox')).toBeNull();
+    expect(page.getByRole('link', { name: 'Stripe account capabilities' })).toBeTruthy();
     fireEvent.change(select, { target: { value: 'custom_payouts' } });
     expect(posts).toEqual([]);
-    expect(page.getByText(/Additional Stripe Connect fees apply/)).toBeTruthy();
-    fireEvent.click(page.getByRole('checkbox', { name: /Collect US tax-reporting/ }));
+    expect(page.queryByRole('checkbox', { name: /card payments/i })).toBeNull();
+    fireEvent.click(page.getByRole('checkbox', { name: /Collect US 1099-MISC/ }));
     fireEvent.click(page.getByRole('checkbox', { name: /Collect all known verification/ }));
-    fireEvent.click(page.getByRole('checkbox', { name: /Request card payments/ }));
     fireEvent.click(page.getByRole('checkbox', { name: /Collect US 1099-K/ }));
     fireEvent.click(page.getByRole('checkbox', { name: /Include upcoming verification changes/ }));
     expect((page.getByRole('checkbox', { name: /Receive transfers/ }) as HTMLInputElement).disabled).toBe(true);
@@ -61,12 +59,12 @@ describe('Stripe Connect settings', () => {
     fireEvent.click(page.getByRole('button', { name: 'Save Stripe settings' }));
     await page.findByRole('status');
     expect(posts).toEqual([{ accountMode: 'custom_payouts', collectTaxInformation: false, collectEventuallyDue: false,
-      requestCardPayments: true, collect1099KTaxInformation: true, collectFutureRequirements: true,
+      collect1099KTaxInformation: true, collectFutureRequirements: true,
       productDescription: 'Referral services.' }]);
     page.unmount();
     const reloaded = mount();
     expect((await reloaded.findByLabelText('Accounts for new partners') as HTMLSelectElement).value).toBe('custom_payouts');
-    for (const name of [/Request card payments/, /Collect US 1099-K/, /Include upcoming verification changes/]) {
+    for (const name of [/Collect US 1099-K/, /Include upcoming verification changes/]) {
       expect((reloaded.getByRole('checkbox', { name }) as HTMLInputElement).checked).toBe(true);
     }
     fireEvent.change(reloaded.getByLabelText('Accounts for new partners'), { target: { value: 'standard' } });

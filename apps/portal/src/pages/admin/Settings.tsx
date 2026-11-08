@@ -8,7 +8,7 @@ import { useBrand } from '../../lib/useBrand.js';
 import { ConfirmAction } from '../../lib/ConfirmAction.js';
 import { NetworkSettingsSection } from './NetworkSettingsSection.js';
 import { PaypalPayoutsCard } from './PaypalPayoutsCard.js';
-import { StripeConnectSettingsSection } from './StripeConnectSettingsSection.js';
+import { StripeConnectSettingsSection, useStripeConnectSettings } from './StripeConnectSettingsSection.js';
 import { ReferralStagesSection } from './ReferralStagesSection.js';
 import { SettingsSections, type SettingsSection } from './SettingsSections.js';
 import { useViewOnly, ViewOnlyFieldset } from '../../lib/viewOnly.js';
@@ -93,6 +93,8 @@ export function AdminSettings() {
   // section there.
   const { whiteLabel } = useBrand();
   const viewOnly = useViewOnly();
+  // Its only choice is Custom accounts, which hosted instances don't offer.
+  const customConnectAccounts = !!useStripeConnectSettings().data?.customAccountsAvailable;
   const sections: SettingsSection[] = [
     { id: 'brand', group: 'Brand', label: 'Brand info', content: <ProgramSection /> },
     { id: 'resources', group: 'Brand', label: 'Brand resources', content: <BrandResourcesSection /> },
@@ -103,7 +105,9 @@ export function AdminSettings() {
       ? []
       : [{ id: 'network', group: 'Network', label: 'OpenPartner Network', content: <NetworkSettingsSection /> }]),
     { id: 'payouts', group: 'Payouts', label: 'Payouts', content: <PayoutSection /> },
-    { id: 'stripe-connect', group: 'Payouts', label: 'Stripe Connect', content: <StripeConnectSettingsSection /> },
+    ...(customConnectAccounts
+      ? [{ id: 'stripe-connect', group: 'Payouts', label: 'Stripe Connect', content: <StripeConnectSettingsSection /> }]
+      : []),
     { id: 'statements', group: 'Payouts', label: 'Payout statements', content: <PayoutStatementsSection /> },
     { id: 'paypal', group: 'Payouts', label: 'Pay with PayPal', content: <PaypalPayoutsCard /> },
     { id: 'email', group: 'Workspace', label: 'Email delivery', content: <MailSection /> },
