@@ -8094,6 +8094,79 @@
           }
         }
       },
+      "StripeConnectSettings": {
+        "type": "object",
+        "properties": {
+          "accountMode": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "custom_payouts"
+            ]
+          },
+          "collectTaxInformation": {
+            "type": "boolean"
+          },
+          "requestCardPayments": {
+            "type": "boolean"
+          },
+          "collect1099KTaxInformation": {
+            "type": "boolean"
+          },
+          "collectEventuallyDue": {
+            "type": "boolean"
+          },
+          "collectFutureRequirements": {
+            "type": "boolean"
+          },
+          "productDescription": {
+            "type": "string",
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "accountMode",
+          "collectTaxInformation",
+          "requestCardPayments",
+          "collect1099KTaxInformation",
+          "collectEventuallyDue",
+          "collectFutureRequirements",
+          "productDescription"
+        ],
+        "additionalProperties": false
+      },
+      "UpdateStripeConnectSettingsRequest": {
+        "type": "object",
+        "properties": {
+          "accountMode": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "custom_payouts"
+            ]
+          },
+          "collectTaxInformation": {
+            "type": "boolean"
+          },
+          "requestCardPayments": {
+            "type": "boolean"
+          },
+          "collect1099KTaxInformation": {
+            "type": "boolean"
+          },
+          "collectEventuallyDue": {
+            "type": "boolean"
+          },
+          "collectFutureRequirements": {
+            "type": "boolean"
+          },
+          "productDescription": {
+            "type": "string",
+            "maxLength": 500
+          }
+        },
+        "additionalProperties": false
+      },
       "PartnerAccessSettings": {
         "type": "object",
         "properties": {
@@ -20763,6 +20836,138 @@
           },
           "409": {
             "description": "`network_not_connected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/config/stripe-connect": {
+      "get": {
+        "operationId": "getStripeConnectSettings",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Get the account setup for new Stripe Connect partners",
+        "description": "**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "responses": {
+          "200": {
+            "description": "Defaults to Standard accounts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StripeConnectSettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "updateStripeConnectSettings",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Choose Standard accounts or Custom affiliate payout accounts",
+        "description": "Per-tenant settings. Omitted fields retain their values. Type, tax capability, and description apply only to new accounts. Existing accounts are never converted. The upfront-verification option also applies to returning Custom accounts. Standard preserves Stripe-default capabilities and onboarding.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateStripeConnectSettingsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The saved settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StripeConnectSettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_body`, `tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
             "content": {
               "application/json": {
                 "schema": {

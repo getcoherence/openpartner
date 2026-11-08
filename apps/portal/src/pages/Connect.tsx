@@ -8,8 +8,10 @@ import { Button, Card, EmptyState, ErrorBanner, Page } from '../ui.js';
 
 interface ConnectStatus {
   connected: boolean;
+  accountMode?: 'standard' | 'custom_payouts';
+  activityDescriptionPrefilled?: boolean;
   accountId?: string;
-  chargesEnabled?: boolean;
+  transfersEnabled?: boolean;
   payoutsEnabled?: boolean;
   detailsSubmitted?: boolean;
 }
@@ -75,20 +77,24 @@ export function ConnectPage({ principal }: { principal: Principal }) {
   return (
     <Page
       title="Stripe Connect"
-      subtitle="Receive payouts straight into your own Stripe account."
+      subtitle="Set up your payout details to receive affiliate commissions."
     >
       <ErrorBanner error={status.error ?? start.error} />
       {status.isLoading ? (
         <Card>Loading…</Card>
       ) : !s?.connected ? (
         <Card>
-          <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 6 }}>Connect an account</div>
+          <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 6 }}>Set up affiliate payouts</div>
           <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 16, maxWidth: 560 }}>
-            You'll be redirected to Stripe's hosted onboarding. Once you've finished,
-            {' '}{programName} will transfer approved commissions directly to your balance.
+            {s?.accountMode === 'custom_payouts'
+              ? 'Stripe will collect the details required to set up your affiliate payouts. '
+              : 'Create your Stripe account and complete Stripe’s onboarding to receive payouts. You’ll have access to your own Stripe dashboard. '}
+            {s?.activityDescriptionPrefilled && 'Your affiliate activity description is already filled in. '}
+            Once you've finished,
+            {' '}{programName} can send your approved commissions.
           </div>
           <Button onClick={() => start.mutate()} disabled={start.isPending}>
-            {start.isPending ? 'Preparing…' : 'Connect Stripe'}
+            {start.isPending ? 'Preparing…' : 'Set up payouts'}
           </Button>
         </Card>
       ) : (
@@ -102,13 +108,13 @@ export function ConnectPage({ principal }: { principal: Principal }) {
           </div>
           <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
             <ChecklistItem label="Details submitted" ok={!!s.detailsSubmitted} />
-            <ChecklistItem label="Charges enabled" ok={!!s.chargesEnabled} />
+            <ChecklistItem label="Transfers enabled" ok={!!s.transfersEnabled} />
             <ChecklistItem label="Payouts enabled" ok={!!s.payoutsEnabled} />
           </div>
-          {!s.payoutsEnabled && (
+          {(!s.payoutsEnabled || !s.transfersEnabled) && (
             <div style={{ marginTop: 16 }}>
               <Button onClick={() => start.mutate()} disabled={start.isPending}>
-                Finish onboarding
+                {start.isPending ? 'Preparing…' : 'Finish onboarding'}
               </Button>
             </div>
           )}

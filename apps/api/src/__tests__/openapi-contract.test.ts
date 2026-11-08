@@ -244,7 +244,7 @@ beforeAll(async () => {
   if (skipIntegration) return;
   await db.raw('select 1');
   for (const t of TABLES_TO_CLEAN) await db(t).del();
-  await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID }).whereIn('key', ['network_membership', 'partner_access', 'payout_statements', 'partner_referrals']).del();
+  await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID }).whereIn('key', ['network_membership', 'partner_access', 'payout_statements', 'partner_referrals', 'stripe_connect']).del();
   savedTenant = await db(TABLES.Tenant)
     .where({ id: DEFAULT_TENANT_ID })
     .first('payoutThresholdCents', 'couponIntegrationVerifiedAt');
@@ -269,7 +269,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (!skipIntegration) {
     for (const t of TABLES_TO_CLEAN) await db(t).del();
-    await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID }).whereIn('key', ['network_membership', 'partner_access', 'payout_statements', 'partner_referrals']).del();
+    await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID }).whereIn('key', ['network_membership', 'partner_access', 'payout_statements', 'partner_referrals', 'stripe_connect']).del();
     await db(TABLES.Tenant)
       .where({ id: DEFAULT_TENANT_ID })
       .update({
@@ -295,6 +295,9 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     expect(membership.autoEnroll).toBe(false);
 
     // Customers created without an invite can't sign in to the hosted portal.
+    check('getStripeConnectSettings', await admin.get('/config/stripe-connect'));
+    check('updateStripeConnectSettings', await admin.post('/config/stripe-connect', { accountMode: 'custom_payouts' }));
+    check('updateStripeConnectSettings', await admin.post('/config/stripe-connect', { accountMode: 'invalid' }));
     check('getPartnerAccessSettings', await admin.get('/config/partner-access'));
     const access = check<{ uninvitedPortalAccess: boolean }>(
       'updatePartnerAccessSettings',

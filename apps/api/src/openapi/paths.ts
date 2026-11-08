@@ -2055,6 +2055,29 @@ Newest referral first: the customer who most recently became the partner's refer
     errors: { 409: ['network_not_connected'] },
   });
 
+  // ------------------------------------------------ Stripe Connect configuration
+  const connectSettingsResponse = settings.connectSettingsSchema.required().openapi('StripeConnectSettings');
+  r.operation({
+    method: 'get',
+    path: '/config/stripe-connect',
+    tag: 'Payouts',
+    operationId: 'getStripeConnectSettings',
+    summary: 'Get the account setup for new Stripe Connect partners',
+    access: { kind: 'admin' },
+    responses: { 200: { description: 'Defaults to Standard accounts.', schema: connectSettingsResponse } },
+  });
+  r.operation({
+    method: 'post',
+    path: '/config/stripe-connect',
+    tag: 'Payouts',
+    operationId: 'updateStripeConnectSettings',
+    summary: 'Choose Standard accounts or Custom affiliate payout accounts',
+    description: 'Per-tenant settings. Omitted fields retain their values. Type, tax capability, and description apply only to new accounts. Existing accounts are never converted. The upfront-verification option also applies to returning Custom accounts. Standard preserves Stripe-default capabilities and onboarding.',
+    access: { kind: 'admin' },
+    body: settings.connectSettingsSchema.openapi('UpdateStripeConnectSettingsRequest'),
+    responses: { 200: { description: 'The saved settings.', schema: connectSettingsResponse } },
+  });
+
   // ------------------------------------------------ Partner portal access
   r.operation({
     method: 'get',

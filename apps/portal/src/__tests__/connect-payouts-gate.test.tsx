@@ -124,16 +124,59 @@ describe('partner sidebar', () => {
 describe('/connect page', () => {
   it('offers Stripe onboarding when the brand pays through Connect', async () => {
     const page = renderWith(<ConnectPage principal={PARTNER} />, true);
-    expect(await page.findByRole('button', { name: 'Connect Stripe' })).toBeTruthy();
+    expect(await page.findByRole('button', { name: 'Set up payouts' })).toBeTruthy();
     expect(connectStatusCalls()).toHaveLength(1);
+  });
+
+  it('shows Standard onboarding copy by default without promising a prefilled activity', async () => {
+    const page = renderWith(<ConnectPage principal={PARTNER} />, true);
+    await page.findByRole('button', { name: 'Set up payouts' });
+    expect(page.getByText(/own Stripe dashboard/)).toBeTruthy();
+    expect(page.queryByText(/activity description is already filled in/)).toBeNull();
+  });
+
+  it.each([true, false])('shows Custom onboarding copy and matches description prefill=%s', async (prefilled) => {
+    routes['/api/partners/p1/connect/status'] = {
+      connected: false, accountMode: 'custom_payouts', activityDescriptionPrefilled: prefilled,
+    };
+    const page = renderWith(<ConnectPage principal={PARTNER} />, true);
+    await page.findByRole('button', { name: 'Set up payouts' });
+    expect(page.queryByText(/own Stripe dashboard/)).toBeNull();
+    expect(!!page.queryByText(/activity description is already filled in/)).toBe(prefilled);
   });
 
   it('reached by URL when the brand pays directly: points to Payout details instead', () => {
     const page = renderWith(<ConnectPage principal={PARTNER} />, false);
     expect(page.getByText('Acme doesn’t pay through Stripe Connect')).toBeTruthy();
-    expect(page.queryByRole('button', { name: 'Connect Stripe' })).toBeNull();
+    expect(page.queryByRole('button', { name: 'Set up payouts' })).toBeNull();
     expect(page.getByRole('link', { name: /Go to Payout details/ }).getAttribute('href')).toBe('/payout-details');
     expect(connectStatusCalls()).toHaveLength(0);
+  });
+
+  it.each([
+    { transfersEnabled: false, payoutsEnabled: false },
+    { transfersEnabled: false, payoutsEnabled: true },
+    { transfersEnabled: true, payoutsEnabled: false },
+  ])('keeps onboarding available while payout readiness is incomplete: $transfersEnabled/$payoutsEnabled', async (readiness) => {
+    routes['/api/partners/p1/connect/status'] = {
+      connected: true, accountId: 'acct_partner', detailsSubmitted: true,
+      chargesEnabled: false, ...readiness,
+    };
+    const page = renderWith(<ConnectPage principal={PARTNER} />, true);
+    expect(await page.findByRole('button', { name: 'Finish onboarding' })).toBeTruthy();
+  });
+
+  it.each([true, false])('does not require onboarding for a payout-ready account with chargesEnabled=%s', async (chargesEnabled) => {
+    routes['/api/partners/p1/connect/status'] = {
+      connected: true, accountId: 'acct_partner', detailsSubmitted: true,
+      chargesEnabled, transfersEnabled: true, payoutsEnabled: true,
+    };
+    const page = renderWith(<ConnectPage principal={PARTNER} />, true);
+    await page.findByText('acct_partner');
+    expect(page.queryByRole('button', { name: 'Finish onboarding' })).toBeNull();
+    expect(page.queryByRole('button', { name: 'Review payout details' })).toBeNull();
+    expect(page.queryByText('Charges enabled')).toBeNull();
+    expect(page.getByText('Transfers enabled')).toBeTruthy();
   });
 });
 
