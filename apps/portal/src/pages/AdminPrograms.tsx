@@ -107,6 +107,10 @@ export function AdminPrograms() {
   const defaultCurrency = useDefaultCurrency();
   const [showCreate, setShowCreate] = useState(false);
   const [editing, setEditing] = useState<Program | null>(null);
+  // End now and Delete ask on the row itself, not with window.confirm: a
+  // browser that blocks or auto-dismisses dialogs (a scripted or agent-driven
+  // one) gets false back, and the button seems to do nothing.
+  const [confirming, setConfirming] = useState<{ id: string; action: 'end' | 'delete' } | null>(null);
   const viewOnly = useViewOnly();
   const campaigns = useQuery({
     queryKey: ['campaigns'],
@@ -125,6 +129,7 @@ export function AdminPrograms() {
         body: { endsAt: new Date().toISOString() },
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['campaigns'] }),
+    onSettled: () => setConfirming(null),
   });
 
   // Only for a program nothing uses yet, such as a duplicate: the API
@@ -135,7 +140,14 @@ export function AdminPrograms() {
       qc.invalidateQueries({ queryKey: ['campaigns'] });
       qc.invalidateQueries({ queryKey: ['program-stats'] });
     },
+    onSettled: () => setConfirming(null),
   });
+
+  const askFirst = (id: string, action: 'end' | 'delete') => {
+    endNow.reset();
+    remove.reset();
+    setConfirming({ id, action });
+  };
 
   return (
     <Page
@@ -149,7 +161,7 @@ export function AdminPrograms() {
         </EditOnly>
       }
     >
-      <ErrorBanner error={campaigns.error ?? endNow.error ?? remove.error} />
+      <ErrorBanner error={campaigns.error} />
       {showCreate && (
         <CreateProgram
           rewardDelivery={rewardDelivery}
@@ -184,6 +196,10 @@ export function AdminPrograms() {
           columns={['Name', 'Status', 'Destination', 'Commission', 'Window', 'Holdback', 'Model', 'Created', 'Actions']}
           rows={(campaigns.data?.programs ?? []).map((c) => {
             const status = statusOf(c);
+            const ask = confirming?.id === c.id ? confirming.action : null;
+            // On the row, not the page banner: with a long list the banner
+            // is off-screen.
+            const failed = [endNow, remove].find((m) => m.isError && m.variables === c.id)?.error;
             return [
               <span style={{ fontWeight: 500 }}>{c.name}</span>,
               <ProgramStatusPill campaign={c} />,
@@ -200,49 +216,71 @@ export function AdminPrograms() {
               </span>,
               <code style={{ color: theme.accentText, fontSize: 12 }}>{c.attributionModel}</code>,
               <span style={{ color: theme.textMuted }}>{formatDate(c.createdAt, { relative: true })}</span>,
-              <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                {!viewOnly && (
-                  <button
-                    type="button"
-                    onClick={() => setEditing(c)}
-                    style={smallActionStyle(theme.textMuted)}
-                  >
-                    Edit
-                  </button>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+                {ask ? (
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <span style={{ fontSize: 12, color: theme.textMuted, whiteSpace: 'nowrap' }}>
+                      {ask === 'delete' ? 'Delete for good?' : 'End now?'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => (ask === 'delete' ? remove : endNow).mutate(c.id)}
+                      disabled={endNow.isPending || remove.isPending}
+                      style={smallActionStyle(theme.danger)}
+                    >
+                      {ask === 'delete' ? 'Yes, delete' : 'Yes, end'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirming(null)}
+                      disabled={endNow.isPending || remove.isPending}
+                      style={smallActionStyle(theme.textMuted)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {!viewOnly && (
+                      <button
+                        type="button"
+                        onClick={() => setEditing(c)}
+                        style={smallActionStyle(theme.textMuted)}
+                      >
+                        Edit
+                      </button>
+                    )}
+                    <TenantLink
+                      to={`/admin/programs/${c.id}/bounties`}
+                      style={{ ...smallActionStyle(theme.textMuted), border: `1px solid ${alpha(theme.textMuted, 0.333)}`, textDecoration: 'none' }}
+                    >
+                      Bounties
+                    </TenantLink>
+                    {status !== 'ended' && !viewOnly && (
+                      <button
+                        type="button"
+                        title="Share links keep redirecting; new commissions stop."
+                        onClick={() => askFirst(c.id, 'end')}
+                        style={smallActionStyle(theme.danger)}
+                      >
+                        End now
+                      </button>
+                    )}
+                    {c.deletable && !viewOnly && (
+                      <button
+                        type="button"
+                        onClick={() => askFirst(c.id, 'delete')}
+                        style={smallActionStyle(theme.danger)}
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </div>
                 )}
-                <TenantLink
-                  to={`/admin/programs/${c.id}/bounties`}
-                  style={{ ...smallActionStyle(theme.textMuted), border: `1px solid ${alpha(theme.textMuted, 0.333)}`, textDecoration: 'none' }}
-                >
-                  Bounties
-                </TenantLink>
-                {status !== 'ended' && !viewOnly && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (confirm(`End "${c.name}" now? Existing share-links keep redirecting; new commissions stop accruing.`)) {
-                        endNow.mutate(c.id);
-                      }
-                    }}
-                    disabled={endNow.isPending}
-                    style={smallActionStyle(theme.danger)}
-                  >
-                    End now
-                  </button>
-                )}
-                {c.deletable && !viewOnly && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (confirm(`Delete "${c.name}"? This can't be undone.`)) {
-                        remove.mutate(c.id);
-                      }
-                    }}
-                    disabled={remove.isPending}
-                    style={smallActionStyle(theme.danger)}
-                  >
-                    Delete
-                  </button>
+                {failed && (
+                  <span role="alert" style={{ fontSize: 12, color: theme.danger, maxWidth: 280, textAlign: 'right' }}>
+                    {failed.message}
+                  </span>
                 )}
               </div>,
             ];
