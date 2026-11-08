@@ -92,11 +92,22 @@ connectRouter.post(
       // Changing settings after a rolled-back attempt must not reuse a key
       // with different Stripe parameters. Identical retries still deduplicate.
       const fingerprint = createHash('sha256').update(JSON.stringify(params)).digest('hex').slice(0, 24);
-      const account = await stripe.accounts.create(params, {
-        // If account-link creation fails, the request's DB transaction rolls
-        // back. Reuse the Stripe account when the partner retries that request.
-        idempotencyKey: `connect-account:${tenantId}:${partner.id}:${fingerprint}`,
-      });
+      let account: Stripe.Account;
+      try {
+        account = await stripe.accounts.create(params, {
+          // If account-link creation fails, the request's DB transaction rolls
+          // back. Reuse the Stripe account when the partner retries that request.
+          idempotencyKey: `connect-account:${tenantId}:${partner.id}:${fingerprint}`,
+        });
+      } catch (err) {
+        // Stripe refusing the account (a country it can't onboard, or no
+        // cross-border payouts from the platform's country) is the partner's
+        // or operator's to fix, not a server error.
+        if ((err as { type?: string }).type === 'StripeInvalidRequestError') {
+          return res.status(400).json({ error: 'stripe_account_rejected', detail: (err as Error).message });
+        }
+        throw err;
+      }
       accountId = account.id;
       await db<PartnerRow>(TABLES.Partner)
         .where({ id: partner.id, tenantId })

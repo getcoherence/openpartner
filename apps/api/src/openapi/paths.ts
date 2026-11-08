@@ -2075,7 +2075,7 @@ Newest referral first: the customer who most recently became the partner's refer
     tag: 'Payouts',
     operationId: 'updateStripeConnectSettings',
     summary: 'Choose Standard accounts or Custom affiliate payout accounts',
-    description: 'Per-tenant settings. Omitted fields retain their values. Account type, capabilities, and description apply only to new accounts. Existing accounts are never converted. Both verification collection options also apply to returning Custom accounts. Standard preserves Stripe-default capabilities and onboarding. Custom accounts are self-hosted only: on hosted modes, `custom_payouts` returns `403 custom_accounts_disabled_on_hosted`.',
+    description: 'Settings for partners\' new Stripe Connect accounts. Omitted fields keep their values. Account type, capabilities and description apply only to accounts created afterwards; existing accounts are never converted. `custom_payouts` requires `OPENPARTNER_MODE=selfhost`; hosted instances return `403 custom_accounts_disabled_on_hosted`.',
     access: { kind: 'admin' },
     body: settings.connectSettingsSchema.openapi('UpdateStripeConnectSettingsRequest'),
     responses: { 200: { description: 'The saved settings.', schema: connectSettingsResponse } },

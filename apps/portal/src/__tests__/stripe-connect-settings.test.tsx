@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { AdminSettings } from '../pages/admin/Settings.js';
 import { StripeConnectSettingsSection } from '../pages/admin/StripeConnectSettingsSection.js';
 
 const defaults = {
@@ -12,17 +14,25 @@ const defaults = {
 let stored = { ...defaults };
 let posts: unknown[];
 let failSave: boolean;
+let customAccountsAvailable: boolean;
+let settingsReads: number;
 beforeEach(() => {
   stored = { ...defaults };
   posts = [];
   failSave = false;
-  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+  customAccountsAvailable = true;
+  settingsReads = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (!String(input).endsWith('/config/stripe-connect')) {
+      return new Response(JSON.stringify({ error: 'not_found' }), { status: 404 });
+    }
     if (init?.method === 'POST') {
       posts.push(JSON.parse(String(init.body)));
       if (failSave) return new Response(JSON.stringify({ error: 'save_failed' }), { status: 500 });
       stored = JSON.parse(String(init.body));
     }
-    return new Response(JSON.stringify({ ...stored, customAccountsAvailable: true }), { status: 200 });
+    settingsReads += 1;
+    return new Response(JSON.stringify({ ...stored, customAccountsAvailable }), { status: 200 });
   }) as typeof fetch;
 });
 afterEach(cleanup);
@@ -87,5 +97,30 @@ describe('Stripe Connect settings', () => {
     fireEvent.click(page.getByRole('button', { name: 'Save Stripe settings' }));
     await page.findByRole('status');
     expect(stored.accountMode).toBe('custom_payouts');
+  });
+});
+
+describe('Settings menu', () => {
+  function mountSettings() {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    qc.setQueryData(['program-settings'], { programName: 'Acme', whiteLabel: true });
+    return render(
+      <MemoryRouter>
+        <QueryClientProvider client={qc}><AdminSettings /></QueryClientProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('lists Stripe Connect when the instance can create Custom accounts', async () => {
+    const page = mountSettings();
+    expect(await page.findByRole('link', { name: 'Stripe Connect' })).toBeTruthy();
+  });
+
+  it('leaves it out on hosted instances, which only use Standard accounts', async () => {
+    customAccountsAvailable = false;
+    const page = mountSettings();
+    expect(await page.findByRole('link', { name: 'Payout statements' })).toBeTruthy();
+    await waitFor(() => expect(settingsReads).toBeGreaterThan(0));
+    expect(page.queryByRole('link', { name: 'Stripe Connect' })).toBeNull();
   });
 });

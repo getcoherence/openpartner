@@ -162,6 +162,20 @@ describe('/connect page', () => {
     expect(posted[0]!.body).toMatchObject({ country: 'GB' });
   });
 
+  it('explains a country Stripe refuses instead of showing the raw error', async () => {
+    routes['/api/partners/p1/connect/status'] = { connected: false, accountMode: 'custom_payouts' };
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) =>
+      init?.method === 'POST'
+        ? json(400, { error: 'stripe_account_rejected', detail: 'Cross-border payouts are not supported.' })
+        : realFetch(input, init)) as typeof fetch;
+    const page = renderWith(<ConnectPage principal={PARTNER} />, true);
+    fireEvent.change(await page.findByLabelText("Country you're based in"), { target: { value: 'IN' } });
+    fireEvent.click(page.getByRole('button', { name: 'Set up payouts' }));
+    expect(await page.findByText(/Stripe can't set up payouts for the country you chose/)).toBeTruthy();
+    expect(page.queryByText(/Cross-border payouts are not supported/)).toBeNull();
+  });
+
   it('lets a payout-ready Custom partner update their payout details', async () => {
     routes['/api/partners/p1/connect/status'] = {
       connected: true, accountId: 'acct_partner', accountType: 'custom', detailsSubmitted: true,

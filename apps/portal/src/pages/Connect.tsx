@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { CreditCard, CheckCircle2, Landmark, XCircle } from 'lucide-react';
-import { api, type Principal } from '../api.js';
+import { api, ApiError, type Principal } from '../api.js';
 import { theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
 import { useBrand, useConnectPayouts } from '../lib/useBrand.js';
@@ -97,7 +97,15 @@ export function ConnectPage({ principal }: { principal: Principal }) {
         ? 'Set up your payout details to receive affiliate commissions.'
         : 'Receive payouts straight into your own Stripe account.'}
     >
-      <ErrorBanner error={status.error ?? start.error ?? update.error} />
+      <ErrorBanner
+        error={
+          status.error ??
+          (rejectedByStripe(start.error)
+            ? `Stripe can't set up payouts for the country you chose. Check it's where you're based, or contact ${programName}.`
+            : start.error) ??
+          update.error
+        }
+      />
       {status.isLoading ? (
         <Card>Loading…</Card>
       ) : !s?.connected && custom ? (
@@ -168,6 +176,11 @@ export function ConnectPage({ principal }: { principal: Principal }) {
       )}
     </Page>
   );
+}
+
+/** Stripe refused to create the account, e.g. for an unsupported country. */
+function rejectedByStripe(error: unknown): boolean {
+  return error instanceof ApiError && (error.detail as { error?: string } | undefined)?.error === 'stripe_account_rejected';
 }
 
 function ChecklistItem({ label, ok }: { label: string; ok: boolean }) {

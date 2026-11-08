@@ -35,7 +35,8 @@ export function customAccountsAvailable(): boolean {
 export async function readConnectSettings(db: Knex, tenantId: string): Promise<ConnectSettings> {
   const value = await getConfig<Partial<ConnectSettings>>(db, tenantId, CONNECT_SETTINGS_KEY);
   return {
-    // A Custom setting imported into a hosted instance reads as Standard.
+    // Custom saved while self-hosted reads as Standard once the instance
+    // runs in a hosted mode.
     accountMode: value?.accountMode === 'custom_payouts' && customAccountsAvailable() ? 'custom_payouts' : 'standard',
     collectTaxInformation: value?.collectTaxInformation ?? CONNECT_DEFAULTS.collectTaxInformation,
     collect1099KTaxInformation: value?.collect1099KTaxInformation ?? CONNECT_DEFAULTS.collect1099KTaxInformation,

@@ -280,13 +280,24 @@ describe.skipIf(skipIntegration)('configurable Connect onboarding', () => {
     expect(params.capabilities).toEqual({ transfers: { requested: true } });
   });
 
+  it('reports a Stripe refusal as the partner\'s to fix, and leaves them unlinked', async () => {
+    await saveConnectSettings(db, DEFAULT_TENANT_ID, { accountMode: 'custom_payouts' });
+    stripeApi.accounts.create.mockRejectedValueOnce(Object.assign(
+      new Error('Cross-border payouts are not supported for this country.'), { type: 'StripeInvalidRequestError' },
+    ));
+    const res = await request(app).post(`/partners/${partnerId}/connect/start`).set(admin).send({ ...body, country: 'IN' }).expect(400);
+    expect(res.body).toEqual({ error: 'stripe_account_rejected', detail: 'Cross-border payouts are not supported for this country.' });
+    expect(stripeApi.accountLinks.create).not.toHaveBeenCalled();
+    expect((await db(TABLES.Partner).where({ id: partnerId }).first()).stripeConnectAccountId).toBeNull();
+  });
+
   it.each(['flat', 'revshare'] as const)('keeps %s tenants on Standard accounts', async (hosted) => {
     mode.current = hosted;
     const rejected = await request(app).post('/config/stripe-connect').set(admin).send({ accountMode: 'custom_payouts' }).expect(403);
     expect(rejected.body.error).toBe('custom_accounts_disabled_on_hosted');
     expect((await request(app).get('/config/stripe-connect').set(admin).expect(200)).body)
       .toEqual({ ...CONNECT_DEFAULTS, customAccountsAvailable: false });
-    // A Custom setting saved before, or imported from a self-hosted export, reads as Standard.
+    // A Custom setting saved while the instance was self-hosted reads as Standard.
     await setConfig(db, DEFAULT_TENANT_ID, CONNECT_SETTINGS_KEY, { accountMode: 'custom_payouts' });
     expect((await readConnectSettings(db, DEFAULT_TENANT_ID)).accountMode).toBe('standard');
     const status = await request(app).get(`/partners/${partnerId}/connect/status`).set(admin).expect(200);
