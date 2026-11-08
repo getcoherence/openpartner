@@ -672,6 +672,32 @@ export interface PartnerSigninLinkLogRow {
   createdAt: Date;
 }
 
+/** Who acted, for an AuditLog row: a signed-in admin, an ApiKey row (scoped
+ *  keys included) or the deployment's ADMIN_API_KEY. */
+export type AuditActorKind = 'admin' | 'api_key' | 'operator_key';
+
+/** One thing a brand's admin or API key did (migration
+ *  20261108120000_audit_log, docs/audit-log.md). Append-only. */
+export interface AuditLogRow {
+  id: string;
+  tenantId: string;
+  actorKind: AuditActorKind;
+  /** Admin.id or ApiKey.id; null for the operator key. */
+  actorId: string | null;
+  /** The admin's email or the key's label when it happened. */
+  actorLabel: string | null;
+  /** "METHOD /route/:pattern", or an event name such as "signin". */
+  action: string;
+  targetId: string | null;
+  params: Record<string, string> | null;
+  /** Names of the request body's top-level fields; never their values. */
+  fields: string[] | null;
+  detail: Record<string, unknown> | null;
+  status: number | null;
+  ip: string | null;
+  createdAt: Date;
+}
+
 /** Operator runtime switch (platform-scoped; migration 20261012000000). */
 export interface PlatformSettingRow {
   key: string;

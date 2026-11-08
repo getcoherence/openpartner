@@ -60,6 +60,9 @@ pattern (`req.route.path`):
   - `GET /partners/:id/payout-profile`: a partner's full payout details.
   - `GET /partners/:id/postbacks/:postbackId/url`: a partner's sealed
     postback URL (already partner-only; listed so it stays shut).
+  - `GET /audit-log`, `GET /audit-log/actors`, `GET /audit-log.csv`: the
+    [audit log](audit-log.md), which names teammates with their IP
+    addresses.
 
 Not on the deny list, because they hand over nothing a viewer couldn't
 see on the page anyway: API key and webhook lists (prefixes only), mail,
@@ -105,7 +108,8 @@ approved brands.
   that is mostly forms (Settings, Integrations, Webhooks, Billing, a
   partner's programs, coupons and commission) passes `edits` to `Page`:
   its header actions go and its controls are disabled. Export / import
-  leaves the nav and its route sends a viewer to the dashboard.
+  and Audit log leave the nav and their routes send a viewer to the
+  dashboard.
 - A refused request shows "You have view-only access." in the page's
   error banner, from the `read_only` code, so anything missed still says
   why.

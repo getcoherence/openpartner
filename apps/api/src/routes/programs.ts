@@ -19,6 +19,7 @@ import {
 } from '../campaign-marketplace-sync.js';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
+import { auditChanges } from '../audit-log.js';
 import { campaignAcceptsNewActivity } from '../campaign-lifecycle.js';
 import { getWhiteLabelState } from '../white-label.js';
 import { customerRewardDelivery } from '../customer-rewards.js';
@@ -546,6 +547,7 @@ programsRouter.patch('/programs/:id', requireAuth, requireAdmin, async (req, res
 
   const existing = await db<ProgramRow>(TABLES.Program).where({ id: req.params.id, tenantId }).first();
   if (!existing) return res.status(404).json({ error: 'not_found' });
+  auditChanges(req, TABLES.Program, { id: existing.id, tenantId }, existing);
 
   const patch: Partial<ProgramRow> = {};
   if (body.data.name !== undefined) patch.name = body.data.name;

@@ -25,6 +25,9 @@ export const VIEWER_DENIED_READS: Readonly<Record<string, string>> = {
   'GET /payouts/exports/:exportId.csv': "a payout file, with partners' full payout details",
   'GET /partners/:id/payout-profile': "a partner's full payout details",
   'GET /partners/:id/postbacks/:postbackId/url': "a partner's sealed postback URL",
+  'GET /audit-log': "the audit log, with teammates' IP addresses",
+  'GET /audit-log/actors': 'who the audit log names',
+  'GET /audit-log.csv': "the audit log, with teammates' IP addresses",
 };
 
 /** The route key for `req`: "METHOD /pattern". Falls back to the path for

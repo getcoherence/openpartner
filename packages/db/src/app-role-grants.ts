@@ -77,6 +77,8 @@ export const RESTRICTED_GRANTS: ReadonlyArray<{ table: string; grant: string }> 
   // Same reason: the record of every partner sign-in link a brand minted
   // (routes/partner-signin-link.ts).
   { table: 'PartnerSigninLinkLog', grant: 'select, insert' },
+  // And the brand's admin audit log (audit-log.ts).
+  { table: 'AuditLog', grant: 'select, insert' },
   // The click-landing log is raw like Click: appended, never edited.
   // TrackingIssue's counters are bumped in place (tracking-issues.ts), but
   // no request deletes one.
