@@ -154,7 +154,7 @@ export function StripeConnectSettingsSection() {
           <Button onClick={() => save.mutate(settings)} disabled={!draft || save.isPending}>
             {save.isPending ? 'Saving…' : 'Save Stripe settings'}
           </Button>
-          {saved && <span role="status" style={{ marginLeft: 12, fontSize: 13 }}>Saved</span>}
+          {saved && <span role="status" style={{ marginLeft: 12, color: theme.success, fontSize: 13 }}>Saved.</span>}
         </fieldset>
       )}
     </Card>
