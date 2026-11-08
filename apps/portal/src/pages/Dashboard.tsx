@@ -80,6 +80,7 @@ interface Funnel {
 
 interface ConnectStatus {
   connected: boolean;
+  transfersEnabled?: boolean;
   payoutsEnabled?: boolean;
 }
 
@@ -128,7 +129,7 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
 
   const linkCount = links.data?.links.length ?? 0;
   const hasLink = linkCount > 0;
-  const hasActiveConnect = !!connect.data?.connected && !!connect.data?.payoutsEnabled;
+  const hasActiveConnect = !!connect.data?.connected && !!connect.data?.transfersEnabled && !!connect.data?.payoutsEnabled;
   // On the manual rail, or wherever the brand can't pay through Connect
   // (hosted without payout funding), the brand pays from the partner's
   // payout details (bank transfer, PayPal or Wise files): that's the step,
@@ -145,7 +146,7 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
     !payoutProfile.isLoading &&
     !paysManually &&
     connect.data != null &&
-    (!connect.data.connected || !connect.data.payoutsEnabled);
+    !hasActiveConnect;
 
   // Getting-started card shows while EITHER onboarding task is outstanding.
   // We only render it once we know the state of both (payouts + links),

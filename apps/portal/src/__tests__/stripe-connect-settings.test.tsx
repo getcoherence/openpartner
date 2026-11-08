@@ -32,6 +32,15 @@ function mount() {
 }
 
 describe('Stripe Connect settings', () => {
+  it('clears the save confirmation after two seconds like other settings', async () => {
+    const page = mount();
+    fireEvent.change(await page.findByLabelText('Accounts for new partners'), { target: { value: 'custom_payouts' } });
+    fireEvent.click(page.getByRole('button', { name: 'Save Stripe settings' }));
+    expect((await page.findByRole('status')).textContent).toBe('Saved.');
+    await waitFor(() => expect(page.queryByRole('status')).toBeNull(), { timeout: 3500 });
+    expect(stored.accountMode).toBe('custom_payouts');
+  });
+
   it('defaults to Standard, saves Custom options explicitly, and persists across remount', async () => {
     const page = mount();
     const select = await page.findByLabelText('Accounts for new partners') as HTMLSelectElement;

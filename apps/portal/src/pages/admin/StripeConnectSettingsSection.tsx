@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { CreditCard } from 'lucide-react';
 import { api } from '../../api.js';
 import { Button, Card, ErrorBanner, Label, Select, Textarea } from '../../ui.js';
 import { theme } from '../../theme.js';
@@ -22,6 +23,11 @@ export function StripeConnectSettingsSection() {
   });
   const [draft, setDraft] = useState<ConnectSettings | null>(null);
   const [saved, setSaved] = useState(false);
+  useEffect(() => {
+    if (!saved) return;
+    const timer = setTimeout(() => setSaved(false), 2000);
+    return () => clearTimeout(timer);
+  }, [saved]);
   const settings = draft ?? query.data;
   const save = useMutation({
     mutationFn: (body: ConnectSettings) => api<ConnectSettings>('/config/stripe-connect', { method: 'POST', body }),
@@ -37,12 +43,17 @@ export function StripeConnectSettingsSection() {
     setSaved(false);
   }
 
+  if (query.isLoading) return <Card>Loading…</Card>;
+
   return (
     <Card>
-      <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 12 }}>Stripe Connect account setup</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+        <CreditCard size={18} style={{ color: theme.accentText }} />
+        <div style={{ fontSize: 15, fontWeight: 500 }}>Stripe Connect account setup</div>
+      </div>
       <ErrorBanner error={query.error ?? save.error} />
-      {query.isLoading ? <p>Loading…</p> : settings && (
-        <fieldset disabled={save.isPending} style={{ border: 0, padding: 0, margin: 0, maxWidth: 640 }}>
+      {settings && (
+        <fieldset disabled={save.isPending} style={{ border: 0, padding: 0, margin: 0, minWidth: 0, maxWidth: 640 }}>
           <Label htmlFor="stripe-account-mode">Accounts for new partners</Label>
           <Select id="stripe-account-mode" value={settings.accountMode}
             onChange={(e) => change({ accountMode: e.target.value as ConnectSettings['accountMode'] })}>
@@ -151,10 +162,12 @@ export function StripeConnectSettingsSection() {
               Review Stripe Connect pricing
             </a>
           </p>
-          <Button onClick={() => save.mutate(settings)} disabled={!draft || save.isPending}>
-            {save.isPending ? 'Saving…' : 'Save Stripe settings'}
-          </Button>
-          {saved && <span role="status" style={{ marginLeft: 12, color: theme.success, fontSize: 13 }}>Saved.</span>}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <Button onClick={() => save.mutate(settings)} disabled={!draft || save.isPending}>
+              {save.isPending ? 'Saving…' : 'Save Stripe settings'}
+            </Button>
+            {saved && <span role="status" style={{ color: theme.success, fontSize: 13 }}>Saved.</span>}
+          </div>
         </fieldset>
       )}
     </Card>

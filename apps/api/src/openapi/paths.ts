@@ -2072,7 +2072,7 @@ Newest referral first: the customer who most recently became the partner's refer
     tag: 'Payouts',
     operationId: 'updateStripeConnectSettings',
     summary: 'Choose Standard accounts or Custom affiliate payout accounts',
-    description: 'Per-tenant settings. Omitted fields retain their values. Type, tax capability, and description apply only to new accounts. Existing accounts are never converted. The upfront-verification option also applies to returning Custom accounts. Standard preserves Stripe-default capabilities and onboarding.',
+    description: 'Per-tenant settings. Omitted fields retain their values. Account type, capabilities, and description apply only to new accounts. Existing accounts are never converted. Both verification collection options also apply to returning Custom accounts. Standard preserves Stripe-default capabilities and onboarding.',
     access: { kind: 'admin' },
     body: settings.connectSettingsSchema.openapi('UpdateStripeConnectSettingsRequest'),
     responses: { 200: { description: 'The saved settings.', schema: connectSettingsResponse } },

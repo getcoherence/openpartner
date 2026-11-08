@@ -181,6 +181,25 @@ describe('/connect page', () => {
 });
 
 describe('partner dashboard getting-started', () => {
+  it.each([
+    { transfersEnabled: false, payoutsEnabled: true },
+    { transfersEnabled: true, payoutsEnabled: false },
+    { transfersEnabled: true, payoutsEnabled: true },
+  ])('matches Connect payout readiness: $transfersEnabled/$payoutsEnabled', async (readiness) => {
+    routes['/api/partners/p1/connect/status'] = { connected: true, ...readiness };
+    const page = renderWith(<Dashboard principal={PARTNER} />, true);
+    await page.findByText('Attributed events');
+    await payoutProfileSettled();
+    await waitFor(() => expect(qc.getQueryState(['connect-status', 'p1'])?.status).toBe('success'));
+    if (readiness.transfersEnabled && readiness.payoutsEnabled) {
+      await waitFor(() => expect(page.queryByText('Getting started')).toBeNull());
+      expect(page.queryByText('Finish Stripe onboarding to receive payouts')).toBeNull();
+    } else {
+      expect(await page.findByText('Getting started')).toBeTruthy();
+      expect(page.getByRole('link', { name: 'Connect Stripe' }).getAttribute('href')).toBe('/connect');
+    }
+  });
+
   it('asks the partner to connect Stripe when the brand pays through it', async () => {
     const page = renderWith(<Dashboard principal={PARTNER} />, true);
     expect(await page.findByText('Connect Stripe to get paid')).toBeTruthy();
