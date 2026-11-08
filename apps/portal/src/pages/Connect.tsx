@@ -1,16 +1,19 @@
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { CreditCard, CheckCircle2, Landmark, XCircle } from 'lucide-react';
 import { api, type Principal } from '../api.js';
 import { theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
 import { useBrand, useConnectPayouts } from '../lib/useBrand.js';
-import { Button, Card, EmptyState, ErrorBanner, Page } from '../ui.js';
+import { countryOptions } from '../lib/CountryField.js';
+import { Button, Card, EmptyState, ErrorBanner, Label, Page, Select } from '../ui.js';
 
 interface ConnectStatus {
   connected: boolean;
   accountMode?: 'standard' | 'custom_payouts';
   activityDescriptionPrefilled?: boolean;
   accountId?: string;
+  accountType?: 'standard' | 'custom' | 'express';
   transfersEnabled?: boolean;
   payoutsEnabled?: boolean;
   detailsSubmitted?: boolean;
@@ -20,6 +23,8 @@ export function ConnectPage({ principal }: { principal: Principal }) {
   const partnerId = principal.role === 'partner' ? principal.partnerId : null;
   const { programName } = useBrand();
   const connectPayouts = useConnectPayouts();
+  const [country, setCountry] = useState('');
+  const countries = useMemo(() => countryOptions(), []);
 
   const status = useQuery({
     queryKey: ['connect-status', partnerId],
@@ -28,15 +33,25 @@ export function ConnectPage({ principal }: { principal: Principal }) {
     enabled: !!partnerId && connectPayouts,
   });
 
+  const linkUrls = {
+    returnUrl: `${window.location.origin}/connect?done=1`,
+    refreshUrl: `${window.location.origin}/connect`,
+  };
   const start = useMutation({
     mutationFn: () =>
       api<{ url: string }>(`/partners/${partnerId}/connect/start`, {
         method: 'POST',
-        body: {
-          returnUrl: `${window.location.origin}/connect?done=1`,
-          refreshUrl: `${window.location.origin}/connect`,
-        },
+        body: { ...linkUrls, ...(country ? { country } : {}) },
       }),
+    onSuccess: (data) => {
+      window.location.href = data.url;
+    },
+  });
+  // Custom accounts have no Stripe dashboard: Stripe's update flow is the
+  // only place their partners can change bank or personal details.
+  const update = useMutation({
+    mutationFn: () =>
+      api<{ url: string }>(`/partners/${partnerId}/connect/update`, { method: 'POST', body: linkUrls }),
     onSuccess: (data) => {
       window.location.href = data.url;
     },
@@ -73,28 +88,53 @@ export function ConnectPage({ principal }: { principal: Principal }) {
   }
 
   const s = status.data;
+  const custom = s?.connected ? s.accountType === 'custom' : s?.accountMode === 'custom_payouts';
 
   return (
     <Page
       title="Stripe Connect"
-      subtitle="Set up your payout details to receive affiliate commissions."
+      subtitle={custom
+        ? 'Set up your payout details to receive affiliate commissions.'
+        : 'Receive payouts straight into your own Stripe account.'}
     >
-      <ErrorBanner error={status.error ?? start.error} />
+      <ErrorBanner error={status.error ?? start.error ?? update.error} />
       {status.isLoading ? (
         <Card>Loading…</Card>
-      ) : !s?.connected ? (
+      ) : !s?.connected && custom ? (
         <Card>
           <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 6 }}>Set up affiliate payouts</div>
           <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 16, maxWidth: 560 }}>
-            {s?.accountMode === 'custom_payouts'
-              ? 'Stripe will collect the details required to set up your affiliate payouts. '
-              : 'Create your Stripe account and complete Stripe’s onboarding to receive payouts. You’ll have access to your own Stripe dashboard. '}
+            Stripe will collect the details required to set up your affiliate payouts.{' '}
             {s?.activityDescriptionPrefilled && 'Your affiliate activity description is already filled in. '}
-            Once you've finished,
-            {' '}{programName} can send your approved commissions.
+            Once you've finished, {programName} can send your approved commissions.
+          </div>
+          {/* Stripe fixes a Custom account's country when it's created. */}
+          <div style={{ maxWidth: 320, marginBottom: 16 }}>
+            <Label htmlFor="connect-country">Country you're based in</Label>
+            <Select id="connect-country" autoComplete="country" value={country} onChange={(e) => setCountry(e.target.value)}>
+              <option value="" disabled>
+                Select a country
+              </option>
+              {countries.map((o) => (
+                <option key={o.code} value={o.code}>
+                  {o.name}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <Button onClick={() => start.mutate()} disabled={!country || start.isPending}>
+            {start.isPending ? 'Preparing…' : 'Set up payouts'}
+          </Button>
+        </Card>
+      ) : !s?.connected ? (
+        <Card>
+          <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 6 }}>Connect an account</div>
+          <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 16, maxWidth: 560 }}>
+            You'll be redirected to Stripe's hosted onboarding. Once you've finished,
+            {' '}{programName} will transfer approved commissions directly to your balance.
           </div>
           <Button onClick={() => start.mutate()} disabled={start.isPending}>
-            {start.isPending ? 'Preparing…' : 'Set up payouts'}
+            {start.isPending ? 'Preparing…' : 'Connect Stripe'}
           </Button>
         </Card>
       ) : (
@@ -111,10 +151,16 @@ export function ConnectPage({ principal }: { principal: Principal }) {
             <ChecklistItem label="Transfers enabled" ok={!!s.transfersEnabled} />
             <ChecklistItem label="Payouts enabled" ok={!!s.payoutsEnabled} />
           </div>
-          {(!s.payoutsEnabled || !s.transfersEnabled) && (
+          {!s.payoutsEnabled || !s.transfersEnabled ? (
             <div style={{ marginTop: 16 }}>
               <Button onClick={() => start.mutate()} disabled={start.isPending}>
                 {start.isPending ? 'Preparing…' : 'Finish onboarding'}
+              </Button>
+            </div>
+          ) : custom && (
+            <div style={{ marginTop: 16 }}>
+              <Button variant="secondary" onClick={() => update.mutate()} disabled={update.isPending}>
+                {update.isPending ? 'Preparing…' : 'Update payout details'}
               </Button>
             </div>
           )}

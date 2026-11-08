@@ -9,7 +9,7 @@
  * /connect page, still reachable by URL, points to Payout details.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { cleanup, render, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Sidebar } from '../App.js';
@@ -36,6 +36,7 @@ const PARTNER: Principal = {
 
 let routes: Record<string, unknown> = {};
 let requested: string[] = [];
+let posted: Array<{ path: string; body: unknown }> = [];
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -43,6 +44,7 @@ function json(status: number, body: unknown): Response {
 
 beforeEach(() => {
   requested = [];
+  posted = [];
   routes = {
     '/api/partners/p1/dashboard': {
       partnerId: 'p1',
@@ -63,9 +65,10 @@ beforeEach(() => {
     '/api/partners/p1/connect/status': { connected: false },
     '/api/partners/p1/payout-profile': { profile: null, paidVia: 'manual' },
   };
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost');
     requested.push(url.pathname);
+    if (init?.method === 'POST') posted.push({ path: url.pathname, body: JSON.parse(String(init.body)) });
     const body = routes[url.pathname];
     return body === undefined ? json(404, { error: 'not_found' }) : json(200, body);
   }) as typeof fetch;
@@ -124,14 +127,15 @@ describe('partner sidebar', () => {
 describe('/connect page', () => {
   it('offers Stripe onboarding when the brand pays through Connect', async () => {
     const page = renderWith(<ConnectPage principal={PARTNER} />, true);
-    expect(await page.findByRole('button', { name: 'Set up payouts' })).toBeTruthy();
+    expect(await page.findByRole('button', { name: 'Connect Stripe' })).toBeTruthy();
     expect(connectStatusCalls()).toHaveLength(1);
   });
 
-  it('shows Standard onboarding copy by default without promising a prefilled activity', async () => {
+  it('keeps the Standard onboarding copy and asks for no country', async () => {
     const page = renderWith(<ConnectPage principal={PARTNER} />, true);
-    await page.findByRole('button', { name: 'Set up payouts' });
-    expect(page.getByText(/own Stripe dashboard/)).toBeTruthy();
+    await page.findByRole('button', { name: 'Connect Stripe' });
+    expect(page.getByText('Receive payouts straight into your own Stripe account.')).toBeTruthy();
+    expect(page.queryByLabelText(/Country/)).toBeNull();
     expect(page.queryByText(/activity description is already filled in/)).toBeNull();
   });
 
@@ -141,14 +145,39 @@ describe('/connect page', () => {
     };
     const page = renderWith(<ConnectPage principal={PARTNER} />, true);
     await page.findByRole('button', { name: 'Set up payouts' });
-    expect(page.queryByText(/own Stripe dashboard/)).toBeNull();
+    expect(page.queryByRole('button', { name: 'Connect Stripe' })).toBeNull();
     expect(!!page.queryByText(/activity description is already filled in/)).toBe(prefilled);
+  });
+
+  it('asks a Custom partner for their country before starting onboarding', async () => {
+    routes['/api/partners/p1/connect/status'] = { connected: false, accountMode: 'custom_payouts' };
+    const page = renderWith(<ConnectPage principal={PARTNER} />, true);
+    const button = await page.findByRole('button', { name: 'Set up payouts' });
+    expect(button.hasAttribute('disabled')).toBe(true);
+    fireEvent.change(page.getByLabelText("Country you're based in"), { target: { value: 'GB' } });
+    expect(button.hasAttribute('disabled')).toBe(false);
+    fireEvent.click(button);
+    await waitFor(() => expect(posted).toHaveLength(1));
+    expect(posted[0]!.path).toBe('/api/partners/p1/connect/start');
+    expect(posted[0]!.body).toMatchObject({ country: 'GB' });
+  });
+
+  it('lets a payout-ready Custom partner update their payout details', async () => {
+    routes['/api/partners/p1/connect/status'] = {
+      connected: true, accountId: 'acct_partner', accountType: 'custom', detailsSubmitted: true,
+      transfersEnabled: true, payoutsEnabled: true,
+    };
+    const page = renderWith(<ConnectPage principal={PARTNER} />, true);
+    fireEvent.click(await page.findByRole('button', { name: 'Update payout details' }));
+    await waitFor(() => expect(posted).toHaveLength(1));
+    expect(posted[0]!.path).toBe('/api/partners/p1/connect/update');
+    expect(page.queryByRole('button', { name: 'Finish onboarding' })).toBeNull();
   });
 
   it('reached by URL when the brand pays directly: points to Payout details instead', () => {
     const page = renderWith(<ConnectPage principal={PARTNER} />, false);
     expect(page.getByText('Acme doesn’t pay through Stripe Connect')).toBeTruthy();
-    expect(page.queryByRole('button', { name: 'Set up payouts' })).toBeNull();
+    expect(page.queryByRole('button', { name: 'Connect Stripe' })).toBeNull();
     expect(page.getByRole('link', { name: /Go to Payout details/ }).getAttribute('href')).toBe('/payout-details');
     expect(connectStatusCalls()).toHaveLength(0);
   });
@@ -168,13 +197,14 @@ describe('/connect page', () => {
 
   it.each([true, false])('does not require onboarding for a payout-ready account with chargesEnabled=%s', async (chargesEnabled) => {
     routes['/api/partners/p1/connect/status'] = {
-      connected: true, accountId: 'acct_partner', detailsSubmitted: true,
+      connected: true, accountId: 'acct_partner', accountType: 'standard', detailsSubmitted: true,
       chargesEnabled, transfersEnabled: true, payoutsEnabled: true,
     };
     const page = renderWith(<ConnectPage principal={PARTNER} />, true);
     await page.findByText('acct_partner');
     expect(page.queryByRole('button', { name: 'Finish onboarding' })).toBeNull();
-    expect(page.queryByRole('button', { name: 'Review payout details' })).toBeNull();
+    // Standard partners manage their details in their own Stripe dashboard.
+    expect(page.queryByRole('button', { name: 'Update payout details' })).toBeNull();
     expect(page.queryByText('Charges enabled')).toBeNull();
     expect(page.getByText('Transfers enabled')).toBeTruthy();
   });
@@ -198,6 +228,14 @@ describe('partner dashboard getting-started', () => {
       expect(await page.findByText('Getting started')).toBeTruthy();
       expect(page.getByRole('link', { name: 'Connect Stripe' }).getAttribute('href')).toBe('/connect');
     }
+  });
+
+  it('asks a Custom partner to set up payouts, matching the Connect page', async () => {
+    routes['/api/partners/p1/connect/status'] = { connected: false, accountMode: 'custom_payouts' };
+    const page = renderWith(<Dashboard principal={PARTNER} />, true);
+    expect(await page.findByText('Set up payouts to get paid')).toBeTruthy();
+    expect(page.getByRole('link', { name: 'Set up payouts' }).getAttribute('href')).toBe('/connect');
+    expect(page.container.textContent).not.toMatch(/Connect Stripe/);
   });
 
   it('asks the partner to connect Stripe when the brand pays through it', async () => {
