@@ -2056,13 +2056,16 @@ Newest referral first: the customer who most recently became the partner's refer
   });
 
   // ------------------------------------------------ Stripe Connect configuration
-  const connectSettingsResponse = settings.connectSettingsSchema.required().openapi('StripeConnectSettings');
+  const connectSettingsResponse = settings.connectSettingsSchema.required()
+    .extend({ customAccountsAvailable: z.boolean() })
+    .openapi('StripeConnectSettings');
   r.operation({
     method: 'get',
     path: '/config/stripe-connect',
     tag: 'Payouts',
     operationId: 'getStripeConnectSettings',
     summary: 'Get the account setup for new Stripe Connect partners',
+    description: '`customAccountsAvailable` is true only when `OPENPARTNER_MODE=selfhost`. Hosted instances use Standard accounts.',
     access: { kind: 'admin' },
     responses: { 200: { description: 'Defaults to Standard accounts.', schema: connectSettingsResponse } },
   });
@@ -2072,10 +2075,11 @@ Newest referral first: the customer who most recently became the partner's refer
     tag: 'Payouts',
     operationId: 'updateStripeConnectSettings',
     summary: 'Choose Standard accounts or Custom affiliate payout accounts',
-    description: 'Per-tenant settings. Omitted fields retain their values. Account type, capabilities, and description apply only to new accounts. Existing accounts are never converted. Both verification collection options also apply to returning Custom accounts. Standard preserves Stripe-default capabilities and onboarding.',
+    description: 'Per-tenant settings. Omitted fields retain their values. Account type, capabilities, and description apply only to new accounts. Existing accounts are never converted. Both verification collection options also apply to returning Custom accounts. Standard preserves Stripe-default capabilities and onboarding. Custom accounts are self-hosted only: on hosted modes, `custom_payouts` returns `403 custom_accounts_disabled_on_hosted`.',
     access: { kind: 'admin' },
     body: settings.connectSettingsSchema.openapi('UpdateStripeConnectSettingsRequest'),
     responses: { 200: { description: 'The saved settings.', schema: connectSettingsResponse } },
+    errors: { 403: ['custom_accounts_disabled_on_hosted'] },
   });
 
   // ------------------------------------------------ Partner portal access

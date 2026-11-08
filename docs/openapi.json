@@ -8107,9 +8107,6 @@
           "collectTaxInformation": {
             "type": "boolean"
           },
-          "requestCardPayments": {
-            "type": "boolean"
-          },
           "collect1099KTaxInformation": {
             "type": "boolean"
           },
@@ -8122,16 +8119,19 @@
           "productDescription": {
             "type": "string",
             "maxLength": 500
+          },
+          "customAccountsAvailable": {
+            "type": "boolean"
           }
         },
         "required": [
           "accountMode",
           "collectTaxInformation",
-          "requestCardPayments",
           "collect1099KTaxInformation",
           "collectEventuallyDue",
           "collectFutureRequirements",
-          "productDescription"
+          "productDescription",
+          "customAccountsAvailable"
         ],
         "additionalProperties": false
       },
@@ -8146,9 +8146,6 @@
             ]
           },
           "collectTaxInformation": {
-            "type": "boolean"
-          },
-          "requestCardPayments": {
             "type": "boolean"
           },
           "collect1099KTaxInformation": {
@@ -20854,7 +20851,7 @@
           "Payouts"
         ],
         "summary": "Get the account setup for new Stripe Connect partners",
-        "description": "**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "description": "`customAccountsAvailable` is true only when `OPENPARTNER_MODE=selfhost`. Hosted instances use Standard accounts.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []
@@ -20914,7 +20911,7 @@
           "Payouts"
         ],
         "summary": "Choose Standard accounts or Custom affiliate payout accounts",
-        "description": "Per-tenant settings. Omitted fields retain their values. Account type, capabilities, and description apply only to new accounts. Existing accounts are never converted. Both verification collection options also apply to returning Custom accounts. Standard preserves Stripe-default capabilities and onboarding.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "description": "Per-tenant settings. Omitted fields retain their values. Account type, capabilities, and description apply only to new accounts. Existing accounts are never converted. Both verification collection options also apply to returning Custom accounts. Standard preserves Stripe-default capabilities and onboarding. Custom accounts are self-hosted only: on hosted modes, `custom_payouts` returns `403 custom_accounts_disabled_on_hosted`.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []
@@ -20967,7 +20964,7 @@
             }
           },
           "403": {
-            "description": "`forbidden`, `forbidden_scope`",
+            "description": "`forbidden`, `forbidden_scope`, `custom_accounts_disabled_on_hosted`",
             "content": {
               "application/json": {
                 "schema": {

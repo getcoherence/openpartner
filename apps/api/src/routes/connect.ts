@@ -2,10 +2,13 @@
  * Stripe Connect onboarding: Standard by default, Custom payouts by opt-in.
  *
  * We use AccountLinks (the modern hosted onboarding), not legacy OAuth. The
- * partner clicks "Set up payouts" in the portal → we create the configured
- * account type or reuse their saved account → return a
- * one-time URL → partner completes on Stripe →
+ * partner clicks "Connect Stripe" ("Set up payouts" for Custom) in the
+ * portal → we create the configured account type or reuse their saved
+ * account → return a one-time URL → partner completes on Stripe →
  * bounces back to return_url → we read stripeConnectAccountId as stored.
+ *
+ * Custom accounts have no Stripe dashboard, so /connect/update hands the
+ * partner an account_update link to change their bank or details later.
  *
  * Active/ready status is confirmed via the `account.updated` webhook, not at
  * the callback — the callback fires before Stripe has finalized verification.
@@ -23,10 +26,17 @@ import { requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { requireStripe } from '../stripe.js';
 import { tenantOf } from '../tenancy.js';
 import { readConnectSettings } from '../connect-settings.js';
+import { countryCodeSchema } from '../country-access.js';
 
-const startSchema = z.object({
+const linkSchema = z.object({
   returnUrl: z.string().url(),
   refreshUrl: z.string().url(),
+});
+
+const startSchema = linkSchema.extend({
+  // Where the partner is based. Required to create a Custom account: Stripe
+  // fixes an account's country at creation. Standard accounts ask on Stripe.
+  country: countryCodeSchema().optional(),
 });
 
 export const connectRouter = Router();
@@ -48,19 +58,31 @@ connectRouter.post(
     let isCustom = settings.accountMode === 'custom_payouts';
     let accountId = partner.stripeConnectAccountId;
     if (!accountId) {
-      const params: Stripe.AccountCreateParams = {
-        type: isCustom ? 'custom' : 'standard',
-        ...(isCustom ? {
+      let custom: Partial<Stripe.AccountCreateParams> = {};
+      if (isCustom) {
+        const country = body.data.country;
+        if (!country) return res.status(400).json({ error: 'country_required' });
+        const platform = await stripe.accounts.retrieveCurrent();
+        // A partner outside the platform's country can only receive
+        // transfers, under the recipient service agreement.
+        const crossBorder = country !== platform.country;
+        const usTax = country === 'US' && !crossBorder;
+        custom = {
+          country,
           capabilities: {
             transfers: { requested: true },
-            ...(settings.requestCardPayments ? { card_payments: { requested: true } } : {}),
-            ...(settings.collectTaxInformation ? { tax_reporting_us_1099_misc: { requested: true } } : {}),
-            ...(settings.collect1099KTaxInformation ? { tax_reporting_us_1099_k: { requested: true } } : {}),
+            ...(usTax && settings.collectTaxInformation ? { tax_reporting_us_1099_misc: { requested: true } } : {}),
+            ...(usTax && settings.collect1099KTaxInformation ? { tax_reporting_us_1099_k: { requested: true } } : {}),
           },
+          ...(crossBorder ? { tos_acceptance: { service_agreement: 'recipient' } } : {}),
           ...(settings.productDescription ? {
             business_profile: { product_description: settings.productDescription },
           } : {}),
-        } : {}),
+        };
+      }
+      const params: Stripe.AccountCreateParams = {
+        type: isCustom ? 'custom' : 'standard',
+        ...custom,
         email: partner.email,
         metadata: {
           openpartner_partner_id: partner.id,
@@ -108,6 +130,36 @@ connectRouter.post(
   },
 );
 
+connectRouter.post(
+  '/partners/:id/connect/update',
+  requireAuth,
+  requirePartnerOrAdmin('id'),
+  async (req, res) => {
+    const { db, tenantId } = tenantOf(req);
+    const body = linkSchema.safeParse(req.body);
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+
+    const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
+    if (!partner) return res.status(404).json({ error: 'partner_not_found' });
+    if (!partner.stripeConnectAccountId) return res.status(409).json({ error: 'connect_not_started' });
+
+    // Standard accounts manage their details in their own Stripe dashboard;
+    // Stripe only issues account_update links for Custom accounts.
+    const stripe = requireStripe();
+    const account = await stripe.accounts.retrieve(partner.stripeConnectAccountId);
+    if (account.type !== 'custom') return res.status(409).json({ error: 'not_a_custom_account' });
+
+    const link = await stripe.accountLinks.create({
+      account: account.id,
+      return_url: body.data.returnUrl,
+      refresh_url: body.data.refreshUrl,
+      type: 'account_update',
+    });
+
+    res.json({ url: link.url, expiresAt: link.expires_at });
+  },
+);
+
 connectRouter.get(
   '/partners/:id/connect/status',
   requireAuth,
@@ -131,6 +183,7 @@ connectRouter.get(
     res.json({
       connected: true,
       accountId: account.id,
+      accountType: account.type,
       chargesEnabled: account.charges_enabled,
       transfersEnabled: account.capabilities?.transfers === 'active',
       payoutsEnabled: account.payouts_enabled,

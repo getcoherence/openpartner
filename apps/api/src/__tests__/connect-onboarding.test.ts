@@ -4,10 +4,11 @@ import { ulid } from 'ulid';
 import { DEFAULT_TENANT_ID, TABLES } from '@openpartner/db';
 
 const stripeApi = vi.hoisted(() => ({
-  accounts: { create: vi.fn(), retrieve: vi.fn(), update: vi.fn() },
+  accounts: { create: vi.fn(), retrieve: vi.fn(), retrieveCurrent: vi.fn(), update: vi.fn() },
   accountLinks: { create: vi.fn() },
 }));
-vi.mock('../stripe.js', () => ({ stripe: stripeApi, requireStripe: () => stripeApi }));
+const mode = vi.hoisted(() => ({ current: 'selfhost' as 'selfhost' | 'flat' | 'revshare' }));
+vi.mock('../stripe.js', () => ({ stripe: stripeApi, requireStripe: () => stripeApi, getMode: () => mode.current }));
 
 import { db } from '../db.js';
 import { createApp } from '../app.js';
@@ -22,6 +23,7 @@ const partnerId = ulid();
 const otherTenantId = ulid();
 const admin = { Authorization: `Bearer ${ADMIN_KEY}` };
 const body = { returnUrl: 'http://localhost:5673/connect?done=1', refreshUrl: 'http://localhost:5673/connect' };
+const customBody = { ...body, country: 'US' };
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 
 beforeAll(async () => {
@@ -35,6 +37,8 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   vi.resetAllMocks();
+  mode.current = 'selfhost';
+  stripeApi.accounts.retrieveCurrent.mockResolvedValue({ id: 'acct_platform', country: 'US' });
   stripeApi.accounts.create.mockResolvedValue({ id: 'acct_onboarding_test' });
   stripeApi.accounts.retrieve.mockResolvedValue({
     id: 'acct_onboarding_test', type: 'custom', country: 'US',
@@ -66,12 +70,14 @@ describe.skipIf(skipIntegration)('configurable Connect onboarding', () => {
       productDescription: 'Referral services.',
     });
     const response = await request(app).get('/config/stripe-connect').set(admin).expect(200);
-    expect(response.body).toEqual({ ...CONNECT_DEFAULTS, accountMode: 'custom_payouts', productDescription: 'Referral services.' });
+    expect(response.body).toEqual({
+      ...CONNECT_DEFAULTS, accountMode: 'custom_payouts', productDescription: 'Referral services.', customAccountsAvailable: true,
+    });
   });
 
   it('defaults to the original Standard account and Stripe-default onboarding', async () => {
     const settings = await request(app).get('/config/stripe-connect').set(admin).expect(200);
-    expect(settings.body).toEqual(CONNECT_DEFAULTS);
+    expect(settings.body).toEqual({ ...CONNECT_DEFAULTS, customAccountsAvailable: true });
     await request(app).post(`/partners/${partnerId}/connect/start`).set(admin).send(body).expect(200);
     expect(stripeApi.accounts.create.mock.calls[0]![0]).toEqual({
       type: 'standard', email: 'onboarding-test@example.test',
@@ -83,17 +89,17 @@ describe.skipIf(skipIntegration)('configurable Connect onboarding', () => {
   it('saves custom options, preserves omitted fields, and can switch back to Standard', async () => {
     await request(app).post('/config/stripe-connect').set(admin).send({
       accountMode: 'custom_payouts', collectTaxInformation: false,
-      requestCardPayments: true, collect1099KTaxInformation: true, collectFutureRequirements: true,
+      collect1099KTaxInformation: true, collectFutureRequirements: true,
       collectEventuallyDue: false, productDescription: ' Referral services. ',
     }).expect(200);
-    await request(app).post(`/partners/${partnerId}/connect/start`).set(admin).send(body).expect(200);
+    await request(app).post(`/partners/${partnerId}/connect/start`).set(admin).send(customBody).expect(200);
     expect(stripeApi.accounts.create.mock.calls[0]![0]).toMatchObject({
-      type: 'custom', capabilities: { transfers: { requested: true } },
+      type: 'custom', country: 'US', capabilities: { transfers: { requested: true } },
       business_profile: { product_description: 'Referral services.' },
     });
     expect(stripeApi.accounts.create.mock.calls[0]![0].capabilities).not.toHaveProperty('tax_reporting_us_1099_misc');
     expect(stripeApi.accounts.create.mock.calls[0]![0].capabilities).toEqual({
-      transfers: { requested: true }, card_payments: { requested: true }, tax_reporting_us_1099_k: { requested: true },
+      transfers: { requested: true }, tax_reporting_us_1099_k: { requested: true },
     });
     expect(stripeApi.accountLinks.create.mock.calls[0]![0].collection_options.fields).toBe('currently_due');
     expect(stripeApi.accountLinks.create.mock.calls[0]![0].collection_options.future_requirements).toBe('include');
@@ -118,7 +124,7 @@ describe.skipIf(skipIntegration)('configurable Connect onboarding', () => {
       .send({ accountMode: 'custom_payouts', productDescription: '' }).expect(200);
     const status = await request(app).get(`/partners/${partnerId}/connect/status`).set(admin).expect(200);
     expect(status.body).toEqual({ connected: false, accountMode: 'custom_payouts', activityDescriptionPrefilled: false });
-    await request(app).post(`/partners/${partnerId}/connect/start`).set(admin).send(body).expect(200);
+    await request(app).post(`/partners/${partnerId}/connect/start`).set(admin).send(customBody).expect(200);
     expect(stripeApi.accounts.create.mock.calls[0]![0]).not.toHaveProperty('business_profile');
   });
 
@@ -130,7 +136,7 @@ describe.skipIf(skipIntegration)('configurable Connect onboarding', () => {
     expect(stripeApi.accounts.create.mock.calls[0]![0].type).toBe('standard');
   });
 
-  it.each([{ accountMode: 'express' }, { collectTaxInformation: 'yes' }, { requestCardPayments: 'yes' },
+  it.each([{ accountMode: 'express' }, { collectTaxInformation: 'yes' }, { requestCardPayments: true },
     { collect1099KTaxInformation: 1 }, { collectFutureRequirements: null },
     { productDescription: 'x'.repeat(501) }, { feesPayer: 'stripe' }])(
     'rejects invalid settings: %j', async (patch) => {
@@ -151,16 +157,17 @@ describe.skipIf(skipIntegration)('configurable Connect onboarding', () => {
     stripeApi.accountLinks.create.mockRejectedValueOnce(new Error('temporary onboarding error'));
     await request(app).post(`/partners/${partnerId}/connect/start`).set(admin).send(body).expect(500);
     await request(app).post('/config/stripe-connect').set(admin).send({ accountMode: 'custom_payouts' }).expect(200);
-    await request(app).post(`/partners/${partnerId}/connect/start`).set(admin).send(body).expect(200);
+    await request(app).post(`/partners/${partnerId}/connect/start`).set(admin).send(customBody).expect(200);
     expect(stripeApi.accounts.create.mock.calls[0]![1].idempotencyKey).not.toBe(stripeApi.accounts.create.mock.calls[1]![1].idempotencyKey);
   });
 
   it('creates a payout-only Custom account with tax collection and upfront verification', async () => {
     await request(app).post('/config/stripe-connect').set(admin).send({ accountMode: 'custom_payouts' }).expect(200);
-    const res = await request(app).post(`/partners/${partnerId}/connect/start`).set(admin).send(body);
+    const res = await request(app).post(`/partners/${partnerId}/connect/start`).set(admin).send(customBody);
     expect(res.status).toBe(200);
     expect(stripeApi.accounts.create).toHaveBeenCalledWith({
       type: 'custom',
+      country: 'US',
       email: 'onboarding-test@example.test',
       capabilities: {
         transfers: { requested: true },
@@ -184,7 +191,7 @@ describe.skipIf(skipIntegration)('configurable Connect onboarding', () => {
   ])('reuses a saved $type account without changing its capabilities or account ID', async (account) => {
     await saveConnectSettings(db, DEFAULT_TENANT_ID, {
       accountMode: account.type === 'standard' ? 'custom_payouts' : 'standard',
-      requestCardPayments: true, collect1099KTaxInformation: true, collectFutureRequirements: true,
+      collect1099KTaxInformation: true, collectFutureRequirements: true,
     });
     await db(TABLES.Partner).where({ id: partnerId }).update({ stripeConnectAccountId: 'acct_existing' });
     stripeApi.accounts.retrieve.mockResolvedValue({ id: 'acct_existing', ...account });
@@ -241,6 +248,80 @@ describe.skipIf(skipIntegration)('configurable Connect onboarding', () => {
     const res = await request(app).get(`/partners/${partnerId}/connect/status`).set(admin);
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ connected: true, chargesEnabled: false, transfersEnabled: true, payoutsEnabled: true });
+  });
+
+  it('asks for the partner country before creating a Custom account', async () => {
+    await saveConnectSettings(db, DEFAULT_TENANT_ID, { accountMode: 'custom_payouts' });
+    const res = await request(app).post(`/partners/${partnerId}/connect/start`).set(admin).send(body).expect(400);
+    expect(res.body.error).toBe('country_required');
+    await request(app).post(`/partners/${partnerId}/connect/start`).set(admin).send({ ...body, country: 'XX' }).expect(400);
+    expect(stripeApi.accounts.create).not.toHaveBeenCalled();
+  });
+
+  it('onboards a partner outside the platform country as a transfers-only recipient', async () => {
+    await saveConnectSettings(db, DEFAULT_TENANT_ID, { accountMode: 'custom_payouts', collect1099KTaxInformation: true });
+    await request(app).post(`/partners/${partnerId}/connect/start`).set(admin).send({ ...body, country: 'gb' }).expect(200);
+    expect(stripeApi.accounts.create.mock.calls[0]![0]).toMatchObject({
+      type: 'custom', country: 'GB',
+      capabilities: { transfers: { requested: true } },
+      tos_acceptance: { service_agreement: 'recipient' },
+    });
+    expect(stripeApi.accounts.create.mock.calls[0]![0].capabilities).toEqual({ transfers: { requested: true } });
+  });
+
+  it('keeps the full service agreement for a partner in the platform country', async () => {
+    stripeApi.accounts.retrieveCurrent.mockResolvedValue({ id: 'acct_platform', country: 'GB' });
+    await saveConnectSettings(db, DEFAULT_TENANT_ID, { accountMode: 'custom_payouts' });
+    await request(app).post(`/partners/${partnerId}/connect/start`).set(admin).send({ ...body, country: 'GB' }).expect(200);
+    const params = stripeApi.accounts.create.mock.calls[0]![0];
+    expect(params).toMatchObject({ type: 'custom', country: 'GB' });
+    expect(params).not.toHaveProperty('tos_acceptance');
+    // US tax capabilities only apply to US accounts.
+    expect(params.capabilities).toEqual({ transfers: { requested: true } });
+  });
+
+  it.each(['flat', 'revshare'] as const)('keeps %s tenants on Standard accounts', async (hosted) => {
+    mode.current = hosted;
+    const rejected = await request(app).post('/config/stripe-connect').set(admin).send({ accountMode: 'custom_payouts' }).expect(403);
+    expect(rejected.body.error).toBe('custom_accounts_disabled_on_hosted');
+    expect((await request(app).get('/config/stripe-connect').set(admin).expect(200)).body)
+      .toEqual({ ...CONNECT_DEFAULTS, customAccountsAvailable: false });
+    // A Custom setting saved before, or imported from a self-hosted export, reads as Standard.
+    await setConfig(db, DEFAULT_TENANT_ID, CONNECT_SETTINGS_KEY, { accountMode: 'custom_payouts' });
+    expect((await readConnectSettings(db, DEFAULT_TENANT_ID)).accountMode).toBe('standard');
+    const status = await request(app).get(`/partners/${partnerId}/connect/status`).set(admin).expect(200);
+    expect(status.body.accountMode).toBe('standard');
+    await request(app).post(`/partners/${partnerId}/connect/start`).set(admin).send(customBody).expect(200);
+    expect(stripeApi.accounts.create.mock.calls[0]![0]).toEqual({
+      type: 'standard', email: 'onboarding-test@example.test',
+      metadata: { openpartner_partner_id: partnerId, openpartner_tenant_id: DEFAULT_TENANT_ID },
+    });
+  });
+
+  it('gives a Custom account an account_update link for its payout details', async () => {
+    await db(TABLES.Partner).where({ id: partnerId }).update({ stripeConnectAccountId: 'acct_onboarding_test' });
+    const res = await request(app).post(`/partners/${partnerId}/connect/update`).set(admin).send(body).expect(200);
+    expect(stripeApi.accountLinks.create).toHaveBeenCalledWith({
+      account: 'acct_onboarding_test', type: 'account_update',
+      return_url: body.returnUrl, refresh_url: body.refreshUrl,
+    });
+    expect(res.body).toEqual({ url: 'https://connect.stripe.com/test', expiresAt: 123 });
+  });
+
+  it('refuses an update link without a Custom account', async () => {
+    let res = await request(app).post(`/partners/${partnerId}/connect/update`).set(admin).send(body).expect(409);
+    expect(res.body.error).toBe('connect_not_started');
+    await db(TABLES.Partner).where({ id: partnerId }).update({ stripeConnectAccountId: 'acct_existing' });
+    stripeApi.accounts.retrieve.mockResolvedValue({ id: 'acct_existing', type: 'standard' });
+    res = await request(app).post(`/partners/${partnerId}/connect/update`).set(admin).send(body).expect(409);
+    expect(res.body.error).toBe('not_a_custom_account');
+    expect(stripeApi.accountLinks.create).not.toHaveBeenCalled();
+  });
+
+  it('reports the saved account type so the portal can offer updates', async () => {
+    await db(TABLES.Partner).where({ id: partnerId }).update({ stripeConnectAccountId: 'acct_onboarding_test' });
+    const res = await request(app).get(`/partners/${partnerId}/connect/status`).set(admin).expect(200);
+    expect(res.body.accountType).toBe('custom');
   });
 
   it('rejects unauthenticated account creation without contacting Stripe', async () => {

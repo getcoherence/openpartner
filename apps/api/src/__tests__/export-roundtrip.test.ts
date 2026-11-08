@@ -679,7 +679,7 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     });
     // And how it creates and onboards Stripe Connect accounts.
     const stripeConnect = {
-      accountMode: 'custom_payouts', collectTaxInformation: true, requestCardPayments: false,
+      accountMode: 'custom_payouts', collectTaxInformation: true,
       collect1099KTaxInformation: false, collectEventuallyDue: true, collectFutureRequirements: true,
       productDescription: 'Referral services.',
     };
