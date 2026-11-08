@@ -383,6 +383,7 @@ Only these keys are exported, and only these are imported:
 | `onboarding` | whether the brand said "Not now" to listing on the OpenPartner Network (the dashboard's Getting started card) |
 | `payout_statements` | what payout statements print: legal name, address, footer, statement-number prefix, and the tax-lines placeholder (docs/payout-statements.md) |
 | `paypal_payouts` | whether Pay with PayPal sends INR balances in USD (`sendUnsupportedAs`), [paypal-payouts.md](paypal-payouts.md#balances-paypal-cant-send-inr) |
+| `stripe_connect` | Standard or Custom account setup, requested capabilities, verification collection, and activity description; no credentials |
 | `partner_referrals` | which event types partners see as referral stages, with their labels and order, and whether partners see customer labels ([referral timeline](referral-timeline.md)) |
 | `tracking_alerts` | whether new Tracking health flags are emailed to the admins (`email`), [tracking-health.md](tracking-health.md#email) |
 
@@ -395,6 +396,10 @@ started card again, prints statements under its brand name until it enters
 its statement settings again, reads the PayPal setting as off, its partners
 see the default referral stages with no customer labels (less than before,
 never more), and an instance that predates the alert email sends none.
+
+`stripe_connect` also needs no version bump: older instances skip the key and
+use Standard accounts for new partners. Existing destination settings take
+precedence over imported settings, as with the other Config keys.
 
 Payout statements themselves aren't exported: each is built from the
 `Payout`, `Commission`, `Bonus` and `CommissionAdjustment` rows the bundle

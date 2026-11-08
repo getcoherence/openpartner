@@ -119,6 +119,9 @@ export const PORTABLE_CONFIG_KEYS = [
   // without a version bump, like `onboarding`: an instance that predates it
   // skips the key, and the setting reads as off.
   'paypal_payouts',
+  // Connect account type, capabilities, and onboarding options. No
+  // credentials. Older instances skip this key and retain Standard defaults.
+  'stripe_connect',
   // Which event types partners see as referral stages, and whether they
   // see customer labels (referrals.ts). A key, so no version bump: an
   // instance that predates it skips the key, and partners see the default

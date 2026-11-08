@@ -677,6 +677,13 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
       value: { sendUnsupportedAs: 'USD' },
       updatedAt: new Date(),
     });
+    // And how it creates and onboards Stripe Connect accounts.
+    const stripeConnect = {
+      accountMode: 'custom_payouts', collectTaxInformation: true, requestCardPayments: false,
+      collect1099KTaxInformation: false, collectEventuallyDue: true, collectFutureRequirements: true,
+      productDescription: 'Referral services.',
+    };
+    await db(TABLES.Config).insert({ tenantId: TENANT, key: 'stripe_connect', value: stripeConnect, updatedAt: new Date() });
     // And which stages partners see on their referrals.
     const referralStages = { stages: [{ eventType: 'demo_booked', label: 'Demo booked' }], showCustomerLabels: true };
     await db(TABLES.Config).insert({ tenantId: TENANT, key: 'partner_referrals', value: referralStages, updatedAt: new Date() });
@@ -700,6 +707,7 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect((await db(TABLES.Config).where({ key: 'onboarding' }).first()).value).toEqual({ networkListingSkipped: true });
     expect((await db(TABLES.Config).where({ key: 'payout_statements' }).first()).value).toMatchObject({ legalName: 'Volza Technologies Pvt Ltd', numberPrefix: 'VZ-' });
     expect((await db(TABLES.Config).where({ key: 'paypal_payouts' }).first()).value).toEqual({ sendUnsupportedAs: 'USD' });
+    expect((await db(TABLES.Config).where({ key: 'stripe_connect' }).first()).value).toEqual(stripeConnect);
     expect((await db(TABLES.Config).where({ key: 'partner_referrals' }).first()).value).toEqual(referralStages);
     expect((await db(TABLES.Config).where({ key: 'tracking_alerts' }).first()).value).toEqual({ email: false });
     expect(report.skipped[TABLES.Config]).toBe(1);
