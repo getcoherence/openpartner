@@ -7,6 +7,7 @@ import { alpha, theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
 import { useDebouncedSearch, usePartnerSearch } from '../lib/usePartnerSearch.js';
 import { EditOnly, useViewOnly } from '../lib/viewOnly.js';
+import { ConfirmAction } from '../lib/ConfirmAction.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Input, Label, Page, StatusPill, Table, formatDate } from '../ui.js';
 
 interface Partner {
@@ -368,34 +369,34 @@ function PortalAccessToggle({ partner }: { partner: Partner }) {
   });
   const on = partner.portalAccess !== false;
   return (
-    <button
-      onClick={() => {
-        if (
-          on &&
-          !window.confirm(
-            `Turn off portal access for ${partner.name}? They're signed out now and can't request a sign-in link until you turn it back on.`,
-          )
-        ) {
-          return;
-        }
-        mut.mutate(!on);
-      }}
-      disabled={mut.isPending}
-      title={mut.error instanceof Error ? mut.error.message : on ? 'Can sign in to the partner portal' : "Can't sign in to the partner portal"}
-      aria-label={`Portal access for ${partner.name}: ${on ? 'on' : 'off'}. Click to turn ${on ? 'off' : 'on'}.`}
-      style={{
-        background: 'none',
-        border: 'none',
-        padding: 0,
-        fontSize: 13,
-        color: on ? theme.text : theme.textDim,
-        cursor: 'pointer',
-        whiteSpace: 'nowrap',
-      }}
+    <ConfirmAction
+      prompt="Turn off portal access?"
+      confirmLabel="Yes, turn off"
+      title="They're signed out now and can't request a sign-in link until you turn it back on."
+      onConfirm={() => mut.mutate(false)}
+      error={mut.error}
     >
-      {mut.isPending ? '…' : on ? 'On' : 'Off'}
-      <span style={{ color: theme.accentText, marginLeft: 6 }}>{mut.isError ? 'retry' : on ? 'turn off' : 'turn on'}</span>
-    </button>
+      {(ask) => (
+        <button
+          onClick={on ? ask : () => mut.mutate(true)}
+          disabled={mut.isPending}
+          title={on ? 'Can sign in to the partner portal' : "Can't sign in to the partner portal"}
+          aria-label={`Portal access for ${partner.name}: ${on ? 'on' : 'off'}. Click to turn ${on ? 'off' : 'on'}.`}
+          style={{
+            background: 'none',
+            border: 'none',
+            padding: 0,
+            fontSize: 13,
+            color: on ? theme.text : theme.textDim,
+            cursor: 'pointer',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {mut.isPending ? '…' : on ? 'On' : 'Off'}
+          <span style={{ color: theme.accentText, marginLeft: 6 }}>{mut.isError ? 'retry' : on ? 'turn off' : 'turn on'}</span>
+        </button>
+      )}
+    </ConfirmAction>
   );
 }
 
@@ -567,22 +568,24 @@ function ApproveApplication({ partner }: { partner: Partner }) {
     onSettled: () => qc.invalidateQueries({ queryKey: ['partners'] }),
   });
   return (
-    <button
-      onClick={() => {
-        if (
-          window.confirm(
-            `Approve ${partner.name}? We'll email them a link to sign in. Give them access to programs under Programs so they can create links.`,
-          )
-        ) {
-          mut.mutate();
-        }
-      }}
-      disabled={mut.isPending}
-      title={mut.error instanceof Error ? mut.error.message : undefined}
-      style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.success, cursor: 'pointer', fontWeight: 600 }}
+    <ConfirmAction
+      prompt={`Approve ${partner.name}?`}
+      confirmLabel="Yes, approve"
+      tone="accent"
+      title="We email them a sign-in link. Give them programs under Programs so they can create links."
+      onConfirm={() => mut.mutate()}
+      error={mut.error}
     >
-      {mut.isPending ? 'Approving…' : mut.isError ? 'Approve (retry)' : 'Approve'}
-    </button>
+      {(ask) => (
+        <button
+          onClick={ask}
+          disabled={mut.isPending}
+          style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.success, cursor: 'pointer', fontWeight: 600 }}
+        >
+          {mut.isPending ? 'Approving…' : mut.isError ? 'Approve (retry)' : 'Approve'}
+        </button>
+      )}
+    </ConfirmAction>
   );
 }
 

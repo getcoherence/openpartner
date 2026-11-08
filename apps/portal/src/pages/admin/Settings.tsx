@@ -5,6 +5,7 @@ import { api, ApiError } from '../../api.js';
 import { alpha, theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select, Textarea } from '../../ui.js';
 import { useBrand } from '../../lib/useBrand.js';
+import { ConfirmAction } from '../../lib/ConfirmAction.js';
 import { NetworkSettingsSection } from './NetworkSettingsSection.js';
 import { PaypalPayoutsCard } from './PaypalPayoutsCard.js';
 import { ReferralStagesSection } from './ReferralStagesSection.js';
@@ -441,7 +442,7 @@ function ProgramSection() {
 
 // ---------- brand resources (assets library) ----------
 
-function BrandResourcesSection() {
+export function BrandResourcesSection() {
   const qc = useQueryClient();
   const { data, error, isLoading } = useQuery({
     queryKey: ['brand-resources'],
@@ -589,23 +590,28 @@ function AssetRow({ asset, onChange }: { asset: BrandAsset; onChange: () => void
         >
           {editing ? 'Cancel' : 'Edit'}
         </button>
-        <button
-          onClick={() => {
-            if (window.confirm(`Delete "${asset.label}"?`)) del.mutate();
-          }}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            background: 'transparent',
-            border: 'none',
-            color: theme.danger,
-            cursor: 'pointer',
-            fontSize: 12,
-            padding: 0,
-          }}
-        >
-          <Trash2 size={14} />
-        </button>
+        <ConfirmAction prompt="Delete for good?" confirmLabel="Yes, delete" onConfirm={() => del.mutate()} error={del.error}>
+          {(ask) => (
+            <button
+              onClick={ask}
+              disabled={del.isPending}
+              aria-label={`Delete ${asset.label}`}
+              title="Delete"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                background: 'transparent',
+                border: 'none',
+                color: theme.danger,
+                cursor: 'pointer',
+                fontSize: 12,
+                padding: 0,
+              }}
+            >
+              <Trash2 size={14} />
+            </button>
+          )}
+        </ConfirmAction>
       </div>
       {!editing && asset.kind === 'snippet' && asset.body && (
         <div style={{ fontSize: 12, color: theme.textMuted, whiteSpace: 'pre-wrap' }}>{asset.body}</div>

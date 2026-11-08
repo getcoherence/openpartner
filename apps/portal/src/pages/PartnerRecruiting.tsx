@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, UserPlus } from 'lucide-react';
 import { api, type Principal } from '../api.js';
 import { useDebouncedSearch, usePartnerSearch } from '../lib/usePartnerSearch.js';
+import { ConfirmAction, ConfirmPrompt } from '../lib/ConfirmAction.js';
 import { alpha, theme } from '../theme.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, SectionHeading, StatusPill, Table, formatDate, money } from '../ui.js';
 
@@ -176,12 +177,16 @@ export function RecruitPage({ principal }: { principal: Principal }) {
 export function AdminPartnerRecruitingSection({ partnerId, partnerName }: { partnerId: string; partnerName: string }) {
   const recruits = useRecruits(partnerId);
   const [picking, setPicking] = useState(false);
+  // The partner picked to replace the current recruiter, asked about
+  // under the picker before saving.
+  const [replaceWith, setReplaceWith] = useState<{ id: string; name: string } | null>(null);
   const qc = useQueryClient();
   const save = useMutation({
     mutationFn: (recruitedByPartnerId: string | null) =>
       api(`/partners/${partnerId}`, { method: 'PATCH', body: { recruitedByPartnerId } }),
     onSuccess: () => {
       setPicking(false);
+      setReplaceWith(null);
       qc.invalidateQueries({ queryKey: ['partner-recruits'] });
       qc.invalidateQueries({ queryKey: ['partners'] });
     },
@@ -212,18 +217,23 @@ export function AdminPartnerRecruitingSection({ partnerId, partnerName }: { part
                 <>
                   Recruited by <strong>{data.recruitedBy.name}</strong> since{' '}
                   {new Date(data.recruitedBy.recruitedAt).toLocaleDateString()}.{' '}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (window.confirm(`Remove ${data.recruitedBy!.name} as ${partnerName}'s recruiter? They stop earning on ${partnerName}'s commissions from now on.`)) {
-                        save.mutate(null);
-                      }
-                    }}
-                    disabled={save.isPending}
-                    style={{ background: 'none', border: 'none', padding: 0, color: theme.danger, cursor: 'pointer', fontSize: 13 }}
+                  <ConfirmAction
+                    prompt={`Remove ${data.recruitedBy.name}?`}
+                    confirmLabel="Yes, remove"
+                    title={`They stop earning on ${partnerName}'s commissions from now on.`}
+                    onConfirm={() => save.mutate(null)}
                   >
-                    Remove
-                  </button>
+                    {(ask) => (
+                      <button
+                        type="button"
+                        onClick={ask}
+                        disabled={save.isPending}
+                        style={{ background: 'none', border: 'none', padding: 0, color: theme.danger, cursor: 'pointer', fontSize: 13 }}
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </ConfirmAction>
                 </>
               ) : (
                 <>Nobody recruited {partnerName}.</>
@@ -240,17 +250,25 @@ export function AdminPartnerRecruitingSection({ partnerId, partnerName }: { part
               <RecruiterPicker
                 excludeId={partnerId}
                 saving={save.isPending}
-                onPick={(id) => {
-                  const replacing = data.recruitedBy;
-                  if (
-                    !replacing ||
-                    window.confirm(`Replace ${replacing.name} as ${partnerName}'s recruiter? ${replacing.name} stops earning on ${partnerName}'s commissions from now on.`)
-                  ) {
-                    save.mutate(id);
-                  }
+                onPick={(p) => (data.recruitedBy ? setReplaceWith(p) : save.mutate(p.id))}
+                onCancel={() => {
+                  setPicking(false);
+                  setReplaceWith(null);
                 }}
-                onCancel={() => setPicking(false)}
               />
+            )}
+            {picking && replaceWith && data.recruitedBy && (
+              <div style={{ marginTop: 8 }}>
+                <ConfirmPrompt
+                  key={replaceWith.id}
+                  prompt={`Replace ${data.recruitedBy.name} with ${replaceWith.name}?`}
+                  confirmLabel="Yes, replace"
+                  title={`${data.recruitedBy.name} stops earning on ${partnerName}'s commissions from now on.`}
+                  disabled={save.isPending}
+                  onConfirm={() => save.mutate(replaceWith.id)}
+                  onCancel={() => setReplaceWith(null)}
+                />
+              </div>
             )}
             {data.recruitUrl && (
               <div style={{ marginTop: 14 }}>
@@ -279,7 +297,7 @@ function RecruiterPicker({
 }: {
   excludeId: string;
   saving: boolean;
-  onPick: (id: string) => void;
+  onPick: (partner: { id: string; name: string }) => void;
   onCancel: () => void;
 }) {
   const [search, setSearch] = useState('');
@@ -303,7 +321,7 @@ function RecruiterPicker({
             key={p.id}
             type="button"
             disabled={saving}
-            onClick={() => onPick(p.id)}
+            onClick={() => onPick(p)}
             style={{
               display: 'flex',
               gap: 8,

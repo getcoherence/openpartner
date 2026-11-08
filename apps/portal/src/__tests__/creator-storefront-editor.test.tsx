@@ -256,6 +256,17 @@ describe('storefront editor', () => {
     expect(post.body).toMatchObject({ title: 'Dedicated video', platform: 'youtube', priceAmount: 4500, currency: 'USD', published: true });
   });
 
+  // Asked on the package, not with window.confirm.
+  it('deletes a package after asking', async () => {
+    storefront.packages = [pkg('a', 'youtube', { title: 'Shoutout' })];
+    renderAt('/creator/storefront', '/creator/storefront', <CreatorStorefrontPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    expect(screen.getByText('Delete for good?')).toBeTruthy();
+    expect(requests.some((r) => r.method === 'DELETE')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, delete' }));
+    await waitFor(() => expect(requests.some((r) => r.method === 'DELETE' && r.path === '/creators/me/packages/a')).toBe(true));
+  });
+
   it('saves a channel pitch without touching the handle, URL or count', async () => {
     renderAt('/creator/storefront', '/creator/storefront', <CreatorStorefrontPage />);
     const buttons = await screen.findAllByRole('button', { name: 'Add pitch' });

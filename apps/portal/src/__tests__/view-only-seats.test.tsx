@@ -10,7 +10,7 @@
  *   - an edit the API refuses says why.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Sidebar } from '../App.js';
@@ -84,6 +84,29 @@ describe('the sidebar', () => {
     expect(screen.queryByText('View only')).toBeNull();
     expect(screen.getByText('Export / import')).toBeTruthy();
   });
+
+  // Asked under the account's row, not with window.confirm.
+  it('signs another account out of this device after asking', async () => {
+    routes['GET /api/me/workspaces'] = () => [200, { email: 'ada@example.com', workspaces: [] }];
+    routes['GET /api/me/identities'] = () => [
+      200,
+      {
+        bundleId: 'bnd_1',
+        identities: [
+          { sessionId: 's_ada', email: 'ada@example.com', lastSeenAt: null, createdAt: '2026-10-01T00:00:00Z', isActive: true },
+          { sessionId: 's_bo', email: 'bo@example.com', lastSeenAt: null, createdAt: '2026-10-02T00:00:00Z', isActive: false },
+        ],
+      },
+    ];
+    routes['DELETE /api/identities/s_bo'] = () => [200, { ok: true, fellThroughTo: null }];
+    renderAs(ADMIN, <Sidebar principal={ADMIN} />);
+    fireEvent.click(screen.getByRole('button', { name: /Ada Admin/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove account from this device' }));
+    expect(screen.getByText('Sign out on this device?')).toBeTruthy();
+    expect(sent.some((s) => s.method === 'DELETE')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, sign out' }));
+    await waitFor(() => expect(sent.some((s) => s.method === 'DELETE' && s.url === '/api/identities/s_bo')).toBe(true));
+  });
 });
 
 const SEATS = [
@@ -127,6 +150,18 @@ describe('Admins', () => {
 
     fireEvent.click(screen.getByText('Make view only'));
     await screen.findByText('Someone has to stay a full admin.');
+  });
+
+  it('revokes a seat after asking on its row', async () => {
+    routes['GET /api/auth/whoami'] = () => [200, ADMIN];
+    routes['POST /api/admins/adm_b/revoke'] = () => [200, { ok: true }];
+    renderAs(ADMIN, <AdminAdmins />);
+    const row = within((await screen.findByText('Bo Admin')).closest('tr') as HTMLElement);
+    fireEvent.click(row.getByText('Revoke'));
+    expect(row.getByText('Revoke Bo Admin?')).toBeTruthy();
+    expect(sent.some((s) => s.url.endsWith('/revoke'))).toBe(false);
+    fireEvent.click(row.getByRole('button', { name: 'Yes, revoke' }));
+    await waitFor(() => expect(sent.some((s) => s.method === 'POST' && s.url === '/api/admins/adm_b/revoke')).toBe(true));
   });
 
   it('shows a viewer the seats without the controls', async () => {

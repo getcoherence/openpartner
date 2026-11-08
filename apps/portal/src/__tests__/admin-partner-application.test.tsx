@@ -5,8 +5,8 @@
  * only http(s) values become links; applicants from before the join page
  * asked for one show "No application on file". Approve/Revoke unchanged.
  */
-import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, fireEvent, render, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AdminPartners, PARTNERS_PAGE_SIZE } from '../pages/AdminPartners.js';
@@ -94,5 +94,30 @@ describe('admin partners: View application', () => {
 
     fireEvent.click(panel.getByRole('button', { name: 'Close' }));
     expect(page.queryByRole('region', { name: "Ada Applicant's application" })).toBeNull();
+  });
+});
+
+describe('admin partners: Approve', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  // Asked on the row, not with window.confirm.
+  it('approves an applicant after asking on the row', async () => {
+    const posts: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === 'POST') posts.push(new URL(String(input), 'http://localhost').pathname);
+        // Approving refetches the list.
+        const body = init?.method === 'POST' ? {} : { partners: PARTNERS, nextCursor: null };
+        return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+      }),
+    );
+    const page = renderPage();
+    const row = within(page.getByText('Ada Applicant').closest('tr') as HTMLElement);
+    fireEvent.click(row.getByRole('button', { name: 'Approve' }));
+    expect(row.getByText('Approve Ada Applicant?')).toBeTruthy();
+    expect(posts).toEqual([]);
+    fireEvent.click(row.getByRole('button', { name: 'Yes, approve' }));
+    await waitFor(() => expect(posts).toEqual(['/api/partners/p_app/invite']));
   });
 });

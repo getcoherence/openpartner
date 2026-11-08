@@ -4,6 +4,7 @@ import { ExternalLink } from 'lucide-react';
 import { api, currentTenantSlug } from '../../api.js';
 import { alpha, theme } from '../../theme.js';
 import { useBrand } from '../../lib/useBrand.js';
+import { ConfirmAction } from '../../lib/ConfirmAction.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Textarea } from '../../ui.js';
 import { PaypalPaymentsCard } from './PaypalPaymentsCard.js';
 
@@ -417,18 +418,23 @@ function StripeAppCard() {
                   Reconnect
                 </Button>
               )}
-              <button
-                type="button"
-                style={{ ...mutedButton, border: `1px solid ${alpha(theme.danger, 0.333)}`, color: theme.danger }}
-                disabled={busy}
-                onClick={() => {
-                  if (confirm(`Disconnect Stripe? ${STRIPE_APP_NAME} stops reading your Stripe account. Payments already recorded stay.`)) {
-                    disconnect.mutate();
-                  }
-                }}
+              <ConfirmAction
+                prompt="Disconnect Stripe?"
+                confirmLabel="Yes, disconnect"
+                title={`${STRIPE_APP_NAME} stops reading your Stripe account. Payments already recorded stay.`}
+                onConfirm={() => disconnect.mutate()}
               >
-                Disconnect
-              </button>
+                {(ask) => (
+                  <button
+                    type="button"
+                    style={{ ...mutedButton, border: `1px solid ${alpha(theme.danger, 0.333)}`, color: theme.danger }}
+                    disabled={busy}
+                    onClick={ask}
+                  >
+                    Disconnect
+                  </button>
+                )}
+              </ConfirmAction>
             </div>
             {conn.rewards && !conn.rewardCodesSyncing && conn.rewardCodesNotInStripe > 0 && (
               <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 8, lineHeight: 1.5 }}>
@@ -712,7 +718,7 @@ function KeysPanel() {
         One key per integration — a separate key for HubSpot vs. Zapier vs. internal scripts
         makes leak attribution easy and revocation clean.
       </p>
-      <ErrorBanner error={create.error ?? revoke.error ?? list.error} />
+      <ErrorBanner error={create.error ?? list.error} />
 
       {created && (
         <div
@@ -819,26 +825,32 @@ function KeysPanel() {
                   {(k.scopes ?? []).join(', ')}
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  if (confirm(`Revoke "${k.label ?? 'CRM webhook'}"? Any CRM using this key will stop receiving events.`)) {
-                    revoke.mutate(k.id);
-                  }
-                }}
-                disabled={revoke.isPending}
-                style={{
-                  background: 'transparent',
-                  border: `1px solid ${alpha(theme.danger, 0.333)}`,
-                  borderRadius: 6,
-                  padding: '5px 10px',
-                  fontSize: 12,
-                  color: theme.danger,
-                  cursor: 'pointer',
-                }}
+              <ConfirmAction
+                prompt="Revoke this key?"
+                confirmLabel="Yes, revoke"
+                title="Any CRM using this key stops receiving events."
+                onConfirm={() => revoke.mutate(k.id)}
+                error={revoke.variables === k.id && revoke.error}
               >
-                Revoke
-              </button>
+                {(ask) => (
+                  <button
+                    type="button"
+                    onClick={ask}
+                    disabled={revoke.isPending}
+                    style={{
+                      background: 'transparent',
+                      border: `1px solid ${alpha(theme.danger, 0.333)}`,
+                      borderRadius: 6,
+                      padding: '5px 10px',
+                      fontSize: 12,
+                      color: theme.danger,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Revoke
+                  </button>
+                )}
+              </ConfirmAction>
             </div>
           ))}
         </div>
@@ -1244,28 +1256,35 @@ function PostbackPanel() {
               {' · '}
               {token.lastUsedAt ? `last used ${new Date(token.lastUsedAt).toLocaleString()}` : 'not used yet'}
             </div>
-            <button
-              type="button"
-              style={mutedButton}
-              disabled={mint.isPending}
-              onClick={() => {
-                if (confirm('Rotate the postback token? The current URL stops working immediately — update it at every network that fires it.')) {
-                  mint.mutate();
-                }
-              }}
+            <ConfirmAction
+              prompt="Rotate the token?"
+              confirmLabel="Yes, rotate"
+              title="The current URL stops working at once. Update it at every network that fires it."
+              onConfirm={() => mint.mutate()}
             >
-              Rotate token
-            </button>
-            <button
-              type="button"
-              style={{ ...mutedButton, border: `1px solid ${alpha(theme.danger, 0.333)}`, color: theme.danger }}
-              disabled={turnOff.isPending}
-              onClick={() => {
-                if (confirm('Turn off postbacks? The current URL stops working immediately.')) turnOff.mutate();
-              }}
+              {(ask) => (
+                <button type="button" style={mutedButton} disabled={mint.isPending} onClick={ask}>
+                  Rotate token
+                </button>
+              )}
+            </ConfirmAction>
+            <ConfirmAction
+              prompt="Turn off postbacks?"
+              confirmLabel="Yes, turn off"
+              title="The current URL stops working at once."
+              onConfirm={() => turnOff.mutate()}
             >
-              Turn off
-            </button>
+              {(ask) => (
+                <button
+                  type="button"
+                  style={{ ...mutedButton, border: `1px solid ${alpha(theme.danger, 0.333)}`, color: theme.danger }}
+                  disabled={turnOff.isPending}
+                  onClick={ask}
+                >
+                  Turn off
+                </button>
+              )}
+            </ConfirmAction>
           </div>
 
           <Label>Allowed source IPs (optional)</Label>

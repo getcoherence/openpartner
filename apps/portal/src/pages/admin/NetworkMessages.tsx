@@ -21,6 +21,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, MessagesSquare } from 'lucide-react';
 import { api, apiBlob, ApiError } from '../../api.js';
 import { useIsMobile } from '../../lib/useMediaQuery.js';
+import { ConfirmAction } from '../../lib/ConfirmAction.js';
 import { Button, Card, EmptyState, ErrorBanner, Page, Select, formatDate } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
 import { TenantLink } from '../../tenant-link.js';
@@ -584,16 +585,19 @@ function VendorBookingCard({
             <Button onClick={() => setApproving(true)}>Approve</Button>
           ))}
         {!viewOnly && (b.status === 'pending' || (b.status === 'awaiting_payment' && !b.paymentProcessing)) && (
-          <Button
-            variant="secondary"
-            disabled={act.isPending}
-            onClick={() => {
-              const offer = b.proposedBy === 'creator';
-              if (window.confirm(offer ? 'Decline this offer? The creator is told.' : 'Cancel this request? The creator is told.')) act.mutate('cancel');
-            }}
+          <ConfirmAction
+            prompt={b.proposedBy === 'creator' ? 'Decline this offer?' : 'Cancel this request?'}
+            confirmLabel={b.proposedBy === 'creator' ? 'Yes, decline' : 'Yes, cancel it'}
+            cancelLabel={b.proposedBy === 'creator' ? undefined : 'Keep it'}
+            title="The creator is told."
+            onConfirm={() => act.mutate('cancel')}
           >
-            {b.proposedBy === 'creator' ? 'Decline offer' : 'Cancel request'}
-          </Button>
+            {(ask) => (
+              <Button variant="secondary" disabled={act.isPending} onClick={ask}>
+                {b.proposedBy === 'creator' ? 'Decline offer' : 'Cancel request'}
+              </Button>
+            )}
+          </ConfirmAction>
         )}
         <div style={{ flex: 1 }} />
         {b.hasReport && (

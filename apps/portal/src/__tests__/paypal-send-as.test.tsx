@@ -4,7 +4,7 @@
  * PayPal can't send"):
  *   - Settings turns it on, saying whose the conversion at withdrawal is;
  *   - an INR group reads "INR → USD", has no file, and its button quotes
- *     first: the confirm names both totals, the ECB rate and its date, and
+ *     first: the row shows both totals, the ECB rate and its date, and
  *     the send carries the quote id;
  *   - an expired quote says what to do;
  *   - the partner's payouts show the INR amount and what PayPal sent.
@@ -176,25 +176,26 @@ describe('Settings: INR in USD', () => {
 describe('Manual payouts to send: INR → USD', () => {
   it('quotes first, shows both totals and the ECB rate, then sends at that quote', async () => {
     connections = [LIVE];
+    // Shown and asked on the row, not with window.confirm (which a browser
+    // that dismisses dialogs answers false).
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
     const view = renderWithClient(<PayoutsPage principal={{ role: 'admin' }} />);
     await view.findByText(/INR → USD/);
     expect(view.queryByRole('button', { name: 'Make file' })).toBeNull();
 
-    const button = view.getByRole('button', { name: 'Pay with PayPal in USD' });
-    fireEvent.click(button);
-    await waitFor(() => expect(confirm).toHaveBeenCalled());
-    const ask = confirm.mock.calls[0]![0] as string;
-    expect(ask).toContain('Send 3 payouts totalling ₹4,500.00 as $53.82 from your live PayPal account now?');
+    fireEvent.click(view.getByRole('button', { name: 'Pay with PayPal in USD' }));
+    expect(await view.findByText('Send 3 payouts totalling ₹4,500.00 as $53.82 from your live PayPal account now?')).toBeTruthy();
     // Every digit the amounts were computed from, not a rounded label.
-    expect(ask).toContain('Rate: 1 INR = 0.011958866935 USD, the European Central Bank reference rate of 22 Oct');
-    expect(ask).toContain('PayPal converts it to INR for their bank at its own rate');
+    expect(view.getByText(/^Rate: 1 INR = 0\.011958866935 USD, the European Central Bank reference rate of 22 Oct/)).toBeTruthy();
+    expect(view.getByText(/PayPal converts it to INR for their bank at its own rate/)).toBeTruthy();
     expect(requests.find((r) => r.path.endsWith('/paypal-batches/quote'))?.body).toEqual({ currency: 'INR', sendAs: 'USD' });
-    // Declined: nothing sent.
+    // Cancelled: nothing sent, and the button is back.
+    fireEvent.click(view.getByRole('button', { name: 'Cancel' }));
     expect(requests.some((r) => r.method === 'POST' && r.path === `/payouts/runs/${RUN_ID}/paypal-batches`)).toBe(false);
 
-    confirm.mockReturnValue(true);
-    fireEvent.click(button);
+    fireEvent.click(view.getByRole('button', { name: 'Pay with PayPal in USD' }));
+    fireEvent.click(await view.findByRole('button', { name: 'Yes, send' }));
+    expect(confirm).not.toHaveBeenCalled();
     await waitFor(() =>
       expect(requests.find((r) => r.method === 'POST' && r.path === `/payouts/runs/${RUN_ID}/paypal-batches`)?.body).toEqual({
         currency: 'INR',
@@ -207,10 +208,12 @@ describe('Manual payouts to send: INR → USD', () => {
   it('says what to do when the quote expired before sending', async () => {
     connections = [LIVE];
     sendAnswer = { status: 409, body: { error: 'quote_expired' } };
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
     const view = renderWithClient(<PayoutsPage principal={{ role: 'admin' }} />);
     fireEvent.click(await view.findByRole('button', { name: 'Pay with PayPal in USD' }));
+    fireEvent.click(await view.findByRole('button', { name: 'Yes, send' }));
     await view.findByText(/quote expired \(they last 15 minutes\)\. Press the button again/);
+    // The spent quote is gone, so the button is there to press.
+    expect(view.getByRole('button', { name: 'Pay with PayPal in USD' })).toBeTruthy();
   });
 
   it('says why when no payout can go at the quoted rate', async () => {
@@ -223,19 +226,18 @@ describe('Manual payouts to send: INR → USD', () => {
         leftOut: [],
       },
     };
-    const confirm = vi.spyOn(window, 'confirm');
     const view = renderWithClient(<PayoutsPage principal={{ role: 'admin' }} />);
     fireEvent.click(await view.findByRole('button', { name: 'Pay with PayPal in USD' }));
     await view.findByText('None of these payouts can go through PayPal at this rate: 1 is under a cent in USD. Pay them another way.');
-    expect(confirm).not.toHaveBeenCalled();
+    expect(view.queryByRole('button', { name: 'Yes, send' })).toBeNull();
   });
 
   it('still shows an error it has no words of its own for', async () => {
     connections = [LIVE];
     sendAnswer = { status: 409, body: { error: 'paypal_not_connected' } };
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
     const view = renderWithClient(<PayoutsPage principal={{ role: 'admin' }} />);
     fireEvent.click(await view.findByRole('button', { name: 'Pay with PayPal in USD' }));
+    fireEvent.click(await view.findByRole('button', { name: 'Yes, send' }));
     await view.findByText('paypal_not_connected');
   });
 

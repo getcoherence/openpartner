@@ -78,23 +78,23 @@ describe('admin partners: portal access', () => {
     const open = await rowOf(page, 'Open Partner');
     const toggle = open.getByRole('button', { name: /Portal access for Open Partner: on/ });
 
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false);
+    // Asks on the row, not with window.confirm.
     fireEvent.click(toggle);
-    expect(confirm).toHaveBeenCalledOnce();
+    open.getByText('Turn off portal access?');
+    fireEvent.click(open.getByRole('button', { name: 'Cancel' }));
     expect(requests.filter((r) => r.method === 'PATCH')).toEqual([]);
 
-    confirm.mockReturnValueOnce(true);
-    fireEvent.click(toggle);
+    fireEvent.click(open.getByRole('button', { name: /Portal access for Open Partner: on/ }));
+    fireEvent.click(open.getByRole('button', { name: 'Yes, turn off' }));
     await waitFor(() =>
       expect(requests.filter((r) => r.method === 'PATCH')).toEqual([{ method: 'PATCH', path: '/partners/p_on', body: { portalAccess: false } }]),
     );
 
     // Turning it on doesn't sign anyone out, so it doesn't ask.
     const off = await rowOf(page, 'Headless Customer');
-    confirm.mockClear();
     fireEvent.click(off.getByRole('button', { name: /Portal access for Headless Customer: off/ }));
     await waitFor(() => expect(requests.filter((r) => r.method === 'PATCH')).toHaveLength(2));
-    expect(confirm).not.toHaveBeenCalled();
+    expect(off.queryByRole('button', { name: 'Cancel' })).toBeNull();
     expect(requests.filter((r) => r.method === 'PATCH')[1]!.body).toEqual({ portalAccess: true });
   });
 

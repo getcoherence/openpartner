@@ -6,6 +6,7 @@ import { formatBountyAmount, formatBountyValue, renderBountySummary, type Bounty
 import { api } from '../api.js';
 import { useDefaultCurrency } from '../lib/useBrand.js';
 import { useIsMobile } from '../lib/useMediaQuery.js';
+import { ConfirmAction } from '../lib/ConfirmAction.js';
 import { useDebouncedSearch, usePartnerSearch } from '../lib/usePartnerSearch.js';
 import { alpha, theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
@@ -142,19 +143,19 @@ function BountyCard({ bounty: b, open, onToggle }: { bounty: Bounty; open: boole
       qc.invalidateQueries({ queryKey: ['bounty-progress', b.id] });
     },
   });
-  const action = (label: string, patch: Record<string, unknown>, confirmText?: string, danger = false) => (
-    <Button
-      size="sm"
-      variant={danger ? 'danger' : 'secondary'}
-      disabled={update.isPending}
-      onClick={() => {
-        if (confirmText && !window.confirm(confirmText)) return;
-        update.mutate(patch);
-      }}
-    >
-      {label}
-    </Button>
-  );
+  const action = (label: string, patch: Record<string, unknown>, ask?: { prompt: string; yes: string; title: string }, danger = false) => {
+    const button = (onClick: () => void) => (
+      <Button size="sm" variant={danger ? 'danger' : 'secondary'} disabled={update.isPending} onClick={onClick}>
+        {label}
+      </Button>
+    );
+    if (!ask) return button(() => update.mutate(patch));
+    return (
+      <ConfirmAction prompt={ask.prompt} confirmLabel={ask.yes} title={ask.title} onConfirm={() => update.mutate(patch)}>
+        {button}
+      </ConfirmAction>
+    );
+  };
 
   return (
     <Card>
@@ -186,9 +187,9 @@ function BountyCard({ bounty: b, open, onToggle }: { bounty: Bounty; open: boole
             </Button>
           )}
           {b.status === 'active' &&
-            action('End now', { status: 'ended' }, `End "${b.name}" now? Nobody else can earn it; bonuses already paid stand.`)}
+            action('End now', { status: 'ended' }, { prompt: 'End now?', yes: 'Yes, end', title: 'Nobody else can earn it; bonuses already paid stand.' })}
           {b.status !== 'archived' &&
-            action('Archive', { status: 'archived' }, `Archive "${b.name}"? Partners stop seeing it.`, true)}
+            action('Archive', { status: 'archived' }, { prompt: 'Archive it?', yes: 'Yes, archive', title: 'Partners stop seeing it.' }, true)}
         </div>
       </div>
       <ErrorBanner error={update.error} />
