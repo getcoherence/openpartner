@@ -28,7 +28,7 @@ let findFails = false;
 /** The edge in front of prod answers our 502 with its own bare 504. */
 let edgeTimeout = false;
 /** The review queue, when a test sets it: one approved leaves it. */
-let reviewList: Array<{ id: string }> | null = null;
+let reviewList: Array<{ id: string; [k: string]: unknown }> | null = null;
 
 const SETTINGS = { enabled: true, monthlyBudgetUsd: 20, queries: ['developer tools'], lookbackDays: 7, sendAfterDays: 14, maxLaunchAgeDays: 60, readConcurrency: 4 };
 
