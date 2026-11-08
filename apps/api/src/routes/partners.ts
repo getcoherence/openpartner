@@ -10,6 +10,7 @@ import { buildMagicLinkUrl, partnerInviteEmail, partnerRevokedEmail } from '../e
 import { cursorTimestamp, decodeCursor, takePage, whereAfterCursor } from '../pagination.js';
 import { linkTenantOf } from '../portal-url.js';
 import { afterCommit, getTenancyMode, tenantOf } from '../tenancy.js';
+import { auditChanges } from '../audit-log.js';
 import { db as platformDb } from '../db.js';
 import { checkCountryAccess, countryCodeSchema, recordLocationDeclaration } from '../country-access.js';
 import {
@@ -939,6 +940,12 @@ partnersRouter.put('/partners/:id/programs/:programId/commission', requireAuth, 
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
   const program = await db(TABLES.Program).where({ id: req.params.programId, tenantId }).first('id');
   if (!program) return res.status(404).json({ error: 'program_not_found' });
+  auditChanges(
+    req,
+    TABLES.PartnerCommission,
+    { tenantId, partnerId: partner.id, programId: program.id },
+    await findPartnerCommission(db, partner.id, program.id as string),
+  );
   await writeCommissionOverride(db, tenantId, partner.id, program.id as string, body.data);
   res.json({ snapshot: await findPartnerCommission(db, partner.id, program.id as string) });
 });

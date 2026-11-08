@@ -109,6 +109,9 @@ declare global {
       tenantWhiteLabelEffective?: boolean;
       /** Jobs queued with afterCommit(); run once `db` has committed. */
       afterCommitJobs?: Array<() => Promise<void>>;
+      /** Jobs queued with beforeCommit(); run inside `db` just before it
+       *  commits. */
+      beforeCommitJobs?: Array<(trx: Knex.Transaction, body: unknown) => Promise<void>>;
     }
   }
 }
@@ -279,6 +282,19 @@ export function afterCommit(req: Request, label: string, fn: (trx: Knex.Transact
 }
 
 /**
+ * Run `fn` inside the request's own transaction, just before it commits,
+ * with the response body the handler sent. For records that must commit
+ * with the request's writes or not at all: the audit log (audit-log.ts).
+ *
+ * Runs only when the transaction is about to commit (any status below 500);
+ * `fn` checks the status itself if it cares. A job that throws rolls the
+ * request back and the caller gets a 500, so nothing commits without it.
+ */
+export function beforeCommit(req: Request, fn: (trx: Knex.Transaction, body: unknown) => Promise<void>): void {
+  (req.beforeCommitJobs ??= []).push(fn);
+}
+
+/**
  * Express middleware that:
  *   1. Resolves the tenantId for the request
  *   2. Opens a transaction on the appDb pool (the privileged pool for a
@@ -382,15 +398,18 @@ export async function tenantMiddleware(
   const origEnd = res.end.bind(res);
   let finalized = false;
 
-  async function finalize(success: boolean): Promise<void> {
+  async function finalize(success: boolean, body?: unknown): Promise<void> {
     if (finalized) return;
     finalized = true;
     if (success) {
       try {
+        for (const job of req.beforeCommitJobs ?? []) await job(trx, body);
         await trx.commit();
       } catch (err) {
-        // Commit failed after the handler succeeded — the response we're
-        // about to send is a lie. Mutate to a 500 if we still can.
+        // A before-commit job or the commit failed after the handler
+        // succeeded — the response we're about to send is a lie. Release
+        // the trx if a job left it open, then mutate to a 500 if we still can.
+        if (!trx.isCompleted()) await trx.rollback().catch(() => {});
         if (!res.headersSent) {
           res.status(500);
           throw err;
@@ -411,7 +430,7 @@ export async function tenantMiddleware(
 
   res.json = function (body: unknown) {
     const success = res.statusCode < 500;
-    finalize(success).then(
+    finalize(success, body).then(
       () => origJson(body),
       (err) => {
         if (!res.headersSent) origJson({ error: 'commit_failed', detail: err instanceof Error ? err.message : String(err) });
@@ -421,7 +440,7 @@ export async function tenantMiddleware(
   };
   res.send = function (body?: unknown) {
     const success = res.statusCode < 500;
-    finalize(success).then(
+    finalize(success, body).then(
       () => origSend(body),
       (err) => {
         if (!res.headersSent) origSend(`commit_failed: ${err instanceof Error ? err.message : String(err)}`);

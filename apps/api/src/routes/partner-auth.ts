@@ -37,6 +37,7 @@ import type { WebhookPayload } from '../openapi/webhook-events.js';
 import { db as platformDb } from '../db.js';
 import { requireServedCountry } from '../country-access.js';
 import { claimSignupPassword } from '../passwords.js';
+import { recordSignin } from '../audit-log.js';
 
 export const partnerAuthRouter = Router();
 
@@ -147,6 +148,7 @@ partnerAuthRouter.post('/auth/magic/verify', verifyLimit, requireServedCountry(p
     await db<AdminRow>(TABLES.Admin).where({ id: admin.id, tenantId }).update({ lastSignInAt: new Date() });
 
     const session = await createSession(db, { tenantId, principalKind: 'admin', principalId: admin.id });
+    await recordSignin(db, { tenantId, adminId: admin.id, email: admin.email, ip: req.ip ?? null, via: 'link' });
     res.cookie(SESSION_COOKIE_NAME, session.plaintext, sessionCookieOptions());
     return res.json({
       ok: true,

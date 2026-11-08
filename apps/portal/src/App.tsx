@@ -36,6 +36,7 @@ import {
   Activity,
   Route as RouteIcon,
   Lock,
+  History,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { clearApiKey, api, type Principal } from './api.js';
@@ -69,6 +70,7 @@ import { AdminSettings } from './pages/admin/Settings.js';
 import { AdminBilling } from './pages/admin/Billing.js';
 import { AdminWhiteLabel } from './pages/admin/WhiteLabel.js';
 import { AdminAdmins } from './pages/admin/Admins.js';
+import { AdminAuditLog } from './pages/admin/AuditLog.js';
 import { AdminNetwork } from './pages/admin/Network.js';
 import { AdminNetworkComplete } from './pages/admin/NetworkComplete.js';
 import { AdminNetworkRequests } from './pages/admin/NetworkRequests.js';
@@ -415,6 +417,7 @@ function Shell() {
               <Route path="admin/tracking-health" element={<AdminTrackingHealth />} />
               <Route path="admin/journey" element={<AdminJourney />} />
               <Route path="admin/admins" element={<AdminAdmins />} />
+              <Route path="admin/audit-log" element={isViewOnly(auth.principal) ? <Navigate to="/" replace /> : <AdminAuditLog />} />
               <Route path="admin/settings" element={<AdminSettings />} />
               <Route path="admin/billing" element={<AdminBilling />} />
               <Route path="admin/white-label" element={<AdminWhiteLabel />} />
@@ -616,6 +619,7 @@ export function Sidebar({ principal, variant = 'sidebar' }: { principal: Princip
             <NavItem to="/admin/tracking-health" icon={<Activity size={16} />}>Tracking health</NavItem>
             <NavItem to="/admin/journey" icon={<RouteIcon size={16} />} locked={locked}>Customer journey</NavItem>
             <NavItem to="/admin/admins" icon={<UserCog size={16} />}>Admins</NavItem>
+            {!isViewOnly(principal) && <NavItem to="/admin/audit-log" icon={<History size={16} />}>Audit log</NavItem>}
             <NavItem to="/admin/settings" icon={<Settings size={16} />}>Settings</NavItem>
             <NavItem to="/admin/billing" icon={<CreditCard size={16} />}>Billing</NavItem>
             <NavItem to="/admin/white-label" icon={<Palette size={16} />}>White label</NavItem>

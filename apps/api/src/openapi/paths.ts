@@ -28,6 +28,7 @@ import * as refunds from '../routes/refunds.js';
 import * as dashboard from '../routes/dashboard.js';
 import * as webhooks from '../routes/webhooks.js';
 import * as apiKeys from '../routes/api-keys.js';
+import * as auditLog from '../routes/audit-log.js';
 import * as exportRoutes from '../routes/export.js';
 import * as settings from '../routes/settings.js';
 import * as payouts from '../routes/payouts.js';
@@ -1947,6 +1948,46 @@ Newest referral first: the customer who most recently became the partner's refer
     access: { kind: 'handler', rule: "admin key (any key), or a partner key (that partner's own keys). Scoped keys get `403 forbidden`.", partner: true },
     responses: { 200: { description: 'Revoked.', schema: S.Ok } },
     errors: { 404: ['not_found'] },
+  });
+
+  // --------------------------------------------------------------- Audit log
+  r.operation({
+    method: 'get',
+    path: '/audit-log',
+    tag: 'Audit log',
+    operationId: 'listAuditLog',
+    summary: 'List audit log entries',
+    description: `
+What your admins and API keys did: every successful write, each sign-in, and the reads that hand over bulk data or credentials (exports, payout files, payout details, postback URLs). Newest first, keyset-paginated: pass \`nextCursor\` back as \`cursor\`.
+
+Conversion and click ingestion, Network message threads and previews aren't logged; neither are partners' own requests. Request bodies are never stored, only their field names.`,
+    access: { kind: 'admin' },
+    query: auditLog.listAuditLogQuerySchema,
+    responses: { 200: { description: 'One page.', schema: S.AuditLogPage } },
+    errors: { 400: ['invalid_cursor'] },
+  });
+
+  r.operation({
+    method: 'get',
+    path: '/audit-log/actors',
+    tag: 'Audit log',
+    operationId: 'listAuditLogActors',
+    summary: 'List who the audit log names',
+    description: "Each admin and API key with an entry, under its latest label: the values for `actorId`. The operator key has no id and isn't listed.",
+    access: { kind: 'admin' },
+    responses: { 200: { description: 'Actors.', schema: S.AuditLogActors } },
+  });
+
+  r.operation({
+    method: 'get',
+    path: '/audit-log.csv',
+    tag: 'Audit log',
+    operationId: 'downloadAuditLog',
+    summary: 'Download the audit log (CSV)',
+    description: `The same filters as the list, newest first, at most ${auditLog.AUDIT_CSV_MAX_ROWS.toLocaleString('en-US')} rows: narrow \`from\` and \`to\` for more. The download is itself an entry.`,
+    access: { kind: 'admin' },
+    query: auditLog.listAuditLogQuerySchema.omit({ limit: true, cursor: true }),
+    responses: { 200: { description: 'CSV.', content: { 'text/csv': { schema: z.string() } } } },
   });
 
   // ------------------------------------------------------------------ Export

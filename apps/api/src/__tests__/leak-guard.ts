@@ -21,8 +21,10 @@ import type { Knex } from 'knex';
 import { createDb, DEFAULT_TENANT_ID, TABLES } from '@openpartner/db';
 
 // Rows a file may leave behind: magic-link tokens are random, have no FKs,
-// and no file reads another's.
-const MAY_GROW = new Set<string>([TABLES.MagicLinkToken]);
+// and no file reads another's. Audit-log entries are a side effect of every
+// admin write in every file; they reference nothing but the tenant, and
+// audit-log.test.ts, the one file that reads them, wipes them first.
+const MAY_GROW = new Set<string>([TABLES.MagicLinkToken, TABLES.AuditLog]);
 
 interface Snapshot {
   counts: Map<string, number>;

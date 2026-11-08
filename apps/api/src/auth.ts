@@ -23,6 +23,7 @@ import type { Knex } from 'knex';
 import { ulid } from 'ulid';
 import { TABLES, type AdminRole, type ApiKeyRow, type PartnerRow } from '@openpartner/db';
 import { viewerRefusal } from './view-only.js';
+import { auditRequest } from './audit-log.js';
 
 export type ApiKeyPrincipal =
   | { role: 'admin'; source: 'env' }
@@ -102,6 +103,9 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       return;
     }
   }
+  // The audit log (audit-log.ts): an admin's or key's write, written with
+  // the request's own commit if it succeeds.
+  auditRequest(req, res);
   next();
 }
 

@@ -64,6 +64,7 @@ const DOCUMENTED_ROUTERS: Record<string, Router> = {
   referrals: (await import('../routes/referrals.js')).referralsRouter,
   webhooks: (await import('../routes/webhooks.js')).webhooksRouter,
   apiKeys: (await import('../routes/api-keys.js')).apiKeysRouter,
+  auditLog: (await import('../routes/audit-log.js')).auditLogRouter,
   export: (await import('../routes/export.js')).exportRouter,
   openapi: (await import('../routes/openapi.js')).openapiRouter,
 };

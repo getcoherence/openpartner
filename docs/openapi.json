@@ -89,6 +89,10 @@
       "description": "Admin, scoped and partner keys."
     },
     {
+      "name": "Audit log",
+      "description": "What your admins and API keys did, and when."
+    },
+    {
       "name": "Export",
       "description": "Your data, in formats a self-hosted instance re-imports."
     },
@@ -7860,6 +7864,202 @@
           "createdAt",
           "lastUsedAt",
           "revokedAt"
+        ]
+      },
+      "AuditLogPage": {
+        "type": "object",
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditLogEntry"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "entries",
+          "nextCursor"
+        ]
+      },
+      "AuditLogEntry": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "actorKind": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "api_key",
+              "operator_key"
+            ],
+            "description": "`admin`: a signed-in admin. `api_key`: an API key, scoped keys included. `operator_key`: the deployment's `ADMIN_API_KEY`."
+          },
+          "actorId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The admin or key; null for the operator key."
+          },
+          "actorLabel": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The admin's email or the key's label when it happened."
+          },
+          "action": {
+            "type": "string",
+            "description": "The route as registered (`PATCH /programs/:id`), or `signin`.",
+            "example": "PATCH /programs/:id"
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "Updated a program"
+          },
+          "targetId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The record acted on: the route's first parameter, or the id a create returned."
+          },
+          "targetName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The program's, partner's, admin's, bounty's or key's name now, while it exists."
+          },
+          "params": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "fields": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The request body's top-level field names. Never their values."
+          },
+          "detail": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "changes": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "from": {},
+                    "to": {}
+                  }
+                }
+              },
+              "via": {
+                "type": "string",
+                "enum": [
+                  "link",
+                  "workspace",
+                  "claim"
+                ]
+              }
+            },
+            "description": "`changes`: old and new values, on program, bounty, admin and partner-commission changes. `via`: how a sign-in happened."
+          },
+          "status": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "ip": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "createdAt",
+          "actorKind",
+          "actorId",
+          "actorLabel",
+          "action",
+          "label",
+          "targetId",
+          "targetName",
+          "params",
+          "fields",
+          "detail",
+          "status",
+          "ip"
+        ]
+      },
+      "AuditLogActors": {
+        "type": "object",
+        "properties": {
+          "actors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "actorId": {
+                  "type": "string"
+                },
+                "actorKind": {
+                  "type": "string",
+                  "enum": [
+                    "admin",
+                    "api_key",
+                    "operator_key"
+                  ],
+                  "description": "`admin`: a signed-in admin. `api_key`: an API key, scoped keys included. `operator_key`: the deployment's `ADMIN_API_KEY`."
+                },
+                "actorLabel": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "actorId",
+                "actorKind",
+                "actorLabel"
+              ]
+            }
+          }
+        },
+        "required": [
+          "actors"
         ]
       },
       "ExportBundle": {
@@ -20194,6 +20394,315 @@
           },
           "404": {
             "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/audit-log": {
+      "get": {
+        "operationId": "listAuditLog",
+        "tags": [
+          "Audit log"
+        ],
+        "summary": "List audit log entries",
+        "description": "What your admins and API keys did: every successful write, each sign-in, and the reads that hand over bulk data or credentials (exports, payout files, payout details, postback URLs). Newest first, keyset-paginated: pass `nextCursor` back as `cursor`.\n\nConversion and click ingestion, Network message threads and previews aren't logged; neither are partners' own requests. Request bodies are never stored, only their field names.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "required": false,
+            "name": "actorId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": false,
+            "name": "action",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": false,
+            "name": "targetId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$"
+            },
+            "required": false,
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$"
+            },
+            "required": false,
+            "name": "to",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditLogPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_query`, `tenant_slug_missing`, `invalid_cursor`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/audit-log/actors": {
+      "get": {
+        "operationId": "listAuditLogActors",
+        "tags": [
+          "Audit log"
+        ],
+        "summary": "List who the audit log names",
+        "description": "Each admin and API key with an entry, under its latest label: the values for `actorId`. The operator key has no id and isn't listed.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "responses": {
+          "200": {
+            "description": "Actors.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditLogActors"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/audit-log.csv": {
+      "get": {
+        "operationId": "downloadAuditLog",
+        "tags": [
+          "Audit log"
+        ],
+        "summary": "Download the audit log (CSV)",
+        "description": "The same filters as the list, newest first, at most 50,000 rows: narrow `from` and `to` for more. The download is itself an entry.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "required": false,
+            "name": "actorId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": false,
+            "name": "action",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": false,
+            "name": "targetId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$"
+            },
+            "required": false,
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$"
+            },
+            "required": false,
+            "name": "to",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "CSV.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_query`, `tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
             "content": {
               "application/json": {
                 "schema": {

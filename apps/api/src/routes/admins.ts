@@ -27,6 +27,7 @@ import { getMailer } from '../mailer.js';
 import { adminInviteEmail, buildMagicLinkUrl } from '../email-templates.js';
 import { linkTenantOf, type PortalLinkTenant } from '../portal-url.js';
 import { tenantOf } from '../tenancy.js';
+import { auditChanges } from '../audit-log.js';
 
 export const adminsRouter = Router();
 
@@ -152,6 +153,7 @@ adminsRouter.patch('/admins/:id', requireAuth, requireAdmin, async (req, res) =>
   try {
     const admin = await db<AdminRow>(TABLES.Admin).where({ id: req.params.id, tenantId }).forUpdate().first();
     if (!admin) throw new RevokeGuardError('not_found');
+    auditChanges(req, TABLES.Admin, { id: admin.id, tenantId }, admin);
     if (admin.role !== body.data.role) {
       if (isSelf(req, admin)) throw new RevokeGuardError('cannot_change_own_role');
       if (body.data.role === 'viewer' && (await isLastActiveFullAdmin(db, tenantId, admin))) {

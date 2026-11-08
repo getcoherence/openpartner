@@ -48,6 +48,7 @@ import { settingsRouter } from './routes/settings.js';
 import { mountStaticUploads, uploadsRouter } from './routes/uploads.js';
 import { brandResourcesRouter } from './routes/brand-resources.js';
 import { adminsRouter } from './routes/admins.js';
+import { auditLogRouter } from './routes/audit-log.js';
 import { installRouter } from './routes/install.js';
 import { fraudReviewRouter } from './routes/fraud-review.js';
 import { webhooksRouter } from './routes/webhooks.js';
@@ -308,6 +309,7 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   app.use(portalDomainsRouter);
   app.use(partnerSignupRouter);
   app.use(adminsRouter);
+  app.use(auditLogRouter);
   app.use(settingsRouter);
   app.use(uploadsRouter);
   app.use(brandResourcesRouter);

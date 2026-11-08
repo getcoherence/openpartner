@@ -139,6 +139,7 @@ export const TABLES = {
   MagicLinkToken: 'MagicLinkToken',
   PasswordCredential: 'PasswordCredential',
   PartnerSigninLinkLog: 'PartnerSigninLinkLog',
+  AuditLog: 'AuditLog',
   Session: 'Session',
   PlatformSession: 'PlatformSession',
   PlatformSessionBundle: 'PlatformSessionBundle',

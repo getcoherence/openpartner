@@ -30,6 +30,7 @@ const TAGS: Array<{ name: string; description: string }> = [
   { name: 'Partner reporting', description: 'Per-partner stats for your own UI.' },
   { name: 'Webhooks', description: 'Subscribe endpoints to the events under **Webhook events**.' },
   { name: 'API keys', description: 'Admin, scoped and partner keys.' },
+  { name: 'Audit log', description: 'What your admins and API keys did, and when.' },
   { name: 'Export', description: 'Your data, in formats a self-hosted instance re-imports.' },
   { name: 'Network settings', description: "The tenant's OpenPartner Network membership, including whether partners are offered the Network." },
   { name: 'Webhook events', description: 'What OpenPartner POSTs to your webhook endpoints.' },
