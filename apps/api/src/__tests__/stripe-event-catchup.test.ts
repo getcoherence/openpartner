@@ -65,6 +65,8 @@ function fakeStripe(events: Stripe.Event[]) {
         return { object: 'list', data, has_more: start + params.limit < inRange.length };
       },
     },
+    // A one-time Checkout's revenue reads its line items (product commissions).
+    checkout: { sessions: { listLineItems: () => ({ autoPagingToArray: async () => [] }) } },
   } as unknown as Stripe;
   return { client, calls };
 }

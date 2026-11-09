@@ -117,7 +117,31 @@ const commissionSubRule = z.object({
   tiers: commissionTiersSchema.optional().openapi('CommissionTiers', {
     description: "Performance tiers: the rate steps up with the partner's own revenue or conversions over a window. Not combined with `bands`.",
   }),
+  products: z
+    .array(z.object({ id: z.string(), name: z.string().optional() }))
+    .optional()
+    .openapi({
+      description:
+        "Limits the rule to sales of these products: product or price ids, matched against the event's `products`. A percent rule pays on those products' share of the sale's value; a fixed amount pays once per sale that includes one; `first` and `subsequent` count only sales that include one. Omitted: every sale.",
+    }),
 });
+
+export const SeenProductList = z
+  .object({
+    products: z
+      .array(
+        z.object({
+          id: z.string().openapi({ description: 'A product id, or a price id when `kind` is `price`.' }),
+          kind: z.enum(['product', 'price']),
+          name: z.string().nullable().openapi({ description: 'The latest name a sale gave it.' }),
+          productId: z.string().nullable().openapi({ description: "For a price: the product it's a price of." }),
+          sales: z.number().int().openapi({ description: 'Sales it was on, among those read.' }),
+          lastSeenAt: ts,
+        }),
+      )
+      .openapi({ description: 'Newest first. At most 200, from the latest 5,000 sales with products in the last 180 days.' }),
+  })
+  .openapi('SeenProductList');
 
 export const CommissionSnapshot = z
   .object({

@@ -69,6 +69,10 @@ export interface SubRuleAccrual {
   /** Pre-weight commission amount (the caller multiplies by the touch's weight). */
   amount: number;
   slab?: Omit<CommissionSlabTrace, 'ruleIndex'>;
+  /** A rule limited to products (docs/product-commissions.md): the ids of
+   *  the sale's items it matched, and the part of the sale's value they
+   *  account for, which a percent rate (and any slab) was applied to. */
+  products?: { matched: string[]; basis: number };
 }
 
 type SlabEvent = Pick<EventRow, 'id' | 'type' | 'value' | 'currency' | 'ts'>;
@@ -282,7 +286,11 @@ export function commissionMetadata(
   ruleIndex: number,
   rateType: CommissionSubRule['type'],
 ): Record<string, unknown> {
-  return accrual.slab ? { rateType, slab: { ruleIndex, ...accrual.slab } } : { rateType };
+  return {
+    rateType,
+    ...(accrual.slab ? { slab: { ruleIndex, ...accrual.slab } } : {}),
+    ...(accrual.products ? { products: { ruleIndex, ...accrual.products } } : {}),
+  };
 }
 
 /** True when a stored rule array has any banded or tiered sub-rule. */
@@ -291,6 +299,24 @@ export function rulesHaveSlabs(rules: unknown): boolean {
     Array.isArray(rules) &&
     rules.some((r) => r != null && typeof r === 'object' && Boolean((r as CommissionSubRule).bands || (r as CommissionSubRule).tiers))
   );
+}
+
+/** True when a stored rule array has any sub-rule limited to products
+ *  (docs/product-commissions.md). */
+export function rulesHaveProducts(rules: unknown): boolean {
+  return Array.isArray(rules) && rules.some((r) => ruleHasProducts(r));
+}
+
+function ruleHasProducts(rule: unknown): boolean {
+  if (rule == null || typeof rule !== 'object') return false;
+  const products = (rule as { products?: unknown }).products;
+  // Any value at all, null or an empty list included: the vetting refuses
+  // what it can't read rather than store it as "every product".
+  return products !== undefined;
+}
+
+function ruleHasSlabs(rule: unknown): boolean {
+  return rulesHaveSlabs([rule]);
 }
 
 export type ApprovalSnapshotVerdict =
@@ -302,17 +328,19 @@ export type ApprovalSnapshotVerdict =
  * outranks the live program rule for good, so it is refused — the partner
  * then accrues on the live rule — in two cases:
  *
- *  1. It carries a slab table that fails the checks a program's own rule
- *     must pass (a 500% step, bands and tiers together, a tier with nothing
- *     to count, …). Refusing the whole approval instead would fail it over
- *     terms the brand never typed.
- *  2. It is exactly a granted program's live rule with the slabs stripped —
- *     what a Network that predates slabs sends back. Only an exact match
- *     counts: a snapshot that differs in any other way (say the offering
- *     still shows an older flat 20% because a sync failed) is the terms the
- *     partner applied to, and is kept.
+ *  1. It carries a slab table or product list that fails the checks a
+ *     program's own rule must pass (a 500% step, bands and tiers together, a
+ *     tier with nothing to count, an empty product list, …). Refusing the
+ *     whole approval instead would fail it over terms the brand never typed.
+ *  2. It is exactly a granted program's live rule with the slabs or the
+ *     product lists stripped — what a Network that predates them sends back.
+ *     Stored, a rule stripped of its products would pay the partner on
+ *     every product. Only an exact match counts: a snapshot that differs in
+ *     any other way (say the offering still shows an older flat 20% because
+ *     a sync failed) is the terms the partner applied to, and is kept.
  *
- * A stored slab rule comes back parsed (bands.mode defaulted).
+ * A stored slab or product rule comes back parsed (bands.mode defaulted,
+ * product ids trimmed).
  */
 export async function vetApprovalSnapshot(
   db: Knex,
@@ -320,33 +348,35 @@ export async function vetApprovalSnapshot(
   programIds: string[],
 ): Promise<ApprovalSnapshotVerdict> {
   const rules = snapshot.commissionRules;
-  if (rules && rulesHaveSlabs(rules)) {
-    const vetted: unknown[] = [];
+  let vetted: CommissionRule | undefined;
+  if (rules && (rulesHaveSlabs(rules) || rulesHaveProducts(rules))) {
+    const parsedRules: unknown[] = [];
     for (const [i, rule] of rules.entries()) {
-      if (!rulesHaveSlabs([rule])) {
-        vetted.push(rule);
+      if (!ruleHasSlabs(rule) && !ruleHasProducts(rule)) {
+        parsedRules.push(rule);
         continue;
       }
       const parsed = approvalSnapshotSlabRuleSchema.safeParse(rule);
       if (!parsed.success) {
-        return { store: false, reason: `rule ${i}: ${parsed.error.issues[0]?.message ?? 'invalid slab table'}` };
+        return { store: false, reason: `rule ${i}: ${parsed.error.issues[0]?.message ?? 'invalid slab table or product list'}` };
       }
-      vetted.push(parsed.data);
+      parsedRules.push(parsed.data);
     }
-    return { store: true, commissionRules: vetted as CommissionRule };
+    vetted = parsedRules as CommissionRule;
   }
-  if (programIds.length === 0) return { store: true };
-  const programs = (await db(TABLES.Program).whereIn('id', programIds).select('id', 'commissionRule')) as Array<{
-    id: string;
-    commissionRule: unknown;
-  }>;
-  for (const program of programs) {
-    if (!rulesHaveSlabs(program.commissionRule)) continue;
-    if (isSlablessCopy(snapshot, program.commissionRule as Array<Record<string, unknown>>)) {
-      return { store: false, reason: `it is program ${program.id}'s rule with its slabs stripped` };
+  if (programIds.length > 0) {
+    const programs = (await db(TABLES.Program).whereIn('id', programIds).select('id', 'commissionRule')) as Array<{
+      id: string;
+      commissionRule: unknown;
+    }>;
+    for (const program of programs) {
+      if (!rulesHaveSlabs(program.commissionRule) && !rulesHaveProducts(program.commissionRule)) continue;
+      if (isStrippedCopy(snapshot, program.commissionRule as Array<Record<string, unknown>>)) {
+        return { store: false, reason: `it is program ${program.id}'s rule with its slabs or products stripped` };
+      }
     }
   }
-  return { store: true };
+  return vetted ? { store: true, commissionRules: vetted } : { store: true };
 }
 
 /** The sub-rule fields the Network's offering schema keeps. */
@@ -357,13 +387,22 @@ function networkView(rule: Record<string, unknown>): string {
   return JSON.stringify(NETWORK_RULE_KEYS.map((k) => (k === 'recurring' ? rule[k] === true : (rule[k] ?? null))));
 }
 
-function isSlablessCopy(
+/** The snapshot is the live rule as a Network that drops slabs or product
+ *  lists would send it back: the same rules on every field it keeps, and
+ *  some rule that has a slab table or product list live has none. */
+function isStrippedCopy(
   snapshot: { commissionRules?: unknown[]; commissionType?: string; commissionValue?: number; recurring?: boolean },
   live: Array<Record<string, unknown>>,
 ): boolean {
   const rules = snapshot.commissionRules as Array<Record<string, unknown>> | undefined;
   if (rules && rules.length > 0) {
-    return rules.length === live.length && rules.every((r, i) => networkView(r) === networkView(live[i]!));
+    return (
+      rules.length === live.length &&
+      rules.every((r, i) => networkView(r) === networkView(live[i]!)) &&
+      rules.some(
+        (r, i) => (ruleHasSlabs(live[i]) && !ruleHasSlabs(r)) || (ruleHasProducts(live[i]) && !ruleHasProducts(r)),
+      )
+    );
   }
   // A legacy single-rule snapshot (an older Network) carries only the
   // mirror buildTermsPayload sends: the first every-event rule's base.

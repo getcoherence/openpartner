@@ -40,6 +40,13 @@ import { getMode } from '../stripe.js';
 import { fromStripeMinor, majorToCents, stripeMinorToCents } from '../stripe-amounts.js';
 import { getTenancyMode } from '../tenancy.js';
 import { recordTestLink } from '../test-clicks.js';
+import {
+  checkoutLine,
+  invoiceLine,
+  productFields,
+  subscriptionLine,
+  type ProductFields,
+} from '../product-commissions.js';
 import { looksLikeClickId, noteTrackingIssue } from '../tracking-issues.js';
 import {
   announceRefund,
@@ -398,6 +405,7 @@ async function recordMappedEvent(
       ? mapped.metadata.stripeInvoiceId
       : null;
   const externalEventId = mapped.externalEventId ?? invoiceKey ?? event.id;
+  const products = await stripeProducts(trx, tenantId, source, event, mapped, externalEventId);
   const inserted = await trx<EventRow>(TABLES.Event)
     .insert({
       id: eventId,
@@ -413,6 +421,7 @@ async function recordMappedEvent(
         stripeType: event.type,
         ...(source.eventMetadata ?? {}),
         ...(mapped.metadata ?? {}),
+        ...products,
       },
       ts: new Date(event.created * 1000),
     })
@@ -449,6 +458,74 @@ async function recordMappedEvent(
 
   const attribution = await attributeEvent(trx, inserted[0] as EventRow);
   return { eventId, attribution };
+}
+
+/** Most lines read from Stripe for one sale's products. */
+const MAX_STRIPE_PRODUCT_LINES = 1000;
+
+/**
+ * What a sale was for (docs/product-commissions.md): its products, read
+ * from the Stripe object's line items, for commission rules limited to
+ * products. Raw data, so it's written with the Event and never after.
+ *
+ *   invoice.paid                     the invoice's lines, from the payload;
+ *                                    Stripe sends ten, so an invoice with
+ *                                    more is read in full
+ *   customer.subscription.created    the subscription's items, from the
+ *                                    payload
+ *   one-time Checkout revenue        the session's line items, read from
+ *                                    Stripe (webhooks don't carry them)
+ *
+ * A read happens only for an Event not yet recorded. One that fails for
+ * good (permissions, deleted) leaves the list marked incomplete; a
+ * transient failure throws, so Stripe redelivers the event.
+ */
+async function stripeProducts(
+  trx: Knex.Transaction,
+  tenantId: string,
+  source: BrandStripeSource,
+  event: Stripe.Event,
+  mapped: MappedEvent,
+  externalEventId: string,
+): Promise<ProductFields> {
+  const recorded = async () =>
+    Boolean(await trx<EventRow>(TABLES.Event).where({ tenantId, externalEventId }).first('id'));
+
+  if (mapped.type === 'invoice_paid' && event.type === 'invoice.paid') {
+    const invoice = event.data.object as Stripe.Invoice;
+    const lines: unknown[] = invoice.lines?.data ?? [];
+    if (!invoice.lines?.has_more || !invoice.id) return productFields(lines.map(invoiceLine), invoice.currency);
+    if (await recorded()) return {};
+    const invoiceId = invoice.id;
+    const all = await stripeReadOrNull('invoices.listLineItems', invoiceId, () =>
+      source.stripe.invoices.listLineItems(invoiceId, { limit: 100 }).autoPagingToArray({ limit: MAX_STRIPE_PRODUCT_LINES }),
+    );
+    const complete = all !== null && all.length < MAX_STRIPE_PRODUCT_LINES;
+    return productFields((all ?? lines).map(invoiceLine), invoice.currency, complete);
+  }
+
+  if (mapped.type === 'subscription_created' && event.type === 'customer.subscription.created') {
+    const sub = event.data.object as Stripe.Subscription;
+    const items: unknown[] = sub.items?.data ?? [];
+    return productFields(items.map(subscriptionLine), sub.currency, !sub.items?.has_more);
+  }
+
+  const sessionId = mapped.metadata?.stripeCheckoutSessionId;
+  if (mapped.type === 'invoice_paid' && typeof sessionId === 'string') {
+    if (await recorded()) return {};
+    const session = event.data.object as Stripe.Checkout.Session;
+    const items = await stripeReadOrNull('checkout.sessions.listLineItems', sessionId, () =>
+      source.stripe.checkout.sessions
+        // taxes are expandable only: without them an inclusive tax stays in
+        // the line's amount (checkoutLine).
+        .listLineItems(sessionId, { limit: 100, expand: ['data.taxes'] })
+        .autoPagingToArray({ limit: MAX_STRIPE_PRODUCT_LINES }),
+    );
+    if (items === null) return { productsIncomplete: true };
+    return productFields(items.map(checkoutLine), session.currency, items.length < MAX_STRIPE_PRODUCT_LINES);
+  }
+
+  return {};
 }
 
 /**

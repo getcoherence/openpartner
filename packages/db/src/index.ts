@@ -16,6 +16,19 @@ export * from './types.js';
 export { sslFromConnectionString } from './ssl.js';
 export { renderCommissionSummary } from './commission-summary.js';
 export {
+  MAX_EVENT_PRODUCTS,
+  MAX_RULE_PRODUCTS,
+  PRODUCT_TEXT_MAX,
+  eventProducts,
+  eventProductsIncomplete,
+  formatProductList,
+  matchingProducts,
+  productShare,
+  readProductRefs,
+  ruleProductIds,
+} from './event-products.js';
+export type { CommissionProductRef, EventProduct } from './event-products.js';
+export {
   bountyMetricIsMoney,
   formatBountyAmount,
   formatBountyValue,
