@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { FileJson, FileSpreadsheet, Archive, Upload, Database } from 'lucide-react';
-import { getApiKey } from '../api.js';
+import { api, apiDownload } from '../api.js';
 import { theme } from '../theme.js';
-import { Button, Card, Page, SectionHeading } from '../ui.js';
+import { Button, Card, ErrorBanner, Page, SectionHeading } from '../ui.js';
 
 // Mirrors EXPORT_TABLES in apps/api/src/export.ts, in the same FK-safe
 // order. Keep the two in sync — a table missing here is a table nobody
@@ -34,27 +34,22 @@ const TABLES = [
   'Config',
 ];
 
-export function AdminExport() {
-  const key = getApiKey() ?? '';
+const BUNDLE = 'bundle';
 
-  function download(path: string) {
-    fetch(`/api${path}`, { headers: { Authorization: `Bearer ${key}` } })
-      .then((res) => res.blob())
-      .then((blob) => {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = path.split('/').pop() ?? 'export';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-      });
+export function AdminExport() {
+  // A failed download shows by the button that asked for it: the bundle's
+  // card or the table's row. The table list runs well past one screen.
+  const [failed, setFailed] = useState<{ source: string; error: unknown } | null>(null);
+
+  function download(path: string, source: string) {
+    setFailed(null);
+    apiDownload(path, path.split('/').pop() ?? 'export').catch((error: unknown) => setFailed({ source, error }));
   }
 
   return (
     <Page title="Export / import" subtitle="Your data stays yours. Download your partners, programs, attribution and ledger any time.">
       <Card>
+        {failed?.source === BUNDLE && <ErrorBanner error={failed.error} />}
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
           <Archive size={22} style={{ color: theme.accentText }} />
           <div style={{ flex: 1 }}>
@@ -70,10 +65,10 @@ export function AdminExport() {
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <Button icon={<FileJson size={14} />} onClick={() => download('/export.json')}>
+            <Button icon={<FileJson size={14} />} onClick={() => download('/export.json', BUNDLE)}>
               JSON
             </Button>
-            <Button variant="secondary" icon={<Database size={14} />} onClick={() => download('/export.sql')}>
+            <Button variant="secondary" icon={<Database size={14} />} onClick={() => download('/export.sql', BUNDLE)}>
               SQL
             </Button>
           </div>
@@ -108,33 +103,42 @@ export function AdminExport() {
               </tr>
             </thead>
             <tbody>
-              {TABLES.map((t, i) => (
-                <tr
-                  key={t}
-                  style={{
-                    borderBottom: i < TABLES.length - 1 ? `1px solid ${theme.borderSubtle}` : 'none',
-                  }}
-                >
-                  <td style={{ padding: '12px 18px' }}>
-                    <code style={{ color: theme.text }}>{t}</code>
-                  </td>
-                  <td style={{ padding: '8px 18px' }}>
-                    <Button size="sm" variant="ghost" icon={<FileJson size={14} />} onClick={() => download(`/export/${t}.json`)}>
-                      JSON
-                    </Button>
-                  </td>
-                  <td style={{ padding: '8px 18px' }}>
-                    <Button size="sm" variant="ghost" icon={<FileSpreadsheet size={14} />} onClick={() => download(`/export/${t}.csv`)}>
-                      CSV
-                    </Button>
-                  </td>
-                  <td style={{ padding: '8px 18px' }}>
-                    <Button size="sm" variant="ghost" icon={<Database size={14} />} onClick={() => download(`/export/${t}.sql`)}>
-                      SQL
-                    </Button>
-                  </td>
-                </tr>
-              ))}
+              {TABLES.map((t, i) => {
+                const border = i < TABLES.length - 1 ? `1px solid ${theme.borderSubtle}` : 'none';
+                const rowFailed = failed?.source === t ? failed : null;
+                return (
+                  <Fragment key={t}>
+                    {/* A failed row's border moves below its error, keeping the two together. */}
+                    <tr style={{ borderBottom: rowFailed ? 'none' : border }}>
+                      <td style={{ padding: '12px 18px' }}>
+                        <code style={{ color: theme.text }}>{t}</code>
+                      </td>
+                      <td style={{ padding: '8px 18px' }}>
+                        <Button size="sm" variant="ghost" icon={<FileJson size={14} />} onClick={() => download(`/export/${t}.json`, t)}>
+                          JSON
+                        </Button>
+                      </td>
+                      <td style={{ padding: '8px 18px' }}>
+                        <Button size="sm" variant="ghost" icon={<FileSpreadsheet size={14} />} onClick={() => download(`/export/${t}.csv`, t)}>
+                          CSV
+                        </Button>
+                      </td>
+                      <td style={{ padding: '8px 18px' }}>
+                        <Button size="sm" variant="ghost" icon={<Database size={14} />} onClick={() => download(`/export/${t}.sql`, t)}>
+                          SQL
+                        </Button>
+                      </td>
+                    </tr>
+                    {rowFailed && (
+                      <tr style={{ borderBottom: border }}>
+                        <td colSpan={4} style={{ padding: '0 18px' }}>
+                          <ErrorBanner error={rowFailed.error} />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -160,7 +164,6 @@ interface ImportResult {
 }
 
 function PartnersCsvImporter() {
-  const key = getApiKey() ?? '';
   const [csv, setCsv] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
@@ -170,18 +173,15 @@ function PartnersCsvImporter() {
     setError(null);
     setBusy(true);
     try {
-      const res = await fetch(`/api/import/partners-csv?dryRun=${dryRun}`, {
+      const json = await api<ImportResult>(`/import/partners-csv?dryRun=${dryRun}`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'text/csv' },
+        headers: { 'Content-Type': 'text/csv' },
         body: csv,
       });
-      const json = await res.json();
-      if (!res.ok) {
-        setError(typeof json.detail === 'string' ? json.detail : json.error ?? 'failed');
-        setResult(null);
-      } else {
-        setResult(json as ImportResult);
-      }
+      setResult(json);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed');
+      setResult(null);
     } finally {
       setBusy(false);
     }
