@@ -21,6 +21,19 @@ import { creatorErrorCode, usePayments } from './CreatorPayments.js';
 import { PACKAGE_CURRENCIES, type OwnPackage } from './storefront-shared.js';
 import { useConversationLive, type LiveTicket } from './conversation-live.js';
 import {
+  draftStatusText,
+  hasDraftStep,
+  ScheduleChange,
+  scheduleBody,
+  scheduleDraftFrom,
+  scheduleDraftProblem,
+  ScheduleInputs,
+  ScheduleLine,
+  ShareDraft,
+  type BookingSchedule,
+  type ScheduleDraft,
+} from './booking-schedule.js';
+import {
   BookingStatusPill,
   Composer,
   ConversationListPane,
@@ -66,7 +79,16 @@ export interface CreatorBooking {
   conversationId: string | null;
   proposedBy: 'vendor' | 'creator';
   packageId: string | null;
-  package: { title: string; platform: string | null; priceAmount: number | null; priceIsFrom: boolean; currency: string } | null;
+  package: {
+    title: string;
+    platform: string | null;
+    priceAmount: number | null;
+    priceIsFrom: boolean;
+    currency: string;
+    /** The package's date defaults when it was booked; older bookings have none. */
+    turnaroundDays?: number | null;
+    revisionRounds?: number | null;
+  } | null;
   contactName: string;
   company: string | null;
   website: string | null;
@@ -93,6 +115,9 @@ export interface CreatorBooking {
    *  (the Network's docs/campaign-reports.md). Older Networks leave these out. */
   trackedUrl?: string | null;
   hasReport?: boolean;
+  /** Delivery dates (the Network's docs/creator-storefront.md §9). Older
+   *  Networks leave it out. */
+  schedule?: BookingSchedule;
 }
 
 /** "Use this link in your post": the booking's own link, so its report
@@ -150,6 +175,12 @@ const ERRORS: Record<string, string> = {
   partnership_ended: 'Your earlier partnership with this brand on that program ended, so this request can’t make you their partner again. Ask the brand to re-invite you.',
   partner_revoked: 'This brand has ended your partnership with it, so this tracked request can’t go ahead. Ask the brand about it in the conversation.',
   partner_exists_on_brand: 'You’re already this brand’s partner, and its OpenPartner can’t add this program to that yet. Ask the brand to update OpenPartner, or to send the request untracked.',
+  invalid_schedule: 'Those dates can’t be used. Pick dates from today, with the draft before go-live.',
+  schedule_passed: 'A date has passed meanwhile. Propose new dates.',
+  schedule_unchanged: 'Those are the dates already agreed.',
+  proposal_changed: 'Those dates changed meanwhile. Have another look.',
+  not_schedulable: 'The dates can’t change now.',
+  draft_approved: 'The draft is already approved.',
 };
 
 function errText(err: unknown): unknown {
@@ -427,12 +458,22 @@ function CreatorBookingCard({
   const [currency, setCurrency] = useState(b.currency ?? b.package?.currency ?? 'USD');
   const [note, setNote] = useState('');
   const [urls, setUrls] = useState('');
+  // The dates you agree when accepting: the brand's, else the package's.
+  const [sched, setSched] = useState<ScheduleDraft>(() => scheduleDraftFrom(b.schedule, b.package));
+  const dates = useMutation({
+    mutationFn: (v: { path: string; method?: 'POST' | 'DELETE'; body?: unknown }) =>
+      creatorApi(`/creators/me/bookings/${encodeURIComponent(b.id)}/${v.path}`, { method: v.method ?? 'POST', body: v.body ?? {} }),
+    onSuccess: onChanged,
+  });
   const act = useMutation({
     mutationFn: (v: { action: 'accept' | 'decline' | 'withdraw' | 'deliver' | 'refund'; body?: unknown }) =>
       creatorApi(`/creators/me/bookings/${encodeURIComponent(b.id)}/${v.action}`, { method: 'POST', body: v.body ?? {} }),
     onSuccess: onChanged,
   });
   const amountOk = /^\d{1,8}$/.test(amount.trim()) && Number(amount) >= 1;
+  // A Network from before dates sends no schedule, and takes none.
+  const datesProblem = b.schedule ? scheduleDraftProblem(sched, { requireGoLive: true }) : null;
+  const s = b.schedule;
   const urlList = urls
     .split(/\s+/)
     .map((u) => u.trim())
@@ -444,7 +485,7 @@ function CreatorBookingCard({
 
   return (
     <div style={{ border: `1px solid ${theme.border}`, borderRadius: theme.radiusSm, padding: 14, background: theme.surface }}>
-      <ErrorBanner error={act.error ? errText(act.error) : null} />
+      <ErrorBanner error={act.error ?? dates.error ? errText(act.error ?? dates.error) : null} />
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap' }}>
         <div style={{ flex: 1, minWidth: 200 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -470,6 +511,26 @@ function CreatorBookingCard({
       </div>
       <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 10, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{b.brief}</div>
       {b.budgetNote && <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 6 }}>Budget: {b.budgetNote}</div>}
+      {b.status !== 'pending' && <ScheduleLine schedule={s} />}
+      {s && (b.status === 'awaiting_payment' || b.status === 'paid') && (
+        <ScheduleChange
+          schedule={s}
+          side="creator"
+          otherName={brandName}
+          pending={dates.isPending}
+          onPropose={(d) => dates.mutate({ path: 'schedule', body: d })}
+          onAnswer={(accept) => dates.mutate({ path: `schedule/${accept ? 'accept' : 'decline'}` })}
+          onWithdraw={() => dates.mutate({ path: 'schedule', method: 'DELETE' })}
+        />
+      )}
+      {b.status === 'paid' && hasDraftStep(s) && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 13, color: theme.textMuted }}>{draftStatusText(s, 'creator', brandName)}</div>
+          {s.draftState !== 'approved' && s.draftState !== 'shared' && (
+            <ShareDraft pending={dates.isPending} again={s.draftState === 'changes_requested'} onShare={(body) => dates.mutate({ path: 'draft', body: { body } })} />
+          )}
+        </div>
+      )}
 
       {b.status === 'pending' && (
         <div style={{ marginTop: 12 }}>
@@ -487,6 +548,12 @@ function CreatorBookingCard({
               </Select>
             </div>
           </div>
+          {s && (
+            <div style={{ marginTop: 10 }}>
+              <ScheduleInputs value={sched} onChange={setSched} />
+              {datesProblem && sched.goLiveBy && <div style={{ fontSize: 12, color: theme.danger, marginTop: 4 }}>{datesProblem}</div>}
+            </div>
+          )}
           <div style={{ marginTop: 10 }}>
             <Label>Note (optional)</Label>
             <Textarea value={note} rows={2} maxLength={1000} onChange={(e) => setNote(e.target.value)} placeholder="Timing, what you’ll need from them…" />
@@ -503,8 +570,13 @@ function CreatorBookingCard({
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
             <Button
-              disabled={!canAccept || !amountOk || act.isPending}
-              onClick={() => act.mutate({ action: 'accept', body: { amount: Number(amount), currency, ...(note.trim() ? { message: note.trim() } : {}) } })}
+              disabled={!canAccept || !amountOk || !!datesProblem || act.isPending}
+              onClick={() =>
+                act.mutate({
+                  action: 'accept',
+                  body: { amount: Number(amount), currency, ...(s ? scheduleBody(sched) : {}), ...(note.trim() ? { message: note.trim() } : {}) },
+                })
+              }
             >
               {amountOk ? `Accept at ${formatWholeAmount(Number(amount), currency)}` : 'Accept'}
             </Button>
@@ -609,6 +681,7 @@ function OfferDialog({
   const [description, setDescription] = useState('');
   const [amount, setAmount] = useState('');
   const [currency, setCurrency] = useState(defaultCurrency);
+  const [sched, setSched] = useState<ScheduleDraft>(() => scheduleDraftFrom(null));
   const offer = useMutation({
     mutationFn: () =>
       creatorApi(`/creators/me/conversations/${encodeURIComponent(conversationId)}/offers`, {
@@ -618,13 +691,15 @@ function OfferDialog({
           description: description.trim(),
           amount: Number(amount),
           currency,
+          ...scheduleBody(sched),
         },
       }),
     onSuccess: onClose,
   });
   const packages = storefront.data?.packages ?? [];
   const amountOk = /^\d{1,8}$/.test(amount.trim()) && Number(amount) >= 1;
-  const ok = amountOk && description.trim().length > 0 && (packageId || title.trim().length > 0);
+  const datesProblem = scheduleDraftProblem(sched, { requireGoLive: true });
+  const ok = amountOk && !datesProblem && description.trim().length > 0 && (packageId || title.trim().length > 0);
   const currencies = (PACKAGE_CURRENCIES as readonly string[]).includes(currency) ? PACKAGE_CURRENCIES : [currency, ...PACKAGE_CURRENCIES];
 
   return (
@@ -652,6 +727,7 @@ function OfferDialog({
               if (p) {
                 setCurrency(p.currency);
                 if (p.priceAmount != null) setAmount(String(p.priceAmount));
+                setSched(scheduleDraftFrom(null, p));
               }
             }}
           >
@@ -670,6 +746,10 @@ function OfferDialog({
         <div style={{ marginBottom: 12 }}>
           <Label>Details</Label>
           <Textarea value={description} rows={4} maxLength={2000} onChange={(e) => setDescription(e.target.value)} placeholder="What’s included, timing, usage rights…" />
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <ScheduleInputs value={sched} onChange={setSched} />
+          {datesProblem && sched.goLiveBy && <div style={{ fontSize: 12, color: theme.danger, marginTop: 4 }}>{datesProblem}</div>}
         </div>
         <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10, marginBottom: 16 }}>
           <div>

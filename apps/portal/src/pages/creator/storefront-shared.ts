@@ -14,6 +14,19 @@ export interface StorefrontPackage {
   priceAmount: number | null;
   priceIsFrom: boolean;
   currency: string;
+  /** "Live within N days", and the revision rounds included (the Network's
+   *  docs/creator-storefront.md §9). Older Networks leave them out. */
+  turnaroundDays?: number | null;
+  revisionRounds?: number | null;
+}
+
+/** "Live within 14 days · 2 revision rounds"; null when the package names
+ *  neither. */
+export function packageTermsText(p: Pick<StorefrontPackage, 'turnaroundDays' | 'revisionRounds'>): string | null {
+  const parts: string[] = [];
+  if (p.turnaroundDays) parts.push(p.turnaroundDays === 1 ? 'Live within 1 day' : `Live within ${p.turnaroundDays} days`);
+  if (p.revisionRounds != null) parts.push(p.revisionRounds === 1 ? '1 revision round' : `${p.revisionRounds} revision rounds`);
+  return parts.length ? parts.join(' · ') : null;
 }
 
 /** The creator's own view adds draft state + order. */

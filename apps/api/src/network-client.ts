@@ -775,6 +775,18 @@ export const networkProxy = {
     action: 'cancel' | 'approve' | 'recheck' | 'checkout' | 'sync' | 'track',
     body?: unknown,
   ) => callNetwork<{ booking?: unknown; url?: string }>(db, tenantId, 'POST', `/vendors/me/bookings/${encodeURIComponent(id)}/${action}`, body ?? {}),
+  /** A booking's delivery dates and its draft (the Network's
+   *  docs/creator-storefront.md §9): propose new dates, answer or withdraw a
+   *  proposal, approve the draft or ask for changes. */
+  bookingSchedule: (
+    db: Knex,
+    tenantId: string,
+    id: string,
+    action: 'schedule' | 'schedule/accept' | 'schedule/decline' | 'draft/approve' | 'draft/changes',
+    body: unknown,
+  ) => callNetwork<{ booking: unknown }>(db, tenantId, 'POST', `/vendors/me/bookings/${encodeURIComponent(id)}/${action}`, body),
+  withdrawBookingSchedule: (db: Knex, tenantId: string, id: string) =>
+    callNetwork<{ booking: unknown }>(db, tenantId, 'DELETE', `/vendors/me/bookings/${encodeURIComponent(id)}/schedule`),
   /** Continue a public storefront request as this brand (§8.4). */
   claimBooking: (db: Knex, tenantId: string, body: unknown) =>
     callNetwork<{ booking: unknown; conversationId: string }>(db, tenantId, 'POST', '/vendors/me/bookings/claim', body),

@@ -132,6 +132,8 @@ beforeAll(async () => {
         if (path === '/vendors/me/conversations/cnv_1/attachments/cna_gone') return json(410, { error: 'attachment_removed' });
         if (/^\/vendors\/me\/bookings\/[^/]+\/checkout$/.test(path)) return json(200, { url: 'https://checkout.stripe.test/cs_1' });
         if (path === '/vendors/me/bookings' && req.method === 'POST') return json(201, { booking: { id: 'bkr_2' }, conversationId: 'cnv_new' });
+        // Delivery dates and the draft (the Network's docs/creator-storefront.md §9).
+        if (/^\/vendors\/me\/bookings\/[^/]+\/(schedule(\/accept|\/decline)?|draft\/(approve|changes))$/.test(path)) return json(200, { booking: { id: 'bkr_1' } });
         json(404, { error: 'not_found' });
       });
     }).listen(0, '127.0.0.1', () => {
@@ -422,6 +424,36 @@ describe.skipIf(skipIntegration)('brand proxies', () => {
     const gone = await request(app).get(`/t/${b.slug}/admin/network/conversations/cnv_1/attachments/cna_gone`).set('Cookie', b.cookie);
     expect(gone.status).toBe(410);
     expect((await request(app).get(`/t/${b.slug}/admin/network/conversations/cnv_1/attachments/cna_png`)).status).toBe(401);
+  });
+
+  it('passes delivery dates and draft answers through, under the signed-in admin', async () => {
+    const b = await brand();
+    const book = await request(app)
+      .post(`/t/${b.slug}/admin/network/bookings`)
+      .set('Cookie', b.cookie)
+      .send({ creatorId: 'crt_ada', brief: 'A deep-dive post, please, in December.', goLiveBy: '2026-12-01', draftDueBy: '2026-11-24', revisionRounds: 2 });
+    expect(book.status).toBe(201);
+    expect(last('/vendors/me/bookings')!.body).toMatchObject({ goLiveBy: '2026-12-01', draftDueBy: '2026-11-24', revisionRounds: 2 });
+
+    const actor = { authorName: 'Owen Owner', authorEmail: b.email };
+    const propose = await request(app)
+      .post(`/t/${b.slug}/admin/network/bookings/bkr_1/schedule`)
+      .set('Cookie', b.cookie)
+      .send({ goLiveBy: '2026-12-08', draftDueBy: null, authorName: 'Someone else', extra: 'x' });
+    expect(propose.status).toBe(200);
+    expect(last('/vendors/me/bookings/bkr_1/schedule')!.body).toEqual({ goLiveBy: '2026-12-08', draftDueBy: null, ...actor });
+
+    for (const answer of ['accept', 'decline']) {
+      expect((await request(app).post(`/t/${b.slug}/admin/network/bookings/bkr_1/schedule/${answer}`).set('Cookie', b.cookie).send({})).status).toBe(200);
+      expect(last(`/vendors/me/bookings/bkr_1/schedule/${answer}`)!.body).toEqual(actor);
+    }
+    expect((await request(app).delete(`/t/${b.slug}/admin/network/bookings/bkr_1/schedule`).set('Cookie', b.cookie)).status).toBe(200);
+    expect(calls.filter((c) => c.path === '/vendors/me/bookings/bkr_1/schedule').map((c) => c.method)).toEqual(['POST', 'DELETE']);
+
+    await request(app).post(`/t/${b.slug}/admin/network/bookings/bkr_1/draft/approve`).set('Cookie', b.cookie).send({});
+    expect(last('/vendors/me/bookings/bkr_1/draft/approve')!.body).toEqual(actor);
+    await request(app).post(`/t/${b.slug}/admin/network/bookings/bkr_1/draft/changes`).set('Cookie', b.cookie).send({ body: 'Shorter intro, please.' });
+    expect(last('/vendors/me/bookings/bkr_1/draft/changes')!.body).toEqual({ body: 'Shorter intro, please.', ...actor });
   });
 
   it('an API key acts with no person behind it', async () => {

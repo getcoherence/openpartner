@@ -21,6 +21,7 @@ import { ConfirmAction } from '../../lib/ConfirmAction.js';
 import { creatorApi } from './creator-api.js';
 import { BookingStatusPill, formatMinor, formatWholeAmount, type BookingStatus } from './conversation-shared.js';
 import type { CreatorBooking } from './CreatorMessages.js';
+import { formatDay, OverduePill } from './booking-schedule.js';
 
 const FILTERS: Array<{ key: BookingStatus | 'all'; label: string }> = [
   { key: 'pending', label: 'To answer' },
@@ -83,10 +84,12 @@ export function CreatorBookingsPage() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <span style={{ fontSize: 14, fontWeight: 500 }}>{b.package?.title ?? 'Custom collaboration'}</span>
                   <BookingStatusPill status={b.status} />
+                  <OverduePill schedule={b.schedule} />
                 </div>
                 <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 2 }}>
                   {b.contactName}
                   {b.company ? ` · ${b.company}` : ''} · {formatDate(b.createdAt)}
+                  {b.schedule?.goLiveBy && ['awaiting_payment', 'paid'].includes(b.status) && <> · goes live by {formatDay(b.schedule.goLiveBy)}</>}
                 </div>
                 {!b.conversationId && b.status === 'pending' && (
                   <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
