@@ -19,6 +19,8 @@ import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { ulid } from 'ulid';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { InMemoryTransport } from '@modelcontextprotocol/server';
+import knex from 'knex';
 import { TABLES } from '@openpartner/db';
 
 const ADMIN_KEY = 'op_test_admin_key_mcp_0123456789abcdef0123';
@@ -31,6 +33,7 @@ const { db } = await import('../db.js');
 const { createApp } = await import('../app.js');
 const { createApiKeyRow } = await import('../auth.js');
 const { createSession } = await import('../auth-sessions.js');
+const { buildMcpServer } = await import('../mcp/server.js');
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 const app = createApp({ enableLogger: false });
@@ -627,5 +630,69 @@ describe.skipIf(skipIntegration)('MCP tools', () => {
     expect(none.isError).toBe(true);
     const other = await client.callTool({ name: 'recent_conversions', arguments: { partnerId: s.partnerB } });
     expect(JSON.stringify(other.content)).toContain('partner_not_found');
+  });
+});
+
+describe.skipIf(skipIntegration)('MCP hardening', () => {
+  const bearer = () => ({ Authorization: `Bearer ${s.keyA}` });
+
+  it('refuses subscriptions/listen at once instead of holding a stream open', async () => {
+    const started = Date.now();
+    const res = await legacyPost(
+      A.slug,
+      { jsonrpc: '2.0', id: 7, method: 'subscriptions/listen', params: { notifications: { toolsListChanged: true } } },
+      bearer(),
+    );
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ jsonrpc: '2.0', id: 7, error: { code: -32601 } });
+    // Answered by the route itself, before any SDK era routing.
+    expect(res.body.error.message).toContain('this server is stateless');
+  });
+
+  it('answers impossible cursor dates as invalid_cursor, not a database error', async () => {
+    const client = await connect(bearer());
+    for (const ts of ['2026-99-99T00:00:00Z', '2026-02-31T00:00:00Z']) {
+      const cursor = Buffer.from(`${ts}|x`).toString('base64url');
+      for (const tool of ['list_partners', 'list_links']) {
+        const res = await client.callTool({ name: tool, arguments: { cursor } });
+        expect([tool, ts, res.isError]).toEqual([tool, ts, true]);
+        expect(JSON.stringify(res.content)).toContain('invalid_cursor');
+      }
+    }
+    await client.close();
+  });
+
+  it('caps recent_conversions offset', async () => {
+    const client = await connect(bearer());
+    const res = await client.callTool({ name: 'recent_conversions', arguments: { partnerId: s.ana, offset: 10_001 } });
+    expect(res.isError).toBe(true);
+    await client.close();
+  });
+
+  it('replaces a thrown error with a generic one, and reports it', async () => {
+    const broken = knex({ client: 'pg', connection: 'postgres://nobody:nothing@127.0.0.1:1/none', acquireConnectionTimeout: 500 });
+    const failures: string[] = [];
+    const server = buildMcpServer({
+      db: broken,
+      tenantId: A.id,
+      linkTenant: { slug: A.slug },
+      requestId: 'req-123',
+      onToolError: (tool) => failures.push(tool),
+    });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverSide);
+    const client = new Client({ name: 'openpartner-test', version: '1.0.0' });
+    await client.connect(clientSide);
+    const res = await client.callTool({ name: 'list_programs', arguments: {} });
+    const text = JSON.stringify(res.content);
+    expect(res.isError).toBe(true);
+    expect(text).toContain('internal_error');
+    expect(text).toContain('req-123');
+    expect(text).not.toMatch(/ECONNREFUSED|Timeout|select|knex/i);
+    expect(failures).toEqual(['list_programs']);
+    await client.close();
+    await server.close();
+    await broken.destroy();
   });
 });

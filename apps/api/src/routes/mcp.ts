@@ -26,24 +26,81 @@ import { buildMcpServer } from '../mcp/server.js';
 
 export const mcpRouter = Router();
 
+/** The longest one exchange may take. Every reply here is one short body;
+ *  this only stops a stuck one from holding the tenant transaction. */
+const EXCHANGE_TIMEOUT_MS = 60_000;
+
+/** JSON-RPC methods this server refuses before the SDK sees them.
+ *  subscriptions/listen opens a stream that stays open for as long as the
+ *  client keeps it (the SDK serves it over SSE whatever the response
+ *  mode), and each would hold a tenant transaction and its database
+ *  connection. This server sends no notifications, so there is nothing to
+ *  listen for. */
+const REFUSED_METHODS = new Set(['subscriptions/listen']);
+
+function refusedMessage(body: unknown): { id: unknown; method: string } | null {
+  for (const m of Array.isArray(body) ? body : [body]) {
+    if (m && typeof m === 'object' && REFUSED_METHODS.has((m as { method?: unknown }).method as string)) {
+      return { id: (m as { id?: unknown }).id ?? null, method: (m as { method: string }).method };
+    }
+  }
+  return null;
+}
+
 mcpRouter.post('/mcp', requireAuth, grantScope('reports:read'), requireAdmin, async (req, res) => {
+  const refused = refusedMessage(req.body);
+  if (refused) {
+    return res.json({
+      jsonrpc: '2.0',
+      id: refused.id,
+      error: { code: -32601, message: `${refused.method} is not supported: this server is stateless and sends no notifications` },
+    });
+  }
+
   const { db, tenantId } = tenantOf(req);
   const linkTenant = linkTenantOf(req);
-  const handler = createMcpHandler(() => buildMcpServer({ db, tenantId, linkTenant }), {
-    responseMode: 'json',
-    onerror: (err) => req.log?.warn({ err }, 'mcp_request_error'),
-  });
+  const requestId = (req as { id?: string }).id ?? null;
+  const handler = createMcpHandler(
+    () =>
+      buildMcpServer({
+        db,
+        tenantId,
+        linkTenant,
+        onToolError: (tool, err) => req.log?.error({ err, tool, requestId }, 'mcp_tool_failed'),
+        requestId,
+      }),
+    { responseMode: 'json', onerror: (err) => req.log?.warn({ err }, 'mcp_request_error') },
+  );
+  // Abort the exchange when the client goes away or it runs too long, so a
+  // body that never ends can't keep this handler (and its transaction) alive.
+  const abort = new AbortController();
+  const onClose = () => abort.abort();
+  res.on('close', onClose);
+  const timer = setTimeout(() => abort.abort(), EXCHANGE_TIMEOUT_MS);
   try {
-    const response = await handler.fetch(await toWebRequest(req, req.body));
+    const response = await handler.fetch(await toWebRequest(req, req.body, { signal: abort.signal }));
     // Buffered rather than piped: the tenant transaction commits on
     // res.send (tenancy.ts), and a stateless exchange is one short body.
-    const body = await response.text();
+    let body: string;
+    try {
+      body = await response.text();
+    } catch (err) {
+      if (!abort.signal.aborted) throw err;
+      if (!res.headersSent && !res.writableEnded) res.status(504).json({ error: 'mcp_timeout' });
+      return;
+    }
+    if (abort.signal.aborted) {
+      if (!res.headersSent && !res.writableEnded) res.status(504).json({ error: 'mcp_timeout' });
+      return;
+    }
     res.status(response.status);
     response.headers.forEach((value, name) => {
       if (name !== 'content-length' && name !== 'transfer-encoding') res.setHeader(name, value);
     });
     res.send(body);
   } finally {
+    clearTimeout(timer);
+    res.off('close', onClose);
     await handler.close();
   }
 });

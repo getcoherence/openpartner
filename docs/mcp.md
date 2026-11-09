@@ -20,8 +20,10 @@ The MCP server is at `/mcp` on the brand's API base, the same base as the REST A
 | Self-hosted | `https://<your-portal>/api/mcp` (or `http://<api-host>:<port>/mcp` direct) |
 
 It uses the Streamable HTTP transport and keeps no state between requests.
-Clients on the 2026-07-28 protocol and 2025-era clients both work. `GET`
-answers 405, because there's no server-to-client stream to open.
+Clients on the 2026-07-28 protocol and 2025-era clients both work. The
+server sends no notifications, so it refuses `subscriptions/listen` (method
+not found) and `GET` answers 405: there's no stream to open. An exchange
+that takes longer than 60 seconds is cut off with `504`.
 
 ## Authentication
 
@@ -31,8 +33,9 @@ Send an API key as a bearer token:
 Authorization: Bearer op_…
 ```
 
-Use a key with only the `reports:read` scope. It reads through `/mcp` and
-nothing else: it can't write, and other routes refuse it. Create one in
+Use a key with only the `reports:read` scope. It unlocks `/mcp` and
+nothing else: it can't write, and other routes refuse it. (Like any key, it
+can call `GET /auth/introspect`, which only describes the key itself.) Create one in
 Admin → Integrations → API keys: untick the default scopes, tick
 `reports:read`, and generate. Or call `POST /api-keys/scoped` with
 `{ "scopes": ["reports:read"], "label": "Claude" }`. Give each agent its own
@@ -112,17 +115,20 @@ schema, plus the same JSON as text. Every tool is annotated `readOnlyHint: true`
 | `list_partners` | Partners, newest first: id, name, email, status (`active` / `invited` / `revoked`). Filter by `programId` (enrolled) or `status`. Use `nextCursor` to get the next page. |
 | `list_links` | Tracking links, newest first: `linkId`, `linkKey`, `shareUrl` (the URL partners share), `destinationUrl` (where it lands), partner and program. Filter by `partnerId` or `programId`. |
 | `get_performance` | Rows grouped by `link`, `utm_campaign`, `partner` or `program` over a window: clicks, signups, paid conversions, attributed revenue and commission. Filter by `programId`, `partnerId` or `linkId`. Sort by `revenue` (default), `clicks`, `conversions` or `commission`. Pages with `limit` / `offset`. |
-| `recent_conversions` | One partner's or one link's attributed conversions, newest first, each with the click it came through: `clickId`, utm parameters, landing page, referer, sub-id. |
+| `recent_conversions` | One partner's or one link's attributed conversions, newest first, each with the click it came through: `clickId`, utm parameters, landing page, referer, sub-id. Pages with `limit` / `offset`, up to offset 10,000; narrow the window with `since` / `until` to go further back. |
 
 ### What `get_performance` counts
 
 A window is `[since, until)`. `until` defaults to now and `since` to 30 days
 before it. One call covers at most 366 days.
 
-Each count matches the admin dashboard and the Programs page (`GET
-/admin/overview`, `GET /programs/stats`, both in `reporting.ts`). So a
-program row equals that program's stats, and partner rows add up to the
-dashboard totals.
+Everything is counted as the admin dashboard and the Programs page count it
+(`GET /admin/overview`, `GET /programs/stats`, both in `reporting.ts`). So a
+program row shows that program's stats, and partner rows add up to the
+dashboard totals. Amounts here are rounded to the cent per row, and the
+dashboard's aren't. Where attribution is split (linear weights such as
+0.3333), a row can differ from the dashboard, or rows from their total, by
+a cent.
 
 | Field | |
 |---|---|
@@ -174,11 +180,17 @@ The server behaves the same in `selfhost`, `flat` and `revshare`. It adds no
 table and no column. Single-tenant installs serve it at `/mcp`;
 multi-tenant installs serve it at `/t/<slug>/mcp`.
 
-`shareUrl` follows the portal's own rule (`apps/portal/src/lib/shareUrl.ts`).
-A verified custom domain gives `https://<domain>/r/<key>`. The hosted
-platform gives `<PORTAL_URL>/r/<slug>/<key>`. A self-hosted single-tenant
-install gives `<router URL>/r/<key>`, or `null` until Admin → Settings → Router
-URL is set.
+`shareUrl` is the address partners see in the brand's own portal:
+
+- A brand with a verified custom domain gets `https://<domain>/r/<key>`. Its
+  links also resolve at `<PORTAL_URL>/r/<slug>/<key>`, the form an admin
+  sees when opening the portal through the platform address.
+- Other hosted brands get `<PORTAL_URL>/r/<slug>/<key>`.
+- A self-hosted single-tenant install gets `<router URL>/r/<key>`, or `null`
+  until Admin → Settings → Public router URL is set.
+
+An ad's destination might use either form, so match it on `linkKey`, the
+URL's last path segment.
 
 ## Not in this version
 

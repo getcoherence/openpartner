@@ -38,6 +38,11 @@ export interface McpContext {
   tenantId: string;
   /** For building link URLs (portal-url.ts). */
   linkTenant: PortalLinkTenant;
+  /** Told about a tool that threw. The caller gets only a generic error:
+   *  a thrown message can carry SQL and other internals. */
+  onToolError?: (tool: string, err: unknown) => void;
+  /** Echoed in that generic error, to find the log line. */
+  requestId?: string | null;
 }
 
 const INSTRUCTIONS = `OpenPartner partner attribution data for one brand, read-only.
@@ -69,6 +74,20 @@ async function routerUrlOf(db: Knex, tenantId: string): Promise<string | null> {
 }
 
 const iso = (d: Date | string | null | undefined): string | null => (d ? new Date(d).toISOString() : null);
+
+/** The highest offset recent_conversions pages to: deeper pages scan the
+ *  whole history. Narrow the window with since / until instead. */
+export const MAX_CONVERSIONS_OFFSET = 10_000;
+
+/** decodeCursor's timestamp, checked to be a real instant. Its pattern
+ *  passes 2026-99-99 and 2026-02-31, which Postgres then refuses. */
+function cursorOf(raw: string) {
+  const decoded = decodeCursor(raw);
+  if (!decoded) return null;
+  const ms = Date.parse(decoded.ts);
+  if (Number.isNaN(ms) || new Date(ms).toISOString().slice(0, 19) !== decoded.ts.slice(0, 19)) return null;
+  return decoded;
+}
 
 // ---------- schemas ----------
 
@@ -166,6 +185,19 @@ export function buildMcpServer(ctx: McpContext): McpServer {
   const { db, tenantId } = ctx;
   const server = new McpServer({ name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION }, { instructions: INSTRUCTIONS });
 
+  /** A tool's handler, with whatever it throws logged and replaced by a
+   *  generic error. The SDK would otherwise send the message as it is. */
+  const guarded =
+    <A,>(tool: string, fn: (args: A) => Promise<ReturnType<typeof result> | ReturnType<typeof failure>>) =>
+    async (args: A) => {
+      try {
+        return await fn(args);
+      } catch (err) {
+        ctx.onToolError?.(tool, err);
+        return failure('internal_error', ctx.requestId ? `The tool failed (request ${ctx.requestId}).` : 'The tool failed.');
+      }
+    };
+
   const programExists = async (programId: string) =>
     Boolean(await db(TABLES.Program).where({ id: programId, tenantId }).first('id'));
   const partnerExists = async (partnerId: string) =>
@@ -189,7 +221,7 @@ export function buildMcpServer(ctx: McpContext): McpServer {
       outputSchema: z.object({ currency: z.string().describe("The brand's default currency"), programs: z.array(programOut) }),
       annotations: READ_ONLY,
     },
-    async () => {
+    guarded('list_programs', async () => {
       const programs = (await db<ProgramRow>(TABLES.Program)
         .where({ tenantId })
         .orderBy([
@@ -211,7 +243,7 @@ export function buildMcpServer(ctx: McpContext): McpServer {
           createdAt: iso(p.createdAt)!,
         })),
       });
-    },
+    }),
   );
 
   server.registerTool(
@@ -228,7 +260,7 @@ export function buildMcpServer(ctx: McpContext): McpServer {
       outputSchema: z.object({ partners: z.array(partnerOut), nextCursor: z.string().nullable() }),
       annotations: READ_ONLY,
     },
-    async (args) => {
+    guarded('list_partners', async (args) => {
       const limit = args.limit ?? 100;
       const notFound = await checkFilters({ programId: args.programId });
       if (notFound) return notFound;
@@ -251,7 +283,7 @@ export function buildMcpServer(ctx: McpContext): McpServer {
       if (args.status === 'active') query.whereNull('p.revokedAt').whereNotNull('p.activatedAt');
       if (args.status === 'invited') query.whereNull('p.revokedAt').whereNull('p.activatedAt');
       if (args.cursor) {
-        const decoded = decodeCursor(args.cursor);
+        const decoded = cursorOf(args.cursor);
         if (!decoded) return failure('invalid_cursor', 'Pass nextCursor from the previous page');
         whereAfterCursor(query, 'p.createdAt', 'p.id', decoded);
       }
@@ -269,7 +301,7 @@ export function buildMcpServer(ctx: McpContext): McpServer {
         })),
         nextCursor,
       });
-    },
+    }),
   );
 
   /** Link rows with the URL a partner shares and the names around them. */
@@ -315,7 +347,7 @@ export function buildMcpServer(ctx: McpContext): McpServer {
       outputSchema: z.object({ links: z.array(linkOut), nextCursor: z.string().nullable() }),
       annotations: READ_ONLY,
     },
-    async (args) => {
+    guarded('list_links', async (args) => {
       const limit = args.limit ?? 100;
       const notFound = await checkFilters({ programId: args.programId, partnerId: args.partnerId });
       if (notFound) return notFound;
@@ -329,13 +361,13 @@ export function buildMcpServer(ctx: McpContext): McpServer {
       if (args.partnerId) query.where({ partnerId: args.partnerId });
       if (args.programId) query.where({ programId: args.programId });
       if (args.cursor) {
-        const decoded = decodeCursor(args.cursor);
+        const decoded = cursorOf(args.cursor);
         if (!decoded) return failure('invalid_cursor', 'Pass nextCursor from the previous page');
         whereAfterCursor(query, 'createdAt', 'id', decoded);
       }
       const { page, nextCursor } = takePage((await query.limit(limit + 1)) as Array<LinkRow & { _cursorTs: string }>, limit);
       return result({ links: await describeLinks(page as LinkRow[]), nextCursor });
-    },
+    }),
   );
 
   server.registerTool(
@@ -370,7 +402,7 @@ export function buildMcpServer(ctx: McpContext): McpServer {
       }),
       annotations: READ_ONLY,
     },
-    async (args) => {
+    guarded('get_performance', async (args) => {
       const until = args.until ? new Date(args.until) : new Date();
       const since = args.since ? new Date(args.since) : new Date(until.getTime() - 30 * DAY_MS);
       if (since >= until) return failure('invalid_window', 'since must be before until');
@@ -442,7 +474,7 @@ export function buildMcpServer(ctx: McpContext): McpServer {
         nextOffset: offset + limit < all.length ? offset + limit : null,
         rows,
       });
-    },
+    }),
   );
 
   server.registerTool(
@@ -459,12 +491,12 @@ export function buildMcpServer(ctx: McpContext): McpServer {
         since: offsetDateTime().optional().describe('Event time, ISO 8601, inclusive'),
         until: offsetDateTime().optional().describe('Event time, ISO 8601, inclusive'),
         limit: z.number().int().min(1).max(100).optional().describe('Default 25'),
-        offset: z.number().int().min(0).optional(),
+        offset: z.number().int().min(0).max(MAX_CONVERSIONS_OFFSET).optional(),
       }),
       outputSchema: z.object({ conversions: z.array(conversionOut), nextOffset: z.number().nullable() }),
       annotations: READ_ONLY,
     },
-    async (args) => {
+    guarded('recent_conversions', async (args) => {
       if (!args.partnerId && !args.linkId) return failure('partner_or_link_required', 'Give partnerId, linkId or both');
       const notFound = await checkFilters(args);
       if (notFound) return notFound;
@@ -513,7 +545,7 @@ export function buildMcpServer(ctx: McpContext): McpServer {
         })),
         nextOffset: rows.length > limit ? offset + limit : null,
       });
-    },
+    }),
   );
 
   return server;

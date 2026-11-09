@@ -148,6 +148,9 @@ export async function performanceReport(db: Knex, q: ReportQuery): Promise<Repor
 
   const attributed = () =>
     attributedIn(db, w)
+      // attributedIn joins the Event by id alone. Name its tenant too, so a
+      // cross-tenant reference can't count on the privileged pool.
+      .where('e.tenantId', q.tenantId)
       .leftJoin(`${TABLES.Click} as k`, (j) => j.on('k.id', 'a.clickId').andOnVal('k.tenantId', q.tenantId))
       .modify((a) => {
         if (q.partnerId) a.where('a.partnerId', q.partnerId);
