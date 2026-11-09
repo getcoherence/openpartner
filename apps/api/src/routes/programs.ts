@@ -24,10 +24,16 @@ import { campaignAcceptsNewActivity } from '../campaign-lifecycle.js';
 import { getWhiteLabelState } from '../white-label.js';
 import { customerRewardDelivery } from '../customer-rewards.js';
 import { getStorage } from '../storage.js';
-import { commissionSlabFields, currencyCodeSchema, refineCommissionSubRule } from '../commission-rule-schema.js';
+import {
+  commissionProductFields,
+  commissionSlabFields,
+  currencyCodeSchema,
+  refineCommissionSubRule,
+} from '../commission-rule-schema.js';
 import { destinationUrlSchema, destinationWarnings } from '../destination-url.js';
 import { tenantDefaultCurrency } from '../currency.js';
 import { programStats } from '../reporting.js';
+import { seenProducts } from '../product-commissions.js';
 import { NetworkProxyError } from '../network-client.js';
 import { PROGRAM_IN_USE_SQL, programUses, takeDownNetworkOffering } from '../program-deletion.js';
 
@@ -52,6 +58,9 @@ const subRuleSchema = z.intersection(
      *  partner's attributed performance (tiers). `value` below stays the
      *  base rate. See docs/commission-slabs.md. */
     ...commissionSlabFields,
+    /** Limit the rule to these products (product or price ids). Omitted =
+     *  every product. See docs/product-commissions.md. */
+    ...commissionProductFields,
   }),
   z.discriminatedUnion('type', [
     // A percent rule's currency is the currency of its slab thresholds.
@@ -104,6 +113,13 @@ const commissionRuleSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: 'bands and tiers need the array form of commissionRule',
+      });
+    }
+    // Same for a product list: stripped, the rule would pay on every product.
+    if (raw && typeof raw === 'object' && !Array.isArray(raw) && 'products' in raw) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'products need the array form of commissionRule',
       });
     }
   })
@@ -369,6 +385,16 @@ programsRouter.get('/programs/stats', requireAuth, requireAdmin, async (req, res
     currency: await tenantDefaultCurrency(db, tenantId),
     programs: await programStats(db, { tenantId, since, until }),
   });
+});
+
+/**
+ * Products and prices on the brand's recent sales (metadata.products), for
+ * picking the products a commission rule is limited to. Newest first.
+ * See docs/product-commissions.md.
+ */
+programsRouter.get('/programs/products', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  res.json({ products: await seenProducts(db, tenantId) });
 });
 
 /**

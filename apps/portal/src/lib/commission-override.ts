@@ -9,11 +9,20 @@ import type { CommissionSubRule } from './CompoundRuleEditor.js';
  * $400 on `loan_funded`, overridden with only a `loan_funded` rule, pays this
  * partner nothing on `approved`. A rule with no eventType pays on every type,
  * so it covers any stage, and is itself covered only by another such rule.
+ * Products count the same way (docs/product-commissions.md): a rule limited
+ * to products covers only a rule limited to some of those, and a rule for
+ * every product only a rule for every product.
  */
 export function rulesLeftUnpaid(replaced: CommissionSubRule[], next: CommissionSubRule[]): CommissionSubRule[] {
-  const nextTakesEverything = next.some((r) => !r.eventType);
-  if (nextTakesEverything) return [];
-  return replaced.filter((r) => !r.eventType || !next.some((n) => n.eventType === r.eventType));
+  return replaced.filter((r) => !next.some((n) => ruleCovers(n, r)));
+}
+
+function ruleCovers(n: CommissionSubRule, r: CommissionSubRule): boolean {
+  if (n.eventType && n.eventType !== r.eventType) return false;
+  if (n.products === undefined) return true;
+  if (!Array.isArray(n.products) || !Array.isArray(r.products)) return false;
+  const ids = new Set(n.products.map((p) => p.id));
+  return r.products.every((p) => ids.has(p.id));
 }
 
 /** The rule set every one of these programs shares, or null when they

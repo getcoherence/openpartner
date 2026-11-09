@@ -6,7 +6,13 @@ import { api } from '../api.js';
 import { alpha, theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, SectionHeading } from '../ui.js';
-import { CompoundRuleEditor, ruleEventTypeMissing, ruleSlabProblem, type CommissionSubRule } from '../lib/CompoundRuleEditor.js';
+import {
+  CompoundRuleEditor,
+  ruleEventTypeMissing,
+  ruleProductProblem,
+  ruleSlabProblem,
+  type CommissionSubRule,
+} from '../lib/CompoundRuleEditor.js';
 import { renderCommissionSummary } from '../lib/commission-summary.js';
 import { rulesLeftUnpaid, sharedRules } from '../lib/commission-override.js';
 import { useDefaultCurrency } from '../lib/useBrand.js';
@@ -455,7 +461,7 @@ function EditCard({
 
   const rulesInvalid =
     rules.length === 0 ||
-    rules.some((r) => !Number.isFinite(r.value) || r.value < 0 || ruleEventTypeMissing(r) || ruleSlabProblem(r) !== null);
+    rules.some((r) => !Number.isFinite(r.value) || r.value < 0 || ruleEventTypeMissing(r) || ruleSlabProblem(r) !== null || ruleProductProblem(r) !== null);
 
   const save = useMutation({
     mutationFn: () => {

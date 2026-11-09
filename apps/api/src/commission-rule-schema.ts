@@ -7,6 +7,7 @@
  * shapes — a rule one route refuses must not get in through the other.
  */
 
+import { ruleProductsSchema } from './product-commissions.js';
 import { z } from './zod.js';
 
 /** Steps per band / tier table. Ten covers every slab table we've seen
@@ -69,6 +70,12 @@ export const commissionSlabFields = {
   tiers: commissionTiersSchema.optional(),
 };
 
+/** Spread into every sub-rule object schema: the products a rule is
+ *  limited to (docs/product-commissions.md). Omitted = every product. */
+export const commissionProductFields = {
+  products: ruleProductsSchema.optional(),
+};
+
 /** ISO-4217-shaped code. The engine compares currencies upper-cased, so
  *  case is free; anything that isn't three letters can never match an
  *  event's currency and would quietly pin a slab rule to its base rate. */
@@ -76,12 +83,13 @@ export const currencyCodeSchema = z.string().regex(/^[A-Za-z]{3}$/, 'currency mu
 
 /**
  * One sub-rule of a Network approval snapshot, checked as strictly as a
- * program's own rule wherever slabs are concerned. POST /partners can't
- * just refuse a bad one — that would fail the whole approval over terms
- * the brand never typed — so it vets each slab rule with this and, on a
- * failure, stores no snapshot and lets the partner accrue on the live rule
- * (see vetApprovalSnapshot in commission-slabs.ts). Non-slab fields keep
- * the federation path's historic leniency (passthrough, no trigger checks).
+ * program's own rule wherever slabs and products are concerned. POST
+ * /partners can't just refuse a bad one — that would fail the whole
+ * approval over terms the brand never typed — so it vets each slab or
+ * product rule with this and, on a failure, stores no snapshot and lets
+ * the partner accrue on the live rule (see vetApprovalSnapshot in
+ * commission-slabs.ts). Other fields keep the federation path's historic
+ * leniency (passthrough, no trigger checks).
  */
 export const approvalSnapshotSlabRuleSchema = z
   .object({
@@ -90,6 +98,7 @@ export const approvalSnapshotSlabRuleSchema = z
     type: z.enum(['percent', 'fixed']),
     currency: currencyCodeSchema.optional(),
     ...commissionSlabFields,
+    ...commissionProductFields,
   })
   .passthrough()
   .superRefine((sub, ctx) => refineSlabs(sub, ctx));

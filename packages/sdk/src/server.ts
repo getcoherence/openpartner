@@ -49,6 +49,23 @@ export interface OpenPartnerServerConfig {
   fetch?: typeof fetch;
 }
 
+/**
+ * One product of an event, for commission rules limited to products. With
+ * more than one product, each needs its `amount`: its part of the event's
+ * `value`, which a product-limited percent rule pays its share of.
+ */
+export interface EventProduct {
+  /** Your product id (or a Stripe `prod_…`). Rules match on it. */
+  id: string;
+  /** A price, plan or SKU id. Rules can match on it instead. */
+  price?: string;
+  /** Display name, shown when the brand picks products for a rule. */
+  name?: string;
+  /** This product's part of `value`, in the event's currency. */
+  amount?: number;
+  quantity?: number;
+}
+
 export interface TrackEventParams {
   /** The user the event pertains to. Must match how the browser SDK called identify(). */
   userId: string;
@@ -60,6 +77,8 @@ export interface TrackEventParams {
   currency?: string;
   /** Arbitrary metadata you want to attach (stripeEventId, invoiceId, etc). */
   metadata?: Record<string, unknown>;
+  /** What was bought, for commission rules limited to products. */
+  products?: EventProduct[];
   /** Event time. Defaults to now on the server. Pass ISO 8601 to override. */
   ts?: string;
   /**
@@ -98,6 +117,8 @@ export interface TrackConversionParams {
    */
   userId?: string;
   metadata?: Record<string, unknown>;
+  /** What was bought, for commission rules limited to products. */
+  products?: EventProduct[];
   /** Event time. Defaults to now on the server. ISO 8601. */
   ts?: string;
 }

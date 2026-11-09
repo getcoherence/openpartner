@@ -33,12 +33,19 @@ import type { Knex } from 'knex';
 import { ulid } from 'ulid';
 import {
   TABLES,
+  eventProducts,
+  eventProductsIncomplete,
+  matchingProducts,
+  productShare,
+  readProductRefs,
+  ruleProductIds,
   type AttributionModel,
   type AttributionRow,
   type ProgramRow,
   type ClickRow,
   type CommissionRule,
   type CommissionSubRule,
+  type EventProduct,
   type EventRow,
   type IdentityRow,
 } from '@openpartner/db';
@@ -48,6 +55,7 @@ import type { WebhookPayload } from './openapi/webhook-events.js';
 import { accrueSlabRule, commissionMetadata, type SubRuleAccrual } from './commission-slabs.js';
 import { rowCurrency } from './currency.js';
 import { accrueRecruiterCommission } from './recruiter-commissions.js';
+import { productMatchSql } from './product-commissions.js';
 
 // Average month length used by the recurringMonths cap. We use 30.4375 days
 // (365.25 / 12) so a "12 months" cap doesn't drift by an extra day every
@@ -705,6 +713,10 @@ export function parseCommissionRule(raw: unknown): CommissionRule {
       value: r.value,
       currency: r.currency,
       recurring: r.recurring,
+      // The API refuses products on this shape, but an import doesn't check:
+      // dropped, a product-limited rule would pay on every product. Kept, the
+      // engine reads it (and an unreadable one matches nothing).
+      ...('products' in raw ? { products: (raw as { products?: CommissionSubRule['products'] }).products } : {}),
     }];
   }
   throw new Error('Invalid commissionRule on Campaign');
@@ -786,6 +798,19 @@ async function evaluateSubRule(
 ): Promise<SubRuleAccrual | null> {
   if (!ruleTakesEventType(subRule, event.type)) return null;
 
+  // A rule limited to products pays only on a sale that includes one, and
+  // its earlier-sale lookups below count only such sales. Only an omitted
+  // list means every product: one that's present but unreadable (an import
+  // doesn't validate rules) matches nothing.
+  let scope: ReturnType<typeof productScope> | null = null;
+  if (subRule.products !== undefined) {
+    const refs = readProductRefs(subRule.products);
+    if (!refs) return null;
+    scope = productScope(refs, event);
+    if (scope.matched.length === 0) return null;
+  }
+  const sameProducts = (q: Knex.QueryBuilder) => (scope ? q.andWhereRaw(productMatchSql(db, scope.ids)) : q);
+
   if (subRule.trigger === 'first' || subRule.trigger === 'subsequent') {
     // "Has this (partner, user, eventType) been attributed before?"
     // first      → fire only when there's NO prior attribution
@@ -793,23 +818,26 @@ async function evaluateSubRule(
     // Refunds don't re-arm the lookup; if a brand wants a refund to
     // re-trigger the bonus they'd reverse the prior commission and
     // re-attribute, consistent with how holdback works.
-    const prior = await db(TABLES.Attribution)
-      .join(TABLES.Event, `${TABLES.Event}.id`, `${TABLES.Attribution}.eventId`)
-      .where(`${TABLES.Attribution}.partnerId`, partnerId)
-      .andWhere(`${TABLES.Event}.userId`, event.userId)
-      .andWhere(`${TABLES.Event}.type`, event.type)
-      .andWhere(`${TABLES.Event}.ts`, '<', event.ts)
-      .first(`${TABLES.Event}.id`);
+    const prior = await sameProducts(
+      db(TABLES.Attribution)
+        .join(TABLES.Event, `${TABLES.Event}.id`, `${TABLES.Attribution}.eventId`)
+        .where(`${TABLES.Attribution}.partnerId`, partnerId)
+        .andWhere(`${TABLES.Event}.userId`, event.userId)
+        .andWhere(`${TABLES.Event}.type`, event.type)
+        .andWhere(`${TABLES.Event}.ts`, '<', event.ts),
+    ).first(`${TABLES.Event}.id`);
     if (subRule.trigger === 'first' && prior) return null;
     if (subRule.trigger === 'subsequent' && !prior) return null;
   }
 
   if (subRule.recurring && subRule.recurringMonths != null) {
-    const first = (await db(TABLES.Attribution)
-      .join(TABLES.Event, `${TABLES.Event}.id`, `${TABLES.Attribution}.eventId`)
-      .where(`${TABLES.Attribution}.partnerId`, partnerId)
-      .andWhere(`${TABLES.Event}.userId`, event.userId)
-      .andWhere(`${TABLES.Event}.type`, event.type)
+    const first = (await sameProducts(
+      db(TABLES.Attribution)
+        .join(TABLES.Event, `${TABLES.Event}.id`, `${TABLES.Attribution}.eventId`)
+        .where(`${TABLES.Attribution}.partnerId`, partnerId)
+        .andWhere(`${TABLES.Event}.userId`, event.userId)
+        .andWhere(`${TABLES.Event}.type`, event.type),
+    )
       .orderBy(`${TABLES.Event}.ts`, 'asc')
       .first(`${TABLES.Event}.ts as ts`)) as { ts: Date | string } | undefined;
     if (first) {
@@ -819,8 +847,35 @@ async function evaluateSubRule(
     }
   }
 
-  if (subRule.bands || subRule.tiers) return accrueSlabRule(db, subRule, event, { partnerId, programId });
-  return { amount: computeSubRuleAmount(subRule, event) };
+  // Limited to products, the rate (and any slab) applies to their share of
+  // the sale, not to the whole of it.
+  const priced = scope ? { ...event, value: scope.basis.toFixed(2) } : event;
+  const accrual =
+    subRule.bands || subRule.tiers
+      ? await accrueSlabRule(db, subRule, priced, { partnerId, programId })
+      : { amount: computeSubRuleAmount(subRule, priced) };
+  return scope ? { ...accrual, products: { matched: scope.matchedIds, basis: scope.basis } } : accrual;
+}
+
+/**
+ * A product-limited rule against one sale: the rule's ids, the sale's items
+ * it matched, and the share of the sale's value they account for
+ * (productShare). A sale whose product list is known to be short of its
+ * lines has no share to work out, so a percent rate pays nothing on it; a
+ * fixed amount still pays when a matching item is there.
+ */
+function productScope(
+  refs: NonNullable<CommissionSubRule['products']>,
+  event: EventRow,
+): { ids: string[]; matched: EventProduct[]; matchedIds: string[]; basis: number } {
+  const ids = ruleProductIds(refs);
+  const items = eventProducts(event.metadata) ?? [];
+  const matched = matchingProducts(refs, items);
+  // The rule's own ids that matched: a rule on a price records the price.
+  const wanted = new Set(ids);
+  const matchedIds = [...new Set(matched.map((m) => (m.id != null && wanted.has(m.id) ? m.id : m.price!)))];
+  const basis = eventProductsIncomplete(event.metadata) ? 0 : productShare(Number(event.value ?? 0), items, matched);
+  return { ids, matched, matchedIds, basis };
 }
 
 /**
