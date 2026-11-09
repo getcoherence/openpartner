@@ -62,9 +62,23 @@ function pkg(id: string, platform: string | null, over: Partial<StorefrontPackag
 
 let requests: Array<{ method: string; path: string; body: Record<string, unknown> | undefined }> = [];
 let storefront: Record<string, unknown>;
+/** GET /creators/me/rate-suggestions; null answers 404, like a Network
+ *  from before suggestions. */
+let rateSuggestions: Record<string, unknown> | null;
+
+const SUGGESTIONS = {
+  niche: 'b2b',
+  suggestions: [
+    { platform: 'youtube', format: 'dedicated', label: 'Dedicated video', low: 5_600, high: 27_900, currency: 'USD', basis: 'views', audience: 12_400, synced: true },
+    { platform: 'substack', format: 'primary', label: 'Primary sponsor', low: 200, high: 910, currency: 'USD', basis: 'subscribers', audience: 9_100, synced: false },
+  ],
+  reasons: {},
+  history: [{ platform: 'youtube', format: 'dedicated', median: 4_000, count: 3, currency: 'USD' }],
+};
 
 beforeEach(() => {
   requests = [];
+  rateSuggestions = SUGGESTIONS;
   storefront = {
     bookingsOpen: false,
     handle: 'mayabuilds',
@@ -82,6 +96,9 @@ beforeEach(() => {
     const json = (status: number, payload: unknown) =>
       new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } });
     if (path === '/creators/me/storefront' && method === 'GET') return json(200, storefront);
+    if (path === '/creators/me/rate-suggestions' && method === 'GET') {
+      return rateSuggestions ? json(200, rateSuggestions) : json(404, { error: 'not_found' });
+    }
     if (path === '/creators/me/platforms' && method === 'GET') return json(200, { platforms: [YOUTUBE, SUBSTACK] });
     if (path === '/creators/me' && method === 'GET') {
       return json(200, { id: 'crt_1', email: 'maya@example.test', name: 'Maya Chen', handle: 'mayabuilds', avatarUrl: null, pastBrands: [], profileComplete: true });
@@ -168,7 +185,13 @@ describe('storefront helpers', () => {
     for (const p of [...PLATFORMS.map((x) => x.kind), null]) {
       const t = templatesFor(p);
       expect(t.length).toBeGreaterThan(1);
-      for (const x of t) expect(Object.keys(x).sort()).toEqual(['description', 'title']);
+      for (const x of t) {
+        expect(Object.keys(x).sort()).toEqual(['description', 'format', 'title']);
+        // The Network's format key shape (its storefront.ts PACKAGE_FORMAT).
+        expect(x.format).toMatch(/^[a-z][a-z0-9_]{0,39}$/);
+      }
+      // One format per template on a platform.
+      expect(new Set(t.map((x) => x.format)).size).toBe(t.length);
     }
   });
 });
@@ -253,7 +276,53 @@ describe('storefront editor', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add package' }));
     await waitFor(() => expect(requests.some((r) => r.method === 'POST' && r.path === '/creators/me/packages')).toBe(true));
     const post = requests.find((r) => r.method === 'POST' && r.path === '/creators/me/packages')!;
-    expect(post.body).toMatchObject({ title: 'Dedicated video', platform: 'youtube', priceAmount: 4500, currency: 'USD', published: true });
+    expect(post.body).toMatchObject({ title: 'Dedicated video', platform: 'youtube', format: 'dedicated', priceAmount: 4500, currency: 'USD', published: true });
+  });
+
+  it('suggests a rate for the package type, with what the creator has charged', async () => {
+    renderAt('/creator/storefront', '/creator/storefront', <CreatorStorefrontPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /Dedicated video/ }));
+    expect((screen.getByLabelText('Type') as HTMLSelectElement).value).toBe('dedicated');
+    const hint = await screen.findByTestId('rate-hint');
+    expect(hint.textContent).toBe('Suggested $5,600–$27,900 · Your last 3: $4,000 median');
+    expect(within(hint).getByText(/Suggested/).getAttribute('title')).toBe(
+      'Estimated from your 12,400 median views per video (synced from YouTube) at B2B, tech and finance rates. Published industry ranges, not a quote.',
+    );
+
+    // Priced in another currency: the estimate says it's in USD.
+    fireEvent.change(screen.getByLabelText('Currency'), { target: { value: 'EUR' } });
+    expect(screen.getByTestId('rate-hint').textContent).toContain('Suggested $5,600–$27,900 (USD)');
+
+    // "Other" has no suggestion, and saves no format.
+    fireEvent.change(screen.getByLabelText('Type'), { target: { value: '' } });
+    expect(screen.queryByTestId('rate-hint')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Add package' }));
+    await waitFor(() => expect(requests.some((r) => r.method === 'POST' && r.path === '/creators/me/packages')).toBe(true));
+    expect(requests.find((r) => r.method === 'POST')!.body).toMatchObject({ format: null });
+  });
+
+  it('drops a type the new platform does not have', async () => {
+    renderAt('/creator/storefront', '/creator/storefront', <CreatorStorefrontPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /Shoutout/ }));
+    expect((screen.getByLabelText('Type') as HTMLSelectElement).value).toBe('shoutout');
+    // Newsletters have no shoutout. (A key both have, like 'dedicated',
+    // stays: it's that platform's dedicated format.)
+    fireEvent.change(screen.getByLabelText('Platform'), { target: { value: 'substack' } });
+    expect((screen.getByLabelText('Type') as HTMLSelectElement).value).toBe('');
+    fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'primary' } });
+    expect((await screen.findByTestId('rate-hint')).textContent).toBe('Suggested $200–$910');
+  });
+
+  it('shows no suggestion on a Network without them, and sends no format when editing a package from before formats', async () => {
+    rateSuggestions = null;
+    storefront.packages = [pkg('old', 'youtube', { title: 'Dedicated video' })];
+    renderAt('/creator/storefront', '/creator/storefront', <CreatorStorefrontPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    expect(screen.queryByLabelText('Type')).toBeNull();
+    expect(screen.queryByTestId('rate-hint')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(requests.some((r) => r.method === 'PATCH')).toBe(true));
+    expect(requests.find((r) => r.method === 'PATCH')!.body).not.toHaveProperty('format');
   });
 
   // Asked on the package, not with window.confirm.
@@ -333,6 +402,8 @@ describe('guided setup', () => {
 
     fireEvent.click(screen.getByLabelText('Dedicated video on YouTube'));
     fireEvent.change(screen.getByLabelText('Dedicated video price'), { target: { value: '4500' } });
+    // A ticked package shows its suggestion.
+    expect((await screen.findByTestId('rate-hint')).textContent).toBe('Suggested $5,600–$27,900 · Your last 3: $4,000 median');
     fireEvent.click(screen.getByLabelText('Primary sponsor on Substack'));
     fireEvent.change(screen.getByLabelText('Currency'), { target: { value: 'EUR' } });
 
@@ -340,8 +411,8 @@ describe('guided setup', () => {
     await waitFor(() => expect(requests.filter((r) => r.method === 'POST')).toHaveLength(2));
     const posts = requests.filter((r) => r.method === 'POST').map((r) => r.body);
     expect(posts).toEqual([
-      expect.objectContaining({ title: 'Dedicated video', platform: 'youtube', priceAmount: 4500, currency: 'EUR' }),
-      expect.objectContaining({ title: 'Primary sponsor', platform: 'substack', priceAmount: null, currency: 'EUR' }),
+      expect.objectContaining({ title: 'Dedicated video', platform: 'youtube', format: 'dedicated', priceAmount: 4500, currency: 'EUR' }),
+      expect.objectContaining({ title: 'Primary sponsor', platform: 'substack', format: 'primary', priceAmount: null, currency: 'EUR' }),
     ]);
     await screen.findByText('Brands you’ve worked with');
   });

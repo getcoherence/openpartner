@@ -91,6 +91,8 @@ import {
   adminSendCreatorIndexOutreachSample,
   OUTREACH_STYLES,
   adminSetCreatorIndexSettings,
+  adminGetRates,
+  adminSetRates,
   adminBlockCreator,
   adminCompleteMailboxConnect,
   adminDisconnectMailbox,
@@ -2077,6 +2079,38 @@ platformAdminRouter.put(
     }
   },
 );
+
+// Rate estimates (openpartner-network docs/rate-suggestions.md §8): the CPM
+// table behind creators' suggested rates and the public rate calculator,
+// and the calculator's lookup limits. The Network normalises what's saved.
+
+platformAdminRouter.get('/platform-admin/rates', requirePlatformAdmin, async (_req, res) => {
+  const networkUrl = networkOr503(res);
+  if (!networkUrl) return;
+  try {
+    res.json(await adminGetRates(networkUrl));
+  } catch (err) {
+    sendNetworkFailure(res, err);
+  }
+});
+
+const ratesSettingsSchema = z.object({ settings: z.record(z.string(), z.unknown()) }).strict();
+
+platformAdminRouter.put('/platform-admin/rates', requirePlatformAdmin, requirePlatformAdminWrite, async (req, res) => {
+  const body = ratesSettingsSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const networkUrl = networkOr503(res);
+  if (!networkUrl) return;
+  const actor = req.platformAdminActor!;
+  try {
+    const before = (await adminGetRates(networkUrl)).settings;
+    const saved = await adminSetRates(networkUrl, { settings: body.data.settings, updatedByEmail: actor.email });
+    await writeAudit(db, { actor, action: 'rates.settings', targetType: 'platform', detail: { before, after: saved.settings } });
+    res.json(saved);
+  } catch (err) {
+    sendNetworkFailure(res, err);
+  }
+});
 
 platformAdminRouter.get('/platform-admin/creator-index/stats', requirePlatformAdmin, async (_req, res) => {
   const networkUrl = networkOr503(res);
