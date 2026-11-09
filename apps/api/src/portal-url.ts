@@ -74,3 +74,22 @@ export function payoutStatementUrl(tenant: PortalLinkTenant | null | undefined, 
 export function linkTenantOf(req: Request): PortalLinkTenant {
   return { slug: req.tenantSlug ?? null, customDomain: req.tenantCustomDomain ?? null };
 }
+
+/**
+ * Where the tenant's partner links are served, without the link key: a
+ * link's URL is this + `/<linkKey>`. The server-side twin of the portal's
+ * useShareUrlBase (apps/portal/src/lib/shareUrl.ts), so an agent reading
+ * links over MCP gets the URLs partners actually share:
+ *   verified custom domain → https://<customDomain>/r
+ *   single-tenant          → the brand's router URL (program settings) + /r,
+ *                            or null when it isn't set
+ *   path-based tenant      → PORTAL_URL + /r/<slug>
+ */
+export function shareUrlBase(tenant: PortalLinkTenant | null | undefined, routerUrl: string | null): string | null {
+  if (tenant?.customDomain) return `https://${tenant.customDomain}/r`;
+  if ((process.env.OPENPARTNER_TENANCY ?? 'single') === 'single') {
+    return routerUrl ? `${routerUrl.replace(/\/$/, '')}/r` : null;
+  }
+  const env = (process.env.PORTAL_URL ?? 'http://localhost:5673').replace(/\/$/, '');
+  return tenant?.slug ? `${env}/r/${tenant.slug}` : null;
+}

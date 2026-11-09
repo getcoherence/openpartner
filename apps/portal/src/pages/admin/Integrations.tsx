@@ -75,6 +75,7 @@ const IN_APP_SCOPES: ScopeOption[] = [
   { scope: 'links:write', description: 'Create a referral link for a partner (mint a user’s link on first visit).' },
   { scope: 'payouts:read', description: 'Read a partner’s payout history. Read-only — can’t run or confirm payouts.' },
   { scope: 'payout_profiles:read', description: 'Read a partner’s payout details (PayPal email, bank account, UPI ID), to show them in your app.' },
+  { scope: 'reports:read', description: 'Read-only access for AI agents through the MCP server: programs, partners, links and performance. Nothing else.' },
   { scope: 'payout_profiles:write', description: 'Set or remove a partner’s payout details from your app, for manual-payout batch files. The partner is emailed a masked notice of each change unless they have no portal access.' },
 ];
 const ALL_SCOPES = [...CORE_SCOPES, ...IN_APP_SCOPES].map((s) => s.scope);

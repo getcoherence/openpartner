@@ -75,6 +75,7 @@ import { platformTwoFactorRouter, twoFactorRouter } from './routes/two-factor.js
 import { platformAdminRouter } from './routes/platform-admin.js';
 import { emailPreferencesRouter } from './routes/email-preferences.js';
 import { openapiRouter } from './routes/openapi.js';
+import { mcpRouter } from './routes/mcp.js';
 import { passwordPlatformRouter, passwordTenantRouter } from './routes/password-auth.js';
 import { googleAuthRouter } from './routes/google-auth.js';
 import { tenantMiddleware } from './tenancy.js';
@@ -357,6 +358,8 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   app.use(partnerPostbacksRouter);
   app.use(payoutProfilesRouter);
   app.use(onboardingRouter);
+  // Read-only MCP server for the brand's AI agents (docs/mcp.md).
+  app.use(mcpRouter);
 
   // Nothing matched: answer in the API's own error shape, not Express's
   // default HTML "Cannot GET /…" page. A /t/<slug>/ path whose workspace

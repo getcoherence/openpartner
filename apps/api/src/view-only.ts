@@ -11,13 +11,15 @@
 
 import type { Request } from 'express';
 
-/** Writes a viewer may make: their own account. */
+/** Writes a viewer may make: their own account, and POST /mcp, which
+ *  only reads (its tools change nothing; JSON-RPC rides on POST). */
 export const VIEWER_ALLOWED_WRITES: Readonly<Record<string, string>> = {
   'PUT /auth/password': 'their own password',
   'POST /auth/two-factor/setup': 'their own two-step sign-in',
   'POST /auth/two-factor/enable': 'their own two-step sign-in',
   'POST /auth/two-factor/disable': 'their own two-step sign-in',
   'POST /auth/two-factor/recovery-codes': 'their own two-step sign-in',
+  'POST /mcp': 'read-only MCP tools (docs/mcp.md)',
 };
 
 /** Reads a viewer may not make: they hand over credentials or bulk
