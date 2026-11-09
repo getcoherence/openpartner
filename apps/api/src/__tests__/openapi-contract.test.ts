@@ -787,7 +787,14 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
       'ingestClick',
       await admin.post('/clicks', { id: loanClick, linkKey: otherLink.linkKey, landingUrl: 'https://app.example.com/signup', fraudFlag: null, ts: new Date().toISOString() }),
     );
-    const loan = { clickId: loanClick, type: 'invoice_paid', value: 80, currency: 'USD', externalEventId: 'loan_1' };
+    const loan = {
+      clickId: loanClick,
+      type: 'invoice_paid',
+      value: 80,
+      currency: 'USD',
+      externalEventId: 'loan_1',
+      products: [{ id: 'loan_standard', name: 'Standard loan' }],
+    };
     const converted = check<{ eventId: string; attribution: { status: string } }>('recordConversion', await admin.post('/attribution/conversions', loan));
     expect(converted.attribution.status).toBe('attributed');
     const replayedLoan = check<{ replayed?: boolean }>('recordConversion', await admin.post('/attribution/conversions', loan));
@@ -795,6 +802,8 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     check('recordConversion', await admin.post('/attribution/conversions', { ...loan, value: 81 }));
     check('recordConversion', await admin.post('/attribution/conversions', { ...loan, clickId: 'nope', externalEventId: 'loan_2' }));
     check('recordConversion', await admin.post('/attribution/conversions', { clickId: loanClick, type: 'signup', externalEventId: 4242, userId: 'borrower_1' }));
+    const seen = check<{ products: Array<{ id: string; name: string | null }> }>('listSeenProducts', await admin.get('/programs/products'));
+    expect(seen.products).toContainEqual(expect.objectContaining({ id: 'loan_standard', name: 'Standard loan' }));
 
     // Refunds of that conversion (a $5 fixed commission on 80.00): part of
     // it, a replay, the misuses, then a chargeback of the rest.

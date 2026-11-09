@@ -49,7 +49,8 @@ vi.mock('stripe', async () => {
       retrieve: stripeApi.customersRetrieve,
     };
     (instance as unknown as { checkout: unknown }).checkout = {
-      sessions: { list: stripeApi.checkoutSessionsList },
+      // A one-time Checkout's revenue reads its line items (product commissions).
+      sessions: { list: stripeApi.checkoutSessionsList, listLineItems: () => ({ autoPagingToArray: async () => [] }) },
     };
     return instance;
   }

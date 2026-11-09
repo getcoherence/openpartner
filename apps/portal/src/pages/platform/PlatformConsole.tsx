@@ -5,6 +5,7 @@ import {
   Ban,
   Bell,
   Building2,
+  Calculator,
   FileText,
   Globe,
   Handshake,
@@ -42,6 +43,7 @@ import { OwnProgramPage } from './OwnProgram.js';
 import { CreatorIndexPage } from './CreatorIndex.js';
 import { BrandOutreachPage } from './BrandOutreach.js';
 import { MailboxCallbackPage } from './Mailboxes.js';
+import { RatesPage } from './Rates.js';
 
 const NAV: ReadonlyArray<{ title: string; items: ReadonlyArray<{ to: string; label: string; icon: LucideIcon }> }> = [
   {
@@ -58,6 +60,7 @@ const NAV: ReadonlyArray<{ title: string; items: ReadonlyArray<{ to: string; lab
       { to: '/platform/creator-index', label: 'Creator index', icon: UserSearch },
       { to: '/platform/brand-outreach', label: 'Brand outreach', icon: Megaphone },
       { to: '/platform/marketplace', label: 'Marketplace', icon: LayoutGrid },
+      { to: '/platform/rates', label: 'Rates', icon: Calculator },
     ],
   },
   {
@@ -160,6 +163,7 @@ export function PlatformConsole() {
           <Route path="mailboxes/callback" element={<MailboxCallbackPage />} />
           <Route path="vendors" element={<VendorsPage operator={operator} />} />
           <Route path="marketplace" element={<MarketplacePage operator={operator} />} />
+          <Route path="rates" element={<RatesPage operator={operator} />} />
           <Route path="notifications" element={<NotificationsPage operator={operator} />} />
           <Route path="fees" element={<FeesPage operator={operator} />} />
           <Route path="invoicing" element={<InvoicingPage operator={operator} />} />

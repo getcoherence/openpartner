@@ -13,6 +13,9 @@
  *   [{ trigger:'every', eventType:'invoice_paid', type:'percent', value:10,
  *      bands:{ mode:'whole', levels:[{ above:50000, value:15 }] } }]
  *     → "10–15% on every invoice (slabs by invoice value)"
+ *   [{ trigger:'every', eventType:'invoice_paid', type:'percent', value:30,
+ *      products:[{ id:'prod_pro', name:'Pro' }, { id:'prod_team', name:'Team' }] }]
+ *     → "30% on every invoice (Pro and Team only)"
  *
  * A slab rule renders as the range between its lowest and highest step,
  * never as the top rate alone: a headline "15%" would promise every
@@ -44,6 +47,8 @@ export interface CommissionSubRuleLike {
     eventType?: string;
     levels: Array<{ atLeast: number; value: number }>;
   };
+  /** Products the rule is limited to (docs/product-commissions.md). */
+  products?: Array<{ id: string; name?: string }>;
 }
 
 export interface CustomerRewardLike {
@@ -74,7 +79,7 @@ function formatSubRule(rule: CommissionSubRuleLike, defaultCurrency: string): st
       : ''
     : '';
   const recurringPrefix = rule.recurring && rule.trigger !== 'first' ? ' recurring' : '';
-  return `${amount}${recurringPrefix}${eventPhrase}${recurringPhrase}${formatSlabPhrase(rule)}`;
+  return `${amount}${recurringPrefix}${eventPhrase}${formatProductPhrase(rule)}${recurringPhrase}${formatSlabPhrase(rule)}`;
 }
 
 function formatAmount(rule: CommissionSubRuleLike, defaultCurrency: string): string {
@@ -99,6 +104,22 @@ function money(value: number, currency?: string): string {
   } catch {
     return `${trimNumber(value)} ${code}`;
   }
+}
+
+/** " (Pro only)", " (Pro and Team only)", " (Pro, Team and 3 more only)".
+ *  A list that's present but unreadable pays on nothing, and says so. */
+function formatProductPhrase(rule: CommissionSubRuleLike): string {
+  if (rule.products === undefined) return '';
+  const refs = Array.isArray(rule.products) ? rule.products : [];
+  if (refs.length === 0 || refs.some((r) => !r || typeof r.id !== 'string' || r.id.length === 0)) return ' (no products)';
+  const names = refs.map((r) => r.name?.trim() || r.id);
+  const list =
+    names.length === 1
+      ? names[0]
+      : names.length <= 3
+        ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+        : `${names.slice(0, 2).join(', ')} and ${names.length - 2} more`;
+  return ` (${list} only)`;
 }
 
 function formatSlabPhrase(rule: CommissionSubRuleLike): string {

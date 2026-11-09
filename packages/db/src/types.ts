@@ -6,6 +6,8 @@
  * between hosted and self-hosted tractable. If you add a column, update both.
  */
 
+import type { CommissionProductRef } from './event-products.js';
+
 /**
  * Tenant: the top-level isolation boundary in multi-tenant deployments.
  * In single-tenant (self-host) mode, every row's tenantId is the seeded
@@ -283,6 +285,13 @@ export interface CommissionSubRule {
   recurringMonths?: number;
   bands?: CommissionBands;
   tiers?: CommissionTiers;
+  /** Limit the rule to sales of these products: product or price ids,
+   *  matched against the Event's `metadata.products`. A percent rule pays on
+   *  those products' share of the sale; a fixed rule pays once per sale
+   *  that includes one; `first` / `subsequent` and recurringMonths count
+   *  only sales that include one. Omitted = every sale, products or not.
+   *  See docs/product-commissions.md and event-products.ts. */
+  products?: CommissionProductRef[];
 }
 
 export type CommissionRule = CommissionSubRule[];

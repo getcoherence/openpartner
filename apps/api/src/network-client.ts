@@ -1643,6 +1643,28 @@ export async function adminSetCreatorIndexSettings(
   return callNetworkAdmin(networkUrl, 'PUT', '/admin/creator-index/settings', { ...settings });
 }
 
+/** The Network's rate table and calculator limits (its
+ *  docs/rate-suggestions.md §8). Opaque here: the Network normalises it,
+ *  and the ops console edits it. */
+export interface NetworkRatesState {
+  settings: Record<string, unknown>;
+  defaults: Record<string, unknown>;
+  updatedAt: string | null;
+  updatedByEmail: string | null;
+  spend: { todayUsd: number; monthUsd: number; youtubeToday: number };
+}
+
+export async function adminGetRates(networkUrl: string): Promise<NetworkRatesState> {
+  return callNetworkAdmin<NetworkRatesState>(networkUrl, 'GET', '/admin/rates');
+}
+
+export async function adminSetRates(
+  networkUrl: string,
+  body: { settings: Record<string, unknown>; updatedByEmail?: string },
+): Promise<NetworkRatesState> {
+  return callNetworkAdmin<NetworkRatesState>(networkUrl, 'PUT', '/admin/rates', body);
+}
+
 export async function adminCreatorIndexStats(networkUrl: string): Promise<Record<string, unknown>> {
   return callNetworkAdmin<Record<string, unknown>>(networkUrl, 'GET', '/admin/creator-index/stats');
 }

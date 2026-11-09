@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router';
 import { CalendarCheck, Globe, Inbox, Link2, LogOut, Megaphone, Menu, MessagesSquare, Network, Store, UserCog } from 'lucide-react';
 import { theme } from '../../theme.js';
@@ -212,6 +212,7 @@ function CreatorMobileDrawer({ open, onClose, children }: { open: boolean; onClo
 
 function CreatorSidebar({ creator, variant = 'sidebar' }: { creator: NonNullable<Whoami['creator']>; variant?: 'sidebar' | 'drawer' }) {
   const nav = useNavigate();
+  const qc = useQueryClient();
   const isDrawer = variant === 'drawer';
   const unread = useCreatorUnreadMessages();
   return (
@@ -270,6 +271,9 @@ function CreatorSidebar({ creator, variant = 'sidebar' }: { creator: NonNullable
           }
           // Conversation images are kept in memory; nobody else gets them.
           clearAttachmentCache();
+          // Nor anything else read for this creator: the next one to sign
+          // in on this tab starts from nothing (rate history, bookings…).
+          qc.clear();
           nav('/');
         }}
         style={{

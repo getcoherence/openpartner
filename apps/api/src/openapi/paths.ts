@@ -474,6 +474,18 @@ Clicks, partners, conversions, attributed revenue and commission by status for e
 
   r.operation({
     method: 'get',
+    path: '/programs/products',
+    tag: 'Programs',
+    operationId: 'listSeenProducts',
+    summary: 'Products on recent sales',
+    description: `
+The products and prices on the brand's recent sales, for limiting a commission rule to some of them (a sub-rule's \`products\`). Stripe sales list their invoice, subscription or Checkout line items; events and conversions sent to the API list the \`products\` they were sent with.`,
+    access: { kind: 'admin' },
+    responses: { 200: { description: 'Products and prices, newest first.', schema: S.SeenProductList } },
+  });
+
+  r.operation({
+    method: 'get',
     path: '/me/programs',
     tag: 'Programs',
     operationId: 'listMyPrograms',
