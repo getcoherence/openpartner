@@ -1,13 +1,17 @@
 // Exercise the production nginx template without app credentials or a database:
-// the scheme forwarded to /api, and the frame headers on the HTML routes.
+// the scheme forwarded to /api, the frame headers on the HTML routes, and an
+// access log that never holds a query string.
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 
 const template = readFileSync(new URL('../apps/portal/nginx.conf.template', import.meta.url), 'utf8');
 // The probe answers like the API: helmet sends its own X-Frame-Options.
+// It stands in for the API, whose request log is its own, so it writes
+// nothing to the portal's access log.
 const config = template + `
 server {
     listen 8081;
+    access_log off;
     location /probe {
         add_header X-Frame-Options "SAMEORIGIN";
         return 200 "$http_x_forwarded_proto";
@@ -19,6 +23,9 @@ set -eu
 mkdir -p /etc/nginx/templates
 cat > /etc/nginx/templates/default.conf.template
 /docker-entrypoint.sh nginx -t
+# The image links access.log to stdout; a file can be read back below.
+rm /var/log/nginx/access.log
+touch /var/log/nginx/access.log
 nginx
 check() {
     expected="$1"
@@ -78,6 +85,40 @@ only /op.js cache-control 'cache-control: public, max-age=10, s-maxage=86400'
 has /missing.js 'http/1.1 404 not found'
 has /assets/missing-AbC123.js 'http/1.1 404 not found'
 echo 'PASS: immutable cache only under /assets/, short cache for op.js, missing assets 404'
+
+# Sign-in landings carry a single-use token in the query, and the assets
+# they load send the landing URL as Referer. The log keeps neither query.
+canary=opcanary7f3a
+log=/var/log/nginx/access.log
+for path in /auth/magic /t/acme/auth/magic /creator/auth/magic /reset-password \\
+    /t/acme/reset-password /creator/reset-password /platform/auth /creator/claim \\
+    /booking/confirm; do
+    wget -qO /dev/null "http://127.0.0.1:8080$path?next=%2Fadmin&token=$canary"
+done
+wget -qO /dev/null "http://127.0.0.1:8080/admin/network/complete?ntoken=$canary"
+wget -qO /dev/null "http://127.0.0.1:8080/platform/mailboxes?code=$canary&state=s"
+wget -qO /dev/null --header="Referer: http://127.0.0.1:8080/auth/magic?token=$canary#top" \\
+    http://127.0.0.1:8080/assets/index-AbC123.js
+wget -qO /dev/null --header="Referer: http://127.0.0.1:8080/t/acme/auth/magic?token=$canary" \\
+    "http://127.0.0.1:8080/api/probe?token=$canary"
+wget -qO /dev/null "http://127.0.0.1:8080/missing.js?token=$canary" || true
+if grep -F "$canary" $log >&2; then
+    echo 'Expected no query string in the access log' >&2
+    exit 1
+fi
+# Still a useful log: method, path and status, and the Referer's path.
+logged() {
+    grep -qF "$1" $log || {
+        echo "access log: expected [$1], received:" >&2
+        cat $log >&2
+        exit 1
+    }
+}
+logged '"GET /t/acme/auth/magic HTTP/1.1" 200'
+logged '"GET /api/probe HTTP/1.1" 200'
+logged '"GET /missing.js HTTP/1.1" 404'
+logged '"http://127.0.0.1:8080/auth/magic"'
+echo 'PASS: access log keeps paths and drops every query string'
 `;
 process.stdout.write(execFileSync('docker', [
   'run', '--rm', '-i', '-e', 'API_UPSTREAM=127.0.0.1:8081',
