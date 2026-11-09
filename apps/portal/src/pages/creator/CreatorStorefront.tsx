@@ -25,6 +25,7 @@ import { PreviewColumn, StorefrontPreview } from './StorefrontPreview.js';
 import {
   audienceNoun,
   formatPackagePrice,
+  formatsFor,
   groupByChannel,
   packageTermsText,
   parsePackagePrice,
@@ -38,6 +39,7 @@ import {
   type StorefrontPackage,
 } from './storefront-shared.js';
 import { PaymentsCard, creatorErrorCode, usePayments, type PaymentsView } from './CreatorPayments.js';
+import { RateHint } from './RateHint.js';
 import type { CaseStudy } from './CaseStudies.js';
 
 export interface Storefront {
@@ -784,7 +786,12 @@ function GroupCard({
       {adding ? (
         <div style={{ marginTop: 14 }}>
           <PackageForm
-            initial={{ platform: group.platform, title: adding.template?.title ?? '', description: adding.template?.description ?? null }}
+            initial={{
+              platform: group.platform,
+              title: adding.template?.title ?? '',
+              description: adding.template?.description ?? null,
+              format: adding.template?.format ?? null,
+            }}
             onDraft={onPackageDraft}
             onDone={onDone}
             onCancel={() => setEditing(null)}
@@ -1001,7 +1008,7 @@ function PackageForm({
 }: {
   existing?: OwnPackage;
   /** A new package's starting values (a template). */
-  initial?: Partial<Pick<StorefrontPackage, 'title' | 'description' | 'platform'>>;
+  initial?: Partial<Pick<StorefrontPackage, 'title' | 'description' | 'platform' | 'format'>>;
   onDraft?: (d: PackageDraft) => void;
   onDone: () => void;
   onCancel: () => void;
@@ -1019,6 +1026,11 @@ function PackageForm({
   const supportsDates = !existing || 'turnaroundDays' in existing;
   const [turnaround, setTurnaround] = useState(existing?.turnaroundDays != null ? String(existing.turnaroundDays) : '');
   const [rounds, setRounds] = useState(existing?.revisionRounds != null ? String(existing.revisionRounds) : '');
+  // The package's kind, for rate suggestions (the Network's
+  // docs/rate-suggestions.md §4). A Network from before formats has none.
+  const supportsFormat = !existing || 'format' in existing;
+  const [format, setFormat] = useState(start?.format ?? '');
+  const formats = formatsFor(platform || null);
 
   const parsed = parsePackagePrice(price);
   const turnaroundValid = turnaround.trim() === '' || (/^\d{1,3}$/.test(turnaround.trim()) && Number(turnaround) >= 1 && Number(turnaround) <= 365);
@@ -1037,6 +1049,7 @@ function PackageForm({
           revisionRounds: rounds === '' ? null : Number(rounds),
         }
       : {}),
+    ...(supportsFormat ? { format: format || null } : {}),
   };
   const draftKey = JSON.stringify(draft);
   useEffect(() => {
@@ -1077,19 +1090,44 @@ function PackageForm({
             placeholder="What the brand gets: format, length, links, timing."
           />
         </div>
-        <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+        <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           <div>
             <Label>Platform</Label>
-            <Select aria-label="Platform" value={platform} onChange={(e) => setPlatform(e.target.value)}>
+            <Select
+              aria-label="Platform"
+              value={platform}
+              onChange={(e) => {
+                const next = e.target.value;
+                setPlatform(next);
+                // A format belongs to its platform's list.
+                if (!formatsFor(next || null).some((f) => f.format === format)) setFormat('');
+              }}
+            >
               <option value="">Any</option>
               {Object.entries(PLATFORM_LABELS).map(([k, label]) => (
                 <option key={k} value={k}>{label}</option>
               ))}
             </Select>
           </div>
+          {supportsFormat && formats.length > 0 ? (
+            <div>
+              <Label>Type</Label>
+              <Select aria-label="Type" value={format} onChange={(e) => setFormat(e.target.value)}>
+                {formats.map((f) => (
+                  <option key={f.format} value={f.format}>{f.label}</option>
+                ))}
+                <option value="">Other</option>
+              </Select>
+            </div>
+          ) : (
+            <div />
+          )}
+        </div>
+        <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           <div>
             <Label>Price</Label>
             <Input aria-label="Price" value={price} inputMode="numeric" onChange={(e) => setPrice(e.target.value)} placeholder="On request" />
+            <RateHint platform={platform || null} format={format || null} currency={currency} />
           </div>
           <div>
             <Label>Currency</Label>

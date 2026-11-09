@@ -375,7 +375,8 @@
                       "maximum": 600
                     },
                     "bands": {},
-                    "tiers": {}
+                    "tiers": {},
+                    "products": {}
                   },
                   "required": [
                     "trigger",
@@ -549,6 +550,29 @@
                           "window",
                           "levels"
                         ]
+                      },
+                      "products": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 120
+                            },
+                            "name": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 120
+                            }
+                          },
+                          "required": [
+                            "id"
+                          ]
+                        },
+                        "minItems": 1,
+                        "maxItems": 50
                       }
                     },
                     "required": [
@@ -960,6 +984,24 @@
                 },
                 "tiers": {
                   "$ref": "#/components/schemas/CommissionTiers"
+                },
+                "products": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ]
+                  },
+                  "description": "Limits the rule to sales of these products: product or price ids, matched against the event's `products`. A percent rule pays on those products' share of the sale's value; a fixed amount pays once per sale that includes one; `first` and `subsequent` count only sales that include one. Omitted: every sale."
                 }
               },
               "required": [
@@ -1259,6 +1301,29 @@
                     "window",
                     "levels"
                   ]
+                },
+                "products": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 120
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 120
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ]
+                  },
+                  "minItems": 1,
+                  "maxItems": 50
                 }
               },
               "required": [
@@ -1363,6 +1428,24 @@
                 },
                 "tiers": {
                   "$ref": "#/components/schemas/CommissionTiers"
+                },
+                "products": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ]
+                  },
+                  "description": "Limits the rule to sales of these products: product or price ids, matched against the event's `products`. A percent rule pays on those products' share of the sale's value; a fixed amount pays once per sale that includes one; `first` and `subsequent` count only sales that include one. Omitted: every sale."
                 }
               },
               "required": [
@@ -1728,6 +1811,65 @@
           "until",
           "currency",
           "programs"
+        ]
+      },
+      "SeenProductList": {
+        "type": "object",
+        "properties": {
+          "products": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "A product id, or a price id when `kind` is `price`."
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "product",
+                    "price"
+                  ]
+                },
+                "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The latest name a sale gave it."
+                },
+                "productId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "For a price: the product it's a price of."
+                },
+                "sales": {
+                  "type": "integer",
+                  "description": "Sales it was on, among those read."
+                },
+                "lastSeenAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "Z$"
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "name",
+                "productId",
+                "sales",
+                "lastSeenAt"
+              ]
+            },
+            "description": "Newest first. At most 200, from the latest 5,000 sales with products in the last 180 days."
+          }
+        },
+        "required": [
+          "products"
         ]
       },
       "PartnerVisibleProgram": {
@@ -2715,6 +2857,47 @@
             "type": "object",
             "additionalProperties": {}
           },
+          "products": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "description": "Your product id, or a Stripe `prod_…`. Rules match on it."
+                },
+                "price": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "description": "A price, plan or SKU id. Rules can match on it instead."
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "description": "Shown when the brand picks products for a rule."
+                },
+                "amount": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "This product's part of `value`, in the event's currency. Required on every item when there's more than one."
+                },
+                "quantity": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                }
+              },
+              "required": [
+                "id"
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 100,
+            "description": "What was bought, one item per product, for commission rules limited to products. A percent rule pays on the matching products' share of `value`, split by the items' amounts. Stored as `metadata.products`. See docs/product-commissions.md."
+          },
           "ts": {
             "type": "string",
             "format": "date-time",
@@ -2865,6 +3048,47 @@
           "metadata": {
             "type": "object",
             "additionalProperties": {}
+          },
+          "products": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "description": "Your product id, or a Stripe `prod_…`. Rules match on it."
+                },
+                "price": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "description": "A price, plan or SKU id. Rules can match on it instead."
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "description": "Shown when the brand picks products for a rule."
+                },
+                "amount": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "This product's part of `value`, in the event's currency. Required on every item when there's more than one."
+                },
+                "quantity": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                }
+              },
+              "required": [
+                "id"
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 100,
+            "description": "What was bought, one item per product, for commission rules limited to products. A percent rule pays on the matching products' share of `value`, split by the items' amounts. Stored as `metadata.products`. See docs/product-commissions.md."
           }
         },
         "required": [
@@ -3719,7 +3943,7 @@
           "metadata": {
             "type": "object",
             "additionalProperties": {},
-            "description": "How the amount was worked out. `rateType` is the sub-rule's `percent` or `fixed` (absent on commissions accrued before October 2026). A banded or tiered rule also records `slab`: which sub-rule (`ruleIndex`), `kind` (`band` or `tier`), the `level` reached and its `threshold` and `value`, and for tiers the `metric` and its `metricValue` over the `window`. A replacement accrued for what a partial refund left records `refund`. A recruiter commission has `rateType: \"recruiter\"` and `recruiter`: the `percent` it was worked out at and the `recruitedPartnerId`."
+            "description": "How the amount was worked out. `rateType` is the sub-rule's `percent` or `fixed` (absent on commissions accrued before October 2026), and `trigger` its `every`, `first` or `subsequent` (absent before November 2026). A banded or tiered rule also records `slab`: which sub-rule (`ruleIndex`), `kind` (`band` or `tier`), the `level` reached and its `threshold` and `value`, and for tiers the `metric` and its `metricValue` over the `window`. A replacement accrued for what a partial refund left records `refund`. A recruiter commission has `rateType: \"recruiter\"` and `recruiter`: the `percent` it was worked out at and the `recruitedPartnerId`."
           },
           "partnerName": {
             "type": [
@@ -3960,7 +4184,7 @@
           "metadata": {
             "type": "object",
             "additionalProperties": {},
-            "description": "How the amount was worked out. `rateType` is the sub-rule's `percent` or `fixed` (absent on commissions accrued before October 2026). A banded or tiered rule also records `slab`: which sub-rule (`ruleIndex`), `kind` (`band` or `tier`), the `level` reached and its `threshold` and `value`, and for tiers the `metric` and its `metricValue` over the `window`. A replacement accrued for what a partial refund left records `refund`. A recruiter commission has `rateType: \"recruiter\"` and `recruiter`: the `percent` it was worked out at and the `recruitedPartnerId`."
+            "description": "How the amount was worked out. `rateType` is the sub-rule's `percent` or `fixed` (absent on commissions accrued before October 2026), and `trigger` its `every`, `first` or `subsequent` (absent before November 2026). A banded or tiered rule also records `slab`: which sub-rule (`ruleIndex`), `kind` (`band` or `tier`), the `level` reached and its `threshold` and `value`, and for tiers the `metric` and its `metricValue` over the `window`. A replacement accrued for what a partial refund left records `refund`. A recruiter commission has `rateType: \"recruiter\"` and `recruiter`: the `percent` it was worked out at and the `recruitedPartnerId`."
           }
         },
         "required": [
@@ -11213,6 +11437,68 @@
           },
           "400": {
             "description": "`invalid_query`, `tenant_slug_missing`, `invalid_window`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/programs/products": {
+      "get": {
+        "operationId": "listSeenProducts",
+        "tags": [
+          "Programs"
+        ],
+        "summary": "Products on recent sales",
+        "description": "The products and prices on the brand's recent sales, for limiting a commission rule to some of them (a sub-rule's `products`). Stripe sales list their invoice, subscription or Checkout line items; events and conversions sent to the API list the `products` they were sent with.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "responses": {
+          "200": {
+            "description": "Products and prices, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeenProductList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
             "content": {
               "application/json": {
                 "schema": {

@@ -6,6 +6,8 @@
  * between hosted and self-hosted tractable. If you add a column, update both.
  */
 
+import type { CommissionProductRef } from './event-products.js';
+
 /**
  * Tenant: the top-level isolation boundary in multi-tenant deployments.
  * In single-tenant (self-host) mode, every row's tenantId is the seeded
@@ -175,14 +177,20 @@ export const DEFAULT_TENANT_ID = '01J0000000DEFAULTTENANT0000';
  *                event if `eventType` is omitted; preserves single-rule behavior)
  *   first      — fires only on the FIRST event of `eventType` for this
  *                (partner, user) pair. "$200 first-sale bonus"-style payouts.
+ *                "First" is the earliest attributed event by time, ties
+ *                broken by Event id, and the rule pays at most once: an
+ *                older event that arrives after a newer one has already
+ *                been paid the first-time commission counts as subsequent.
+ *                The Commission's `metadata.trigger` records which one was
+ *                paid it (attribution.ts isFirstConversion).
  *   subsequent — fires on every event of `eventType` for this (partner, user)
  *                EXCEPT the first. Pairs with a `first` rule to express
  *                "50% on first invoice, 20% on every subsequent invoice"
  *                without the rules double-firing on event #1.
  *
  * recurringMonths caps how long a `recurring` rule keeps firing, measured from
- * the first attributed event of the rule's `eventType` for this (partner, user).
- * Null = indefinite.
+ * the earliest attributed event (by time) of the rule's `eventType` for this
+ * (partner, user). Null = indefinite.
  *
  * Wire format is a JSON array on Campaign.commissionRule. The
  * 20260520000000_compound_commission_rules migration backfilled pre-array rows
@@ -283,6 +291,13 @@ export interface CommissionSubRule {
   recurringMonths?: number;
   bands?: CommissionBands;
   tiers?: CommissionTiers;
+  /** Limit the rule to sales of these products: product or price ids,
+   *  matched against the Event's `metadata.products`. A percent rule pays on
+   *  those products' share of the sale; a fixed rule pays once per sale
+   *  that includes one; `first` / `subsequent` and recurringMonths count
+   *  only sales that include one. Omitted = every sale, products or not.
+   *  See docs/product-commissions.md and event-products.ts. */
+  products?: CommissionProductRef[];
 }
 
 export type CommissionRule = CommissionSubRule[];

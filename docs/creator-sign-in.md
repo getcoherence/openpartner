@@ -104,7 +104,8 @@ The Network never creates an account at this endpoint.
 ### Google on `/signin` (the `account` flow)
 
 `/signin` is where brands and creators both sign in: its emailed link
-mails whichever kinds of account the address has. Its "Continue with
+mails whichever kinds of account the address has, and a password there is
+tried as the brand one, then the creator one (#407). Its "Continue with
 Google" is `?flow=account`, which mints a platform session. A creator with
 no brand used to get one too, and `/workspaces` then sent them to
 `/brands/new`. Now the callback (`accountLanding`) lands them like the

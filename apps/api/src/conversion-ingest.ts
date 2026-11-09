@@ -24,7 +24,7 @@ import {
   type IdentityRow,
   type ProgramRow,
 } from '@openpartner/db';
-import { attributeEvent, resolveCommissionRule, ruleTakesEventType, type AttributeResult } from './attribution.js';
+import { attributeEvent, lockCustomer, resolveCommissionRule, ruleTakesEventType, type AttributeResult } from './attribution.js';
 import { ingestCurrency, rowCurrency } from './currency.js';
 import { recordedFromStripe } from './stripe-app.js';
 import { recordTestLink } from './test-clicks.js';
@@ -200,6 +200,9 @@ export async function recordClickConversion(
   }
 
   const userId = input.userId ?? clickUserId(click.id);
+  // The customer lock before any write, as on every path that attributes
+  // (lockCustomer).
+  await lockCustomer(db, tenantId, userId);
   const row = {
     id: ulid(),
     tenantId,

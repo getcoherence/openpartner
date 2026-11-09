@@ -14,7 +14,7 @@ import {
   type TenantRow,
 } from '@openpartner/db';
 import { appDb, db } from '../db.js';
-import { attributeEvent, CORRECTIVE_EVENT_TYPES } from '../attribution.js';
+import { attributeEvent, CORRECTIVE_EVENT_TYPES, lockCustomer } from '../attribution.js';
 import { clickUserId } from '../conversion-ingest.js';
 import { ingestCurrency } from '../currency.js';
 import { inferPlanFromPriceIds, persistMerchantSubscription, updateTenantPlanFromStripeSub } from './billing.js';
@@ -40,6 +40,13 @@ import { getMode } from '../stripe.js';
 import { fromStripeMinor, majorToCents, stripeMinorToCents } from '../stripe-amounts.js';
 import { getTenancyMode } from '../tenancy.js';
 import { recordTestLink } from '../test-clicks.js';
+import {
+  checkoutLine,
+  invoiceLine,
+  productFields,
+  subscriptionLine,
+  type ProductFields,
+} from '../product-commissions.js';
 import { looksLikeClickId, noteTrackingIssue } from '../tracking-issues.js';
 import {
   announceRefund,
@@ -398,6 +405,12 @@ async function recordMappedEvent(
       ? mapped.metadata.stripeInvoiceId
       : null;
   const externalEventId = mapped.externalEventId ?? invoiceKey ?? event.id;
+  const products = await stripeProducts(trx, tenantId, source, event, mapped, externalEventId);
+  // The customer lock before the Event row, as on every path that attributes
+  // (lockCustomer); after stripeProducts, so it isn't held across Stripe
+  // calls. Not for a corrective event: it attributes nothing, and a refund
+  // holds its conversions' Event rows by now.
+  if (!CORRECTIVE_EVENT_TYPES.has(mapped.type)) await lockCustomer(trx, tenantId, mapped.userId);
   const inserted = await trx<EventRow>(TABLES.Event)
     .insert({
       id: eventId,
@@ -413,6 +426,7 @@ async function recordMappedEvent(
         stripeType: event.type,
         ...(source.eventMetadata ?? {}),
         ...(mapped.metadata ?? {}),
+        ...products,
       },
       ts: new Date(event.created * 1000),
     })
@@ -449,6 +463,74 @@ async function recordMappedEvent(
 
   const attribution = await attributeEvent(trx, inserted[0] as EventRow);
   return { eventId, attribution };
+}
+
+/** Most lines read from Stripe for one sale's products. */
+const MAX_STRIPE_PRODUCT_LINES = 1000;
+
+/**
+ * What a sale was for (docs/product-commissions.md): its products, read
+ * from the Stripe object's line items, for commission rules limited to
+ * products. Raw data, so it's written with the Event and never after.
+ *
+ *   invoice.paid                     the invoice's lines, from the payload;
+ *                                    Stripe sends ten, so an invoice with
+ *                                    more is read in full
+ *   customer.subscription.created    the subscription's items, from the
+ *                                    payload
+ *   one-time Checkout revenue        the session's line items, read from
+ *                                    Stripe (webhooks don't carry them)
+ *
+ * A read happens only for an Event not yet recorded. One that fails for
+ * good (permissions, deleted) leaves the list marked incomplete; a
+ * transient failure throws, so Stripe redelivers the event.
+ */
+async function stripeProducts(
+  trx: Knex.Transaction,
+  tenantId: string,
+  source: BrandStripeSource,
+  event: Stripe.Event,
+  mapped: MappedEvent,
+  externalEventId: string,
+): Promise<ProductFields> {
+  const recorded = async () =>
+    Boolean(await trx<EventRow>(TABLES.Event).where({ tenantId, externalEventId }).first('id'));
+
+  if (mapped.type === 'invoice_paid' && event.type === 'invoice.paid') {
+    const invoice = event.data.object as Stripe.Invoice;
+    const lines: unknown[] = invoice.lines?.data ?? [];
+    if (!invoice.lines?.has_more || !invoice.id) return productFields(lines.map(invoiceLine), invoice.currency);
+    if (await recorded()) return {};
+    const invoiceId = invoice.id;
+    const all = await stripeReadOrNull('invoices.listLineItems', invoiceId, () =>
+      source.stripe.invoices.listLineItems(invoiceId, { limit: 100 }).autoPagingToArray({ limit: MAX_STRIPE_PRODUCT_LINES }),
+    );
+    const complete = all !== null && all.length < MAX_STRIPE_PRODUCT_LINES;
+    return productFields((all ?? lines).map(invoiceLine), invoice.currency, complete);
+  }
+
+  if (mapped.type === 'subscription_created' && event.type === 'customer.subscription.created') {
+    const sub = event.data.object as Stripe.Subscription;
+    const items: unknown[] = sub.items?.data ?? [];
+    return productFields(items.map(subscriptionLine), sub.currency, !sub.items?.has_more);
+  }
+
+  const sessionId = mapped.metadata?.stripeCheckoutSessionId;
+  if (mapped.type === 'invoice_paid' && typeof sessionId === 'string') {
+    if (await recorded()) return {};
+    const session = event.data.object as Stripe.Checkout.Session;
+    const items = await stripeReadOrNull('checkout.sessions.listLineItems', sessionId, () =>
+      source.stripe.checkout.sessions
+        // taxes are expandable only: without them an inclusive tax stays in
+        // the line's amount (checkoutLine).
+        .listLineItems(sessionId, { limit: 100, expand: ['data.taxes'] })
+        .autoPagingToArray({ limit: MAX_STRIPE_PRODUCT_LINES }),
+    );
+    if (items === null) return { productsIncomplete: true };
+    return productFields(items.map(checkoutLine), session.currency, items.length < MAX_STRIPE_PRODUCT_LINES);
+  }
+
+  return {};
 }
 
 /**
@@ -1726,6 +1808,8 @@ async function stitchCheckoutCustomer(
 ): Promise<{ click: ClickRow; firstStitch: boolean } | null> {
   const click = await trx<ClickRow>(TABLES.Click).where({ id: cref, tenantId }).first();
   if (!click) return null;
+  // The customer lock before the Identity row (lockCustomer).
+  await lockCustomer(trx, tenantId, userId);
   const inserted = await trx<IdentityRow>(TABLES.Identity)
     .insert({ id: ulid(), tenantId: click.tenantId, clickId: cref, userId })
     .onConflict(['clickId', 'userId'])
@@ -1742,10 +1826,11 @@ async function stitchCheckoutCustomer(
  * another writes: the signup dedupe reads the signup, attribution reads
  * the Identity the checkout stitches, the checkout's backlog pass reads
  * the early events. Unserialized, each read misses the other's
- * uncommitted write.
+ * uncommitted write. It's attribution's customer lock (lockCustomer), so
+ * attributeEvent, which takes it again, adds no second lock to order.
  */
 async function lockMerchantUser(trx: Knex.Transaction, tenantId: string, userId: string): Promise<void> {
-  await trx.raw(`select pg_advisory_xact_lock(hashtext(?::text || ':' || ?::text))`, [tenantId, userId]);
+  await lockCustomer(trx, tenantId, userId);
 }
 
 /**
@@ -1775,7 +1860,12 @@ async function attributeUnattributedEvents(trx: Knex.Transaction, tenantId: stri
         .from(TABLES.Attribution)
         .whereRaw(`"${TABLES.Attribution}"."eventId" = "${TABLES.Event}"."id"`);
     })
-    .orderBy('ts', 'asc');
+    // Ties by Event id, as attributeBacklogForUser does, so the event that
+    // takes a `first` commission doesn't depend on row order.
+    .orderBy([
+      { column: 'ts', order: 'asc' },
+      { column: 'id', order: 'asc' },
+    ]);
   for (const event of events) {
     const result = await attributeEvent(trx, event as EventRow);
     if (result.status === 'attributed') await reapplyRecordedRefunds(trx, event as EventRow);
@@ -1905,7 +1995,12 @@ async function maybeRedeemStripeCoupons(
       merchantSet = customerId != null && userId !== customerId;
       // As at a cref checkout: lock a merchant-set userId before the
       // stitch, so a concurrent delivery for this user sees our Identity
-      // or has committed the Event the backlog pass below picks up.
+      // or has committed the Event the backlog pass below picks up. A cus_
+      // or guest-email user isn't locked here: the redemption only adds a
+      // new synthetic Click and its Identity, rows nobody else can be
+      // holding, and this delivery may go on to lock a merchant userId
+      // for the same customer (subscription metadata), which would take
+      // two customer locks in an order of its own.
       if (merchantSet) await lockMerchantUser(trx, tenantId, userId);
     }
     const { reused } = await ensureCouponClickAndIdentity(trx, tenantId, coupon, userId, ts);

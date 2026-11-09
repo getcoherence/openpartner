@@ -465,6 +465,13 @@ describe('creator-api proxy: storefront', () => {
     expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /creators/me/case-studies', 'PUT /creators/me/case-studies']);
     expect((await request(app).put('/creator-api/creators/me/case-studies/bkr_1')).status).toBe(404);
   });
+
+  it('forwards the package editor\'s suggested rates, read-only', async () => {
+    const cookie = 'op_network_creator_session=abc';
+    expect((await request(app).get('/creator-api/creators/me/rate-suggestions').set('Cookie', cookie)).status).toBe(200);
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /creators/me/rate-suggestions']);
+    expect((await request(app).get('/creator-api/creators/me/rate-suggestions/youtube').set('Cookie', cookie)).status).toBe(404);
+  });
 });
 
 describe('creator-api proxy: passwords', () => {

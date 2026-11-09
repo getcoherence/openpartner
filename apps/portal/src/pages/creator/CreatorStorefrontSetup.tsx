@@ -38,6 +38,7 @@ import {
   type StorefrontPackage,
 } from './storefront-shared.js';
 import { PaymentsCard, creatorErrorCode } from './CreatorPayments.js';
+import { RateHint } from './RateHint.js';
 
 const STEPS = [
   { key: 'intro', label: 'How it works' },
@@ -443,6 +444,7 @@ function PackagesStep({
             title: p.template.title,
             description: p.template.description,
             platform: p.platform,
+            format: p.template.format,
             priceAmount: parsePackagePrice(p.price).amount,
             priceIsFrom: false,
             currency,
@@ -544,6 +546,7 @@ function PackagesStep({
                           {added && <span style={{ fontSize: 12, color: theme.success, marginLeft: 8, fontWeight: 400 }}>Added</span>}
                         </div>
                         <div style={{ fontSize: 12.5, color: theme.textMuted, marginTop: 2 }}>{t.description}</div>
+                        {pick && <RateHint platform={platform} format={t.format} currency={currency} />}
                       </div>
                       {pick && (
                         <div style={{ width: 110, flexShrink: 0 }}>

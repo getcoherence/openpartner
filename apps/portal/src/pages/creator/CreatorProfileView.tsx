@@ -17,6 +17,7 @@ import { ExternalLink } from 'lucide-react';
 import { audienceSizeLabel } from '@openpartner/db';
 import { theme } from '../../theme.js';
 import { VerifiedBadge } from '../../lib/VerifiedBadge.js';
+import { countryName } from '../../lib/CountryField.js';
 import { PlatformMark, type CoverSource } from '../../lib/PlatformMark.js';
 import { SectionCard, SectionGap } from '../../lib/Surface.js';
 import { creatorApi } from './creator-api.js';
@@ -36,6 +37,8 @@ export interface PublicProfile {
   bio: string | null;
   categories: string[];
   audienceLocations: string[];
+  /** Youngest first; absent on an older Network, which has only audienceAgeRange. */
+  audienceAgeRanges?: string[];
   audienceAgeRange: string | null;
   /** Bucket slug (see AUDIENCE_SIZES); absent on an older Network. */
   audienceSize?: string | null;
@@ -66,6 +69,7 @@ export function CreatorProfileView({ data, storefront }: { data: PublicProfile; 
   const totalReach = data.platforms.reduce((sum, p) => sum + (p.followerCount ?? 0), 0);
   const allSynced = data.platforms.length > 0 && data.platforms.every((p) => p.followerCount == null || p.followerCountSynced);
   const audienceSize = audienceSizeLabel(data.audienceSize);
+  const ageRanges = data.audienceAgeRanges ?? (data.audienceAgeRange ? [data.audienceAgeRange] : []);
   const caseStudies = data.caseStudies ?? [];
   // A brand shown verified above isn't repeated in their own list.
   const verified = verifiedBrandNames(caseStudies);
@@ -173,7 +177,7 @@ export function CreatorProfileView({ data, storefront }: { data: PublicProfile; 
         </>
       )}
 
-      {(data.audienceLocations.length > 0 || data.audienceAgeRange || audienceSize) && (
+      {(data.audienceLocations.length > 0 || ageRanges.length > 0 || audienceSize) && (
         <>
           <SectionGap />
           <SectionCard>
@@ -181,10 +185,10 @@ export function CreatorProfileView({ data, storefront }: { data: PublicProfile; 
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24 }}>
               {audienceSize && <Stat label="Audience size" value={audienceSize} />}
               {data.audienceLocations.length > 0 && (
-                <Stat label="Top countries" value={data.audienceLocations.join(' · ')} />
+                <Stat label="Top countries" value={data.audienceLocations.map(countryName).join(' · ')} />
               )}
-              {data.audienceAgeRange && (
-                <Stat label="Age range" value={data.audienceAgeRange} />
+              {ageRanges.length > 0 && (
+                <Stat label={ageRanges.length > 1 ? 'Age ranges' : 'Age range'} value={ageRanges.join(' · ')} />
               )}
             </div>
           </SectionCard>

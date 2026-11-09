@@ -33,12 +33,19 @@ import type { Knex } from 'knex';
 import { ulid } from 'ulid';
 import {
   TABLES,
+  eventProducts,
+  eventProductsIncomplete,
+  matchingProducts,
+  productShare,
+  readProductRefs,
+  ruleProductIds,
   type AttributionModel,
   type AttributionRow,
   type ProgramRow,
   type ClickRow,
   type CommissionRule,
   type CommissionSubRule,
+  type EventProduct,
   type EventRow,
   type IdentityRow,
 } from '@openpartner/db';
@@ -48,6 +55,7 @@ import type { WebhookPayload } from './openapi/webhook-events.js';
 import { accrueSlabRule, commissionMetadata, type SubRuleAccrual } from './commission-slabs.js';
 import { rowCurrency } from './currency.js';
 import { accrueRecruiterCommission } from './recruiter-commissions.js';
+import { productMatchSql } from './product-commissions.js';
 
 // Average month length used by the recurringMonths cap. We use 30.4375 days
 // (365.25 / 12) so a "12 months" cap doesn't drift by an extra day every
@@ -207,11 +215,51 @@ function storedWeight(raw: string): number {
   return near.length === 1 ? near[0]! : stored;
 }
 
+/**
+ * Serialise attribution work on one customer (the tenant plus the brand's
+ * userId) until the transaction ends. Two requests for the same customer,
+ * say two invoice.paid webhooks a second apart, each read what the other
+ * writes: whether the partner has had its `first` commission
+ * (evaluateSubRule), the customer's earlier conversions (priorConversions)
+ * and the start of a recurringMonths cap. Each request is one transaction
+ * (tenancy.ts), so without the lock each misses the other's uncommitted
+ * rows and both pay a first-time commission. With it the second request
+ * waits for the first to commit, and its next read (READ COMMITTED) sees
+ * those rows.
+ *
+ * Every path that attributes takes it BEFORE its first write for the
+ * customer: /attribution/events, conversions, coupon redemptions,
+ * identify, PayPal and the Stripe webhook. Taken later, a request holding
+ * an uncommitted Identity or Event row could wait for the lock while the
+ * request holding the lock waits for that row. Two exceptions: corrective
+ * events, which attribute nothing (a refund locks its conversions' Event
+ * rows without this lock), and the webhook's coupon redemption for a cus_
+ * user, which only adds a new synthetic Click and its Identity, rows
+ * nobody else can be holding.
+ *
+ * A request that takes two of these locks can deadlock with one taking the
+ * same two in the other order. Fraud-review unflag takes several, so it
+ * takes them in userId order; Postgres aborts one side of any other cycle,
+ * and the request fails rather than paying twice.
+ *
+ * Re-entrant within a transaction, so taking it again (attributeEvent,
+ * attributeBacklogForUser) costs nothing. The Stripe webhook's
+ * lockMerchantUser is this lock. Outside a transaction it's released at the
+ * end of the statement, so it does nothing.
+ */
+export async function lockCustomer(db: Knex, tenantId: string, userId: string): Promise<void> {
+  await db.raw(`select pg_advisory_xact_lock(hashtext(?::text || ':' || ?::text))`, [tenantId, userId]);
+}
+
 export async function attributeEvent(
   db: Knex,
   event: EventRow,
   modelOverride?: AttributionModel,
 ): Promise<AttributeResult> {
+  // A corrective event never attributes, and it can arrive holding Event
+  // row locks (refunds.ts), so it doesn't take the customer lock: the order
+  // is always the customer lock first, then Event rows.
+  if (!CORRECTIVE_EVENT_TYPES.has(event.type)) await lockCustomer(db, event.tenantId, event.userId);
   const outcome = await decideAttribution(db, event, modelOverride);
   if (outcome.status !== 'decided') return { status: outcome.status };
   const { model, touches } = outcome.decision;
@@ -291,7 +339,9 @@ export async function attributeEvent(
         amount: amount.toFixed(2),
         currency,
         status: 'accrued',
-        metadata: commissionMetadata(accrual, ruleIndex, subRule.type),
+        // `trigger` is the record isFirstConversion reads: which commission
+        // was the partner's first-time one for this customer.
+        metadata: { ...commissionMetadata(accrual, ruleIndex, subRule.type), trigger: subRule.trigger },
       });
       if (!firstCommissionId) {
         firstCommissionId = commissionId;
@@ -633,9 +683,17 @@ async function priorConversions(
  * The Event row lock serialises concurrent replays for the same user (two
  * devices logging in at once): each would otherwise see the event
  * unattributed and insert its own winner. The re-check after the lock reads
- * a fresh snapshot, so the second replay sees the first one's rows.
+ * a fresh snapshot, so the second replay sees the first one's rows. The
+ * customer lock comes first, so the order is the same as attributeEvent's
+ * (customer, then Event rows) and the two can't deadlock.
+ *
+ * Events replay oldest first, and the Event id (a ULID) orders events
+ * stamped the same instant, so the same rows always replay in the same
+ * order: the one that takes a `first` commission doesn't depend on the
+ * order Postgres happens to return them in.
  */
 export async function attributeBacklogForUser(db: Knex, tenantId: string, userId: string): Promise<number> {
+  await lockCustomer(db, tenantId, userId);
   // userId is unique per tenant only; see attributeEvent.
   const events = await db<EventRow>(TABLES.Event)
     .where({ tenantId, userId })
@@ -643,7 +701,10 @@ export async function attributeBacklogForUser(db: Knex, tenantId: string, userId
     .whereNotExists(
       db(TABLES.Attribution).select(db.raw('1')).whereRaw('?? = ??', [`${TABLES.Attribution}.eventId`, `${TABLES.Event}.id`]),
     )
-    .orderBy('ts', 'asc');
+    .orderBy([
+      { column: 'ts', order: 'asc' },
+      { column: 'id', order: 'asc' },
+    ]);
   let attributed = 0;
   for (const event of events) {
     await db(TABLES.Event).where({ id: event.id }).forUpdate().first('id');
@@ -705,6 +766,10 @@ export function parseCommissionRule(raw: unknown): CommissionRule {
       value: r.value,
       currency: r.currency,
       recurring: r.recurring,
+      // The API refuses products on this shape, but an import doesn't check:
+      // dropped, a product-limited rule would pay on every product. Kept, the
+      // engine reads it (and an unreadable one matches nothing).
+      ...('products' in raw ? { products: (raw as { products?: CommissionSubRule['products'] }).products } : {}),
     }];
   }
   throw new Error('Invalid commissionRule on Campaign');
@@ -773,9 +838,10 @@ export function rulesFor(snapshot: CommissionSnapshotRules | undefined, campaign
  * rule doesn't apply to this event (type mismatch, first-trigger already
  * fired, or recurringMonths cap reached).
  *
- * Trigger checks issue one query each against (Attribution × Event); the
- * indexes on Attribution(partnerId) + Event(userId) keep this O(log n).
- * The cap check piggybacks on the same join so it's a second small query.
+ * The trigger check is up to two small queries against (Attribution ×
+ * Event), the second joining Commission (isFirstConversion); the indexes
+ * on Attribution(partnerId) + Event(userId) keep them O(log n). The cap
+ * check piggybacks on the same join.
  */
 async function evaluateSubRule(
   db: Knex,
@@ -786,30 +852,43 @@ async function evaluateSubRule(
 ): Promise<SubRuleAccrual | null> {
   if (!ruleTakesEventType(subRule, event.type)) return null;
 
+  // A rule limited to products pays only on a sale that includes one, and
+  // its earlier-sale lookups below count only such sales. Only an omitted
+  // list means every product: one that's present but unreadable (an import
+  // doesn't validate rules) matches nothing.
+  let scope: ReturnType<typeof productScope> | null = null;
+  if (subRule.products !== undefined) {
+    const refs = readProductRefs(subRule.products);
+    if (!refs) return null;
+    scope = productScope(refs, event);
+    if (scope.matched.length === 0) return null;
+  }
+  const sameProducts = (q: Knex.QueryBuilder) => (scope ? q.andWhereRaw(productMatchSql(db, scope.ids)) : q);
+
   if (subRule.trigger === 'first' || subRule.trigger === 'subsequent') {
-    // "Has this (partner, user, eventType) been attributed before?"
-    // first      → fire only when there's NO prior attribution
-    // subsequent → fire only when there IS a prior attribution
+    // first      → fire only on the partner's first conversion of this type
+    //              for this customer (isFirstConversion)
+    // subsequent → fire on every other one: the exact complement
     // Refunds don't re-arm the lookup; if a brand wants a refund to
     // re-trigger the bonus they'd reverse the prior commission and
     // re-attribute, consistent with how holdback works.
-    const prior = await db(TABLES.Attribution)
-      .join(TABLES.Event, `${TABLES.Event}.id`, `${TABLES.Attribution}.eventId`)
-      .where(`${TABLES.Attribution}.partnerId`, partnerId)
-      .andWhere(`${TABLES.Event}.userId`, event.userId)
-      .andWhere(`${TABLES.Event}.type`, event.type)
-      .andWhere(`${TABLES.Event}.ts`, '<', event.ts)
-      .first(`${TABLES.Event}.id`);
-    if (subRule.trigger === 'first' && prior) return null;
-    if (subRule.trigger === 'subsequent' && !prior) return null;
+    const first = await isFirstConversion(db, event, partnerId, sameProducts);
+    if (subRule.trigger === 'first' && !first) return null;
+    if (subRule.trigger === 'subsequent' && first) return null;
   }
 
+  // The cap counts from the earliest attributed event by time (this one
+  // included), not from the one that took the `first` commission: an older
+  // event that arrives late moves the start back, which only ever shortens
+  // what's left. The customer lock keeps a racing request from missing it.
   if (subRule.recurring && subRule.recurringMonths != null) {
-    const first = (await db(TABLES.Attribution)
-      .join(TABLES.Event, `${TABLES.Event}.id`, `${TABLES.Attribution}.eventId`)
-      .where(`${TABLES.Attribution}.partnerId`, partnerId)
-      .andWhere(`${TABLES.Event}.userId`, event.userId)
-      .andWhere(`${TABLES.Event}.type`, event.type)
+    const first = (await sameProducts(
+      db(TABLES.Attribution)
+        .join(TABLES.Event, `${TABLES.Event}.id`, `${TABLES.Attribution}.eventId`)
+        .where(`${TABLES.Attribution}.partnerId`, partnerId)
+        .andWhere(`${TABLES.Event}.userId`, event.userId)
+        .andWhere(`${TABLES.Event}.type`, event.type),
+    )
       .orderBy(`${TABLES.Event}.ts`, 'asc')
       .first(`${TABLES.Event}.ts as ts`)) as { ts: Date | string } | undefined;
     if (first) {
@@ -819,8 +898,110 @@ async function evaluateSubRule(
     }
   }
 
-  if (subRule.bands || subRule.tiers) return accrueSlabRule(db, subRule, event, { partnerId, programId });
-  return { amount: computeSubRuleAmount(subRule, event) };
+  // Limited to products, the rate (and any slab) applies to their share of
+  // the sale, not to the whole of it.
+  const priced = scope ? { ...event, value: scope.basis.toFixed(2) } : event;
+  const accrual =
+    subRule.bands || subRule.tiers
+      ? await accrueSlabRule(db, subRule, priced, { partnerId, programId })
+      : { amount: computeSubRuleAmount(subRule, priced) };
+  return scope ? { ...accrual, products: { matched: scope.matchedIds, basis: scope.basis } } : accrual;
+}
+
+/**
+ * A product-limited rule against one sale: the rule's ids, the sale's items
+ * it matched, and the share of the sale's value they account for
+ * (productShare). A sale whose product list is known to be short of its
+ * lines has no share to work out, so a percent rate pays nothing on it; a
+ * fixed amount still pays when a matching item is there.
+ */
+function productScope(
+  refs: NonNullable<CommissionSubRule['products']>,
+  event: EventRow,
+): { ids: string[]; matched: EventProduct[]; matchedIds: string[]; basis: number } {
+  const ids = ruleProductIds(refs);
+  const items = eventProducts(event.metadata) ?? [];
+  const matched = matchingProducts(refs, items);
+  // The rule's own ids that matched: a rule on a price records the price.
+  const wanted = new Set(ids);
+  const matchedIds = [...new Set(matched.map((m) => (m.id != null && wanted.has(m.id) ? m.id : m.price!)))];
+  const basis = eventProductsIncomplete(event.metadata) ? 0 : productShare(Number(event.value ?? 0), items, matched);
+  return { ids, matched, matchedIds, basis };
+}
+
+/**
+ * Whether `event` is `partnerId`'s first conversion of its type for its
+ * customer, for `first` / `subsequent` sub-rules. It is unless one of the
+ * customer's OTHER events of that type attributed to the partner either:
+ *
+ *   1. is earlier, by (ts, Event id). The Event id is a ULID, so two events
+ *      stamped the same second still have an order, and it's the same order
+ *      however often the rows are read: a replay reaches the same answer,
+ *      whatever order the events arrived in. Or
+ *   2. already holds the partner's first-time commission: an own Commission
+ *      (not a recruiter's share) whose `metadata.trigger` is `first`.
+ *
+ * Test 2 is the once-only award record, and it's what keeps "at most once"
+ * when events arrive out of order. The old `Event.ts < event.ts` test alone
+ * paid an older event that arrived after a newer one had already been paid,
+ * and paid both of two events stamped the same second. No ordering can stop
+ * the first of those: the older event is the earliest by any order, and the
+ * ledger can't take the newer one's payment back. The record is the
+ * Commission row itself, which is immutable and already in every export, so
+ * no new table needs exporting, importing, backfilling or keying by a rule's
+ * scope. It also means an event that paid no first-time commission (the
+ * program had ended, a $0 sale) holds nothing. An older event delivered
+ * after it can still take the commission, and so can an earlier event that
+ * a fraud review drops and replays. Commissions accrued before the trigger
+ * was recorded have no `trigger`, and each of those counts as holding it,
+ * so a ledger from before this can't be paid twice.
+ *
+ * A rule limited to products counts only the customer's sales of those
+ * products, in both tests (`sameProducts`, from evaluateSubRule). A holder
+ * is any first-time commission on such a sale, not only this rule's: that
+ * still pays at most once per product scope, and it holds when a brand
+ * edits the rule's product ids. It can only withhold, never pay twice.
+ *
+ * This event's own rows don't count, so each touch of the same partner on
+ * it pays its weighted share. attributeEvent holds the customer lock
+ * (lockCustomer), so two requests for one customer take turns, and the
+ * second sees the first's rows.
+ */
+async function isFirstConversion(
+  db: Knex,
+  event: EventRow,
+  partnerId: string,
+  sameProducts: (q: Knex.QueryBuilder) => Knex.QueryBuilder,
+): Promise<boolean> {
+  const A = TABLES.Attribution;
+  const E = TABLES.Event;
+  const C = TABLES.Commission;
+  const others = () =>
+    sameProducts(
+      db(A)
+        .join(E, `${E}.id`, `${A}.eventId`)
+        .where(`${A}.partnerId`, partnerId)
+        .andWhere(`${E}.userId`, event.userId)
+        .andWhere(`${E}.type`, event.type)
+        .andWhereNot(`${E}.id`, event.id),
+    );
+
+  // Compared with the stored row, not event.ts: a JS Date drops the
+  // microseconds Postgres keeps.
+  const earlier = await others()
+    .andWhereRaw(`(??, ??) < (select "ts", "id" from ?? where "id" = ?)`, [`${E}.ts`, `${E}.id`, E, event.id])
+    .first(`${E}.id`);
+  if (earlier) return false;
+
+  const holder = await others()
+    .join(C, `${C}.attributionId`, `${A}.id`)
+    .andWhere(`${C}.partnerId`, partnerId)
+    .whereNull(`${C}.sourceCommissionId`)
+    .andWhere((q) =>
+      q.whereRaw(`??->>'trigger' = 'first'`, [`${C}.metadata`]).orWhereRaw(`??->>'trigger' is null`, [`${C}.metadata`]),
+    )
+    .first(`${E}.id`);
+  return !holder;
 }
 
 /**

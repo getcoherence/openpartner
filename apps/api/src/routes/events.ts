@@ -2,10 +2,11 @@ import { Router } from 'express';
 import { utcDateTime, z } from '../zod.js';
 import { ulid } from 'ulid';
 import { TABLES, type EventRow } from '@openpartner/db';
-import { attributeEvent } from '../attribution.js';
+import { attributeEvent, lockCustomer } from '../attribution.js';
 import { grantScope, requireAdmin, requireAuth } from '../auth.js';
 import { sameConversion, storedAttribution } from '../conversion-ingest.js';
 import { currencyInputSchema, ingestCurrency } from '../currency.js';
+import { eventProductsInputSchema, metadataWithProducts } from '../product-commissions.js';
 import { recordedFromStripe, recordedFromStripeDetail } from '../stripe-app.js';
 import { tenantOf } from '../tenancy.js';
 
@@ -18,6 +19,11 @@ export const schema = z.object({
    *  default currency (Settings → Program). */
   currency: currencyInputSchema.optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  /** What was bought: one item per product, for commission rules limited
+   *  to products (docs/product-commissions.md). With more than one, each
+   *  needs its `amount`, its part of `value`. Stored as
+   *  `metadata.products`. */
+  products: eventProductsInputSchema.optional(),
   ts: utcDateTime().optional(),
   /** Idempotency key — the source system's stable id for this one event
    *  (order id, invoice id, CRM deal-stage change id). A retry with the
@@ -51,13 +57,17 @@ eventsRouter.post('/attribution/events', requireAuth, grantScope('events:write')
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
   const eventId = ulid();
-  const { userId, type, value, currency, metadata, ts, externalEventId } = body.data;
+  const { userId, type, value, currency, metadata, products, ts, externalEventId } = body.data;
   // A Stripe invoice / Checkout Session the brand's Stripe account reports
   // itself (connected, or a self-host's own webhook): Stripe's record of that
   // payment wins (stripe-app.ts).
   if (await recordedFromStripe(db, tenantId, externalEventId)) {
     return res.status(409).json({ error: 'recorded_from_stripe', detail: recordedFromStripeDetail() });
   }
+  // The customer lock before the Event row, as on every path that
+  // attributes (lockCustomer): a Stripe delivery for this user takes it
+  // before inserting, and the two can hold one key between them.
+  await lockCustomer(db, tenantId, userId);
   const row = {
     id: eventId,
     tenantId,
@@ -66,7 +76,7 @@ eventsRouter.post('/attribution/events', requireAuth, grantScope('events:write')
     value: value != null ? value.toFixed(2) : null,
     currency: await ingestCurrency(db, tenantId, currency),
     externalEventId: externalEventId ?? null,
-    metadata: metadata ?? {},
+    metadata: metadataWithProducts(metadata, products),
     ts: ts ? new Date(ts) : new Date(),
   };
 

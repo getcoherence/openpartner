@@ -67,7 +67,7 @@
 import type { Knex } from 'knex';
 import { ulid } from 'ulid';
 import { TABLES, type ClickRow, type EventRow, type PaypalConnectionRow, type PaypalSubscriptionRow } from '@openpartner/db';
-import { attributeEvent } from './attribution.js';
+import { attributeEvent, lockCustomer } from './attribution.js';
 import { clickUserId } from './conversion-ingest.js';
 import { ingestCurrency } from './currency.js';
 import {
@@ -480,6 +480,9 @@ async function settlePayment(
   if (!(value > 0)) return done('ignored');
 
   const userId = clickUserId(ref.click.id);
+  // The customer lock before any write, as on every path that attributes
+  // (lockCustomer). After the fact lock, which nothing takes after this one.
+  await lockCustomer(trx, tenantId, userId);
   await trx(TABLES.Identity).insert({ id: ulid(), tenantId, clickId: ref.click.id, userId }).onConflict(['clickId', 'userId']).ignore();
   const [event] = (await trx<EventRow>(TABLES.Event)
     .insert({
@@ -639,6 +642,9 @@ async function settleSubscription(
   if (!fact.activated) return done('linked');
 
   const userId = clickUserId(ref.click.id);
+  // The customer lock before any write, as on every path that attributes
+  // (lockCustomer). After the fact lock, which nothing takes after this one.
+  await lockCustomer(trx, tenantId, userId);
   await trx(TABLES.Identity).insert({ id: ulid(), tenantId, clickId: ref.click.id, userId }).onConflict(['clickId', 'userId']).ignore();
   const [event] = (await trx<EventRow>(TABLES.Event)
     .insert({

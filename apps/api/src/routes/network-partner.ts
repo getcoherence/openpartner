@@ -287,6 +287,8 @@ networkPartnerRouter.get('/network/me/profile', requireAuth, async (req, res) =>
 // updateMeSchema) so a partner can edit every field the creator portal
 // can — including everything the Network's completeness bar checks.
 const isoCountry = z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/, 'expected ISO-3166 alpha-2');
+const AGE_RANGES = ['13-17', '18-24', '25-34', '35-44', '45-54', '55+'] as const;
+
 const updateProfileSchema = z.object({
   name: z.string().trim().min(1).max(120).optional(),
   handle: z
@@ -310,7 +312,10 @@ const updateProfileSchema = z.object({
   profile: z.record(z.string(), z.unknown()).optional(),
   categories: z.array(z.string().trim().toLowerCase().min(1).max(40)).max(12).optional(),
   audienceLocations: z.array(isoCountry).max(5).optional(),
-  audienceAgeRange: z.enum(['13-17', '18-24', '25-34', '35-44', '45-54', '55+']).nullable().optional(),
+  // Several buckets; the Network saves them youngest first. audienceAgeRange
+  // is the one-bucket field from before, still passed through.
+  audienceAgeRanges: z.array(z.enum(AGE_RANGES)).max(AGE_RANGES.length).optional(),
+  audienceAgeRange: z.enum(AGE_RANGES).nullable().optional(),
   audienceSize: z.enum(AUDIENCE_SIZES).nullable().optional(),
   portfolioLinks: z.array(z.string().url().max(500)).max(6).optional(),
   pastBrands: z.array(z.string().trim().min(1).max(80)).max(20).optional(),

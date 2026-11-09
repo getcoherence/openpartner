@@ -4,6 +4,13 @@
 
 ### Added
 
+- **Products on events.** `trackEvent()` and `trackConversion()` take
+  `products`: what was bought, one item per product (`id`, and optionally
+  `price`, `name`, `amount`, `quantity`). Brands can limit a commission
+  rule to some products; a percent rule then pays on those products' share
+  of the event's `value`. With more than one product, each needs its
+  `amount`.
+
 - **Regional consent.** `consent: 'regional'` (script tag:
   `data-consent="pending" data-consent-region="on"`) lets where the visitor
   is decide. The SDK

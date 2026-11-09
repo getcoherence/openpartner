@@ -19,6 +19,30 @@ export function creatorErrorCode(e: unknown): Error {
   return e instanceof Error ? e : new Error(String(e));
 }
 
+/** A creator password → the sign-in token the Network would have mailed.
+ *  Throws the Network's error code. */
+export async function creatorPasswordToken(email: string, password: string): Promise<string> {
+  try {
+    const { token } = await creatorApi<{ token: string }>('/creators/signin/password', {
+      method: 'POST',
+      body: { email, password },
+    });
+    return token;
+  } catch (e) {
+    throw creatorErrorCode(e);
+  }
+}
+
+/** Redeem a creator sign-in token for the session, as the emailed link's
+ *  landing page does. Throws the Network's error code. */
+export async function redeemCreatorToken(token: string): Promise<void> {
+  try {
+    await creatorApi('/creators/verify', { method: 'POST', body: { token } });
+  } catch (e) {
+    throw creatorErrorCode(e);
+  }
+}
+
 /**
  * Creator sign-in: email + password, "Continue with Google", or an emailed
  * link. Every way ends at the Network's POST /creators/verify, which makes
@@ -40,15 +64,7 @@ export function CreatorSigninPage() {
         emailPlaceholder="ada@example.com"
         googleHref={providers.googleStartUrl ? googleStartHref(providers.googleStartUrl, 'creator') : null}
         onPassword={async (email, password) => {
-          try {
-            const { token } = await creatorApi<{ token: string }>('/creators/signin/password', {
-              method: 'POST',
-              body: { email, password },
-            });
-            await creatorApi('/creators/verify', { method: 'POST', body: { token } });
-          } catch (e) {
-            throw creatorErrorCode(e);
-          }
+          await redeemCreatorToken(await creatorPasswordToken(email, password));
           nav('/creator', { replace: true });
         }}
         onLink={(email) =>

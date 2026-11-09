@@ -49,11 +49,14 @@ Then commission is evaluated per touch, as before, with one addition:
   click is inside the window, which is exactly where they paid before. So
   turning this on never pays a rule that the brand didn't mark recurring
   for longer than it used to pay.
-- `recurringMonths` is unchanged: it counts from the customer's first
+- `recurringMonths` is unchanged: it counts from the customer's earliest
   attributed event of the rule's type for that partner.
 - `trigger: 'first'` / `'subsequent'`, the program's `endsAt`, partner
   commission overrides and slabs all apply exactly as they do for any
-  other event.
+  other event. A `first` rule pays once per partner, customer and event
+  type, on the earliest of those events (same-second ties go to the lower
+  event id). An older event that arrives after a newer one has already
+  been paid the first-time commission counts as `subsequent`.
 
 With `renewalsStayWithPartner` **off**, rules 1 and 3 are skipped: every
 event is attributed on its own against the clicks in the window, which is
