@@ -466,6 +466,15 @@ bundle from before it imports with `{}`. Since then each accrued
 commission also records `metadata.rateType` (`percent` | `fixed`); older
 rows don't have it, and nothing on import needs it.
 
+Since November 2026 an accrued commission also records `metadata.trigger`
+(`every` | `first` | `subsequent`). The engine reads it back, so an import
+must keep it. It marks which event was paid a `first` rule. Without it, an
+older event that arrives after a newer one has been paid would be paid
+the first-time commission again. A row without it (older, or from a bundle
+that predates it) is read as possibly the first one. That's the
+conservative choice: it can withhold a `first` commission, never pay one
+twice. No version bump: it's a key inside an existing JSON column.
+
 Refunds and chargebacks (Oct 2026) need nothing extra either, and no
 version bump. The refund itself is an `Event` (`type` `refund` or
 `chargeback`, negative `value`; an API refund names its conversion in

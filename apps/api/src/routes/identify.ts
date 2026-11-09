@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from '../zod.js';
 import { ulid } from 'ulid';
 import { TABLES, type ClickLandingRow, type ClickRow, type IdentityRow } from '@openpartner/db';
-import { attributeBacklogForUser } from '../attribution.js';
+import { attributeBacklogForUser, lockCustomer } from '../attribution.js';
 import { sendTenantSlugMissing } from '../auth.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
 import { tenantOf } from '../tenancy.js';
@@ -53,6 +53,12 @@ identifyRouter.post(
       await noteTrackingIssue(db, tenantId, 'identify_unknown_click', cref);
       return res.status(404).json({ error: 'click_not_found' });
     }
+
+    // The customer lock before the Identity row, as on every path that
+    // attributes (lockCustomer): a Stripe checkout for this user takes it
+    // before stitching the same pair, and each would otherwise wait on the
+    // other.
+    await lockCustomer(db, tenantId, userId);
 
     // Multi-touch: every (clickId, userId) pair kept. Unique constraint makes
     // re-identify() calls for the same click a no-op.

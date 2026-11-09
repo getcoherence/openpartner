@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { utcDateTime, z } from '../zod.js';
 import { ulid } from 'ulid';
 import { TABLES, type EventRow } from '@openpartner/db';
-import { attributeEvent } from '../attribution.js';
+import { attributeEvent, lockCustomer } from '../attribution.js';
 import { grantScope, requireAdmin, requireAuth } from '../auth.js';
 import { sameConversion, storedAttribution } from '../conversion-ingest.js';
 import { currencyInputSchema, ingestCurrency } from '../currency.js';
@@ -58,6 +58,10 @@ eventsRouter.post('/attribution/events', requireAuth, grantScope('events:write')
   if (await recordedFromStripe(db, tenantId, externalEventId)) {
     return res.status(409).json({ error: 'recorded_from_stripe', detail: recordedFromStripeDetail() });
   }
+  // The customer lock before the Event row, as on every path that
+  // attributes (lockCustomer): a Stripe delivery for this user takes it
+  // before inserting, and the two can hold one key between them.
+  await lockCustomer(db, tenantId, userId);
   const row = {
     id: eventId,
     tenantId,

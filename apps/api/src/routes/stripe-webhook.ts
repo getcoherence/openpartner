@@ -14,7 +14,7 @@ import {
   type TenantRow,
 } from '@openpartner/db';
 import { appDb, db } from '../db.js';
-import { attributeEvent, CORRECTIVE_EVENT_TYPES } from '../attribution.js';
+import { attributeEvent, CORRECTIVE_EVENT_TYPES, lockCustomer } from '../attribution.js';
 import { clickUserId } from '../conversion-ingest.js';
 import { ingestCurrency } from '../currency.js';
 import { inferPlanFromPriceIds, persistMerchantSubscription, updateTenantPlanFromStripeSub } from './billing.js';
@@ -398,6 +398,10 @@ async function recordMappedEvent(
       ? mapped.metadata.stripeInvoiceId
       : null;
   const externalEventId = mapped.externalEventId ?? invoiceKey ?? event.id;
+  // The customer lock before the Event row, as on every path that attributes
+  // (lockCustomer). Not for a corrective event: it attributes nothing, and a
+  // refund holds its conversions' Event rows by now.
+  if (!CORRECTIVE_EVENT_TYPES.has(mapped.type)) await lockCustomer(trx, tenantId, mapped.userId);
   const inserted = await trx<EventRow>(TABLES.Event)
     .insert({
       id: eventId,
@@ -1726,6 +1730,8 @@ async function stitchCheckoutCustomer(
 ): Promise<{ click: ClickRow; firstStitch: boolean } | null> {
   const click = await trx<ClickRow>(TABLES.Click).where({ id: cref, tenantId }).first();
   if (!click) return null;
+  // The customer lock before the Identity row (lockCustomer).
+  await lockCustomer(trx, tenantId, userId);
   const inserted = await trx<IdentityRow>(TABLES.Identity)
     .insert({ id: ulid(), tenantId: click.tenantId, clickId: cref, userId })
     .onConflict(['clickId', 'userId'])
@@ -1742,10 +1748,11 @@ async function stitchCheckoutCustomer(
  * another writes: the signup dedupe reads the signup, attribution reads
  * the Identity the checkout stitches, the checkout's backlog pass reads
  * the early events. Unserialized, each read misses the other's
- * uncommitted write.
+ * uncommitted write. It's attribution's customer lock (lockCustomer), so
+ * attributeEvent, which takes it again, adds no second lock to order.
  */
 async function lockMerchantUser(trx: Knex.Transaction, tenantId: string, userId: string): Promise<void> {
-  await trx.raw(`select pg_advisory_xact_lock(hashtext(?::text || ':' || ?::text))`, [tenantId, userId]);
+  await lockCustomer(trx, tenantId, userId);
 }
 
 /**
@@ -1775,7 +1782,12 @@ async function attributeUnattributedEvents(trx: Knex.Transaction, tenantId: stri
         .from(TABLES.Attribution)
         .whereRaw(`"${TABLES.Attribution}"."eventId" = "${TABLES.Event}"."id"`);
     })
-    .orderBy('ts', 'asc');
+    // Ties by Event id, as attributeBacklogForUser does, so the event that
+    // takes a `first` commission doesn't depend on row order.
+    .orderBy([
+      { column: 'ts', order: 'asc' },
+      { column: 'id', order: 'asc' },
+    ]);
   for (const event of events) {
     const result = await attributeEvent(trx, event as EventRow);
     if (result.status === 'attributed') await reapplyRecordedRefunds(trx, event as EventRow);
@@ -1905,7 +1917,12 @@ async function maybeRedeemStripeCoupons(
       merchantSet = customerId != null && userId !== customerId;
       // As at a cref checkout: lock a merchant-set userId before the
       // stitch, so a concurrent delivery for this user sees our Identity
-      // or has committed the Event the backlog pass below picks up.
+      // or has committed the Event the backlog pass below picks up. A cus_
+      // or guest-email user isn't locked here: the redemption only adds a
+      // new synthetic Click and its Identity, rows nobody else can be
+      // holding, and this delivery may go on to lock a merchant userId
+      // for the same customer (subscription metadata), which would take
+      // two customer locks in an order of its own.
       if (merchantSet) await lockMerchantUser(trx, tenantId, userId);
     }
     const { reused } = await ensureCouponClickAndIdentity(trx, tenantId, coupon, userId, ts);
