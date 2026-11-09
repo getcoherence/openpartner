@@ -5,8 +5,11 @@
  * array, so both edit it with the same control.
  */
 
-import { Trash2 } from 'lucide-react';
-import type { CommissionBands, CommissionTiers } from '@openpartner/db';
+import { useId, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { Trash2, X } from 'lucide-react';
+import { MAX_RULE_PRODUCTS, PRODUCT_TEXT_MAX, type CommissionBands, type CommissionTiers } from '@openpartner/db';
+import { api } from '../api.js';
 import { theme } from '../theme.js';
 import { Input, Label, Select } from '../ui.js';
 import { useDefaultCurrency } from './useBrand.js';
@@ -25,6 +28,27 @@ export interface CommissionSubRule {
   bands?: CommissionBands;
   /** Rate by the partner's attributed performance over a window. */
   tiers?: CommissionTiers;
+  /** Only sales of these products (product or price ids). Omitted = every
+   *  product. An empty list is the editor mid-pick: Save waits for one.
+   *  See docs/product-commissions.md. */
+  products?: Array<{ id: string; name?: string }>;
+}
+
+/** Why a rule's product list can't be saved, or null. Every form that
+ *  renders this editor gates Save on it, as on ruleSlabProblem. */
+export function ruleProductProblem(rule: CommissionSubRule): string | null {
+  if (rule.products === undefined) return null;
+  if (!Array.isArray(rule.products) || rule.products.length === 0) return 'Add a product, or pay on all products.';
+  if (rule.products.length > MAX_RULE_PRODUCTS) return `At most ${MAX_RULE_PRODUCTS} products.`;
+  return null;
+}
+
+/** A product or price on the brand's recent sales (GET /programs/products). */
+interface SeenProduct {
+  id: string;
+  kind: 'product' | 'price';
+  name: string | null;
+  productId: string | null;
 }
 
 /**
@@ -96,6 +120,16 @@ export function CompoundRuleEditor({
   onChange: (rules: CommissionSubRule[]) => void;
 }) {
   const defaultCurrency = useDefaultCurrency();
+  // Suggestions for the product picker, fetched once a rule is limited to
+  // products.
+  const picking = rules.some((r) => r.products !== undefined);
+  const { data: seen } = useQuery({
+    queryKey: ['seen-products'],
+    queryFn: () => api<{ products?: SeenProduct[] }>('/programs/products'),
+    enabled: picking,
+    staleTime: 60_000,
+  });
+  const seenProducts = seen?.products ?? [];
   const update = (i: number, patch: Partial<CommissionSubRule>) => {
     onChange(rules.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   };
@@ -120,6 +154,7 @@ export function CompoundRuleEditor({
             key={i}
             rule={rule}
             defaultCurrency={defaultCurrency}
+            seenProducts={seenProducts}
             onChange={(patch) => update(i, patch)}
             onRemove={rules.length > 1 ? () => remove(i) : undefined}
           />
@@ -171,11 +206,13 @@ function fixedCurrency(rule: CommissionSubRule, defaultCurrency: string): string
 function SubRuleRow({
   rule,
   defaultCurrency,
+  seenProducts,
   onChange,
   onRemove,
 }: {
   rule: CommissionSubRule;
   defaultCurrency: string;
+  seenProducts: SeenProduct[];
   onChange: (patch: Partial<CommissionSubRule>) => void;
   onRemove?: () => void;
 }) {
@@ -320,6 +357,7 @@ function SubRuleRow({
           )}
         </div>
       )}
+      <ProductsRow rule={rule} seenProducts={seenProducts} onChange={onChange} />
       {rule.recurring && (
         <div style={{ gridColumn: '1 / -1', display: 'grid', gridTemplateColumns: 'auto 120px 1fr', gap: 8, alignItems: 'center' }}>
           <span style={{ fontSize: 12, color: theme.textMuted }}>Cap recurring at</span>
@@ -349,6 +387,116 @@ function SubRuleRow({
             Clear currency
           </button>
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Which products a rule pays on: every product, or only those listed (by
+ * product or price id). Suggestions come from the brand's recent sales;
+ * an id typed by hand works too, for a product not sold yet.
+ */
+function ProductsRow({
+  rule,
+  seenProducts,
+  onChange,
+}: {
+  rule: CommissionSubRule;
+  seenProducts: SeenProduct[];
+  onChange: (patch: Partial<CommissionSubRule>) => void;
+}) {
+  const [draft, setDraft] = useState('');
+  const listId = `op-products-${useId()}`;
+  // A list that's present but not a list (an imported rule) pays on nothing:
+  // show it as an empty pick, which Save waits on.
+  const chosen = rule.products === undefined ? undefined : Array.isArray(rule.products) ? rule.products : [];
+  const problem = ruleProductProblem(rule);
+  const add = () => {
+    const id = draft.trim().slice(0, PRODUCT_TEXT_MAX);
+    setDraft('');
+    if (!id || !chosen || chosen.some((p) => p.id === id)) return;
+    // A product's name, never a price's: "Team" on the annual price alone
+    // would tell partners every Team sale pays.
+    const known = seenProducts.find((p) => p.id === id && p.kind === 'product');
+    onChange({ products: [...chosen, known?.name ? { id, name: known.name } : { id }] });
+  };
+  const offered = seenProducts.filter((p) => !chosen?.some((c) => c.id === p.id));
+
+  return (
+    <div
+      className="op-grid-collapse"
+      style={{ gridColumn: '1 / -1', display: 'grid', gridTemplateColumns: 'auto 170px 1fr', gap: 8, alignItems: 'center' }}
+    >
+      <span
+        style={hintStyle}
+        title="Matched against the product or price ids on each sale. A percent rate pays on those products' share of the sale."
+      >
+        Products
+      </span>
+      <Select
+        aria-label="Products"
+        value={chosen ? 'some' : 'all'}
+        onChange={(e) => onChange({ products: e.target.value === 'some' ? chosen ?? [] : undefined })}
+      >
+        <option value="all">All products</option>
+        <option value="some">Only these</option>
+      </Select>
+      {chosen ? (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+          {chosen.map((p) => (
+            <span
+              key={p.id}
+              title={p.id}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                padding: '2px 4px 2px 8px',
+                borderRadius: 999,
+                background: theme.surface,
+                border: `1px solid ${theme.border}`,
+                fontSize: 12,
+              }}
+            >
+              {p.name ?? p.id}
+              <button
+                type="button"
+                aria-label={`Remove ${p.name ?? p.id}`}
+                onClick={() => onChange({ products: chosen.filter((c) => c.id !== p.id) })}
+                style={{ background: 'transparent', border: 'none', color: theme.textMuted, cursor: 'pointer', padding: 2, display: 'flex' }}
+              >
+                <X size={12} />
+              </button>
+            </span>
+          ))}
+          <Input
+            aria-label="Add product"
+            list={listId}
+            placeholder="Product or price id"
+            value={draft}
+            maxLength={PRODUCT_TEXT_MAX}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                add();
+              }
+            }}
+            onBlur={add}
+            style={{ width: 200 }}
+          />
+          <datalist id={listId}>
+            {offered.map((p) => (
+              <option key={`${p.kind}:${p.id}`} value={p.id}>
+                {[p.name, p.kind === 'price' ? 'price' : null].filter(Boolean).join(' · ') || p.id}
+              </option>
+            ))}
+          </datalist>
+          {problem && <span style={{ fontSize: 12, color: theme.danger }}>{problem}</span>}
+        </div>
+      ) : (
+        <span />
       )}
     </div>
   );

@@ -24,7 +24,12 @@ import { autoMintCouponsForGrants } from './coupons.js';
 import { dispatchEvent } from '../webhook-dispatcher.js';
 import { onCommit } from '../on-commit.js';
 import type { WebhookPayload } from '../openapi/webhook-events.js';
-import { commissionSlabFields, currencyCodeSchema, refineCommissionSubRule } from '../commission-rule-schema.js';
+import {
+  commissionProductFields,
+  commissionSlabFields,
+  currencyCodeSchema,
+  refineCommissionSubRule,
+} from '../commission-rule-schema.js';
 import { vetApprovalSnapshot } from '../commission-slabs.js';
 import { isPendingReview } from '../partner-review.js';
 import { findPartnerCommission, legacyRuleColumns, upsertPartnerCommission } from '../partner-commission.js';
@@ -60,6 +65,7 @@ export const overrideSchema = z.object({
           recurring: z.boolean().optional(),
           recurringMonths: z.number().int().positive().max(600).optional(),
           ...commissionSlabFields,
+          ...commissionProductFields,
         })
         .superRefine(refineCommissionSubRule),
     )
@@ -140,6 +146,9 @@ export const createSchema = z.object({
             // snapshot instead of failing the whole approval.
             bands: z.unknown().optional(),
             tiers: z.unknown().optional(),
+            // Same for a rule limited to products: stripping the list
+            // would pay the partner on every product.
+            products: z.unknown().optional(),
           }),
         )
         .min(1)

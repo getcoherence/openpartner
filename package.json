@@ -36,6 +36,8 @@
       "@babel/core@>=7 <7.29.6": "^7.29.6",
       "baseline-browser-mapping@>=2 <2.11.0": "^2.11.0",
       "body-parser@>=1 <1.20.9": "^1.20.9",
+      "fast-uri@>=3 <3.1.9": "^3.1.9",
+      "vite@>=6 <6.4.5": "^6.4.5",
       "eslint-plugin-react-hooks>zod": "^4.6.7"
     }
   },
