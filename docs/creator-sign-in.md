@@ -101,6 +101,33 @@ POST {NETWORK_URL}/admin/creators/signin-token     Authorization: Bearer NETWORK
 
 The Network never creates an account at this endpoint.
 
+### Google on `/signin` (the `account` flow)
+
+`/signin` is where brands and creators both sign in: its emailed link
+mails whichever kinds of account the address has. Its "Continue with
+Google" is `?flow=account`, which mints a platform session. A creator with
+no brand used to get one too, and `/workspaces` then sent them to
+`/brands/new`. Now the callback (`accountLanding`) lands them like the
+`creator` flow, through `POST /admin/creators/signin-token`:
+
+| The Google-verified address | Where the browser goes |
+|---|---|
+| has a brand seat `/workspaces` lists (not revoked, brand active), creator or not | the brand path, as before: `/auth/magic` → `/workspaces`; the Network isn't asked |
+| is an operator (`isAllowedOperator`) | the brand path, as before; the Network isn't asked |
+| neither, and the Network answers `200 { token }` | `/creator/auth/magic?token=…`, no platform session; `?next=` (a page inside a brand) is dropped |
+| neither, and the Network answers `403 creator_not_active` | `/signin?error=creator_not_active`, as `/creator/login` would show |
+| neither, and the Network answers `404 no_creator`, a country refusal, an error, or isn't configured | the brand path, as before. A new address goes on to `/brands/new`: this is also how a brand signs up with Google |
+| any, with `?flow=account_add` ("Add another account") | the brand path, always. It adds a brand account to the browser; the Network isn't asked |
+
+A country refusal doesn't land the creator: the Network checks the country
+before it looks the address up, so the refusal says nothing about whether a
+creator exists. The brand path then applies its own country check at
+`/auth/platform-verify`.
+
+**What this reveals.** Only the browser that just proved the inbox to
+Google sees where it lands. The emailed link tells that inbox's owner the
+same thing: which kinds of account the address has.
+
 ### No account yet: signing up with Google
 
 Google has just verified the address, so signup skips the confirmation

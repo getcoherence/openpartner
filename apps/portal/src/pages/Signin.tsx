@@ -16,11 +16,16 @@ import {
  * emailed link. We don't make the user pick "brand vs creator" up front —
  * a link request looks up which accounts the address has and mails the
  * right link(s), always answering 200 to avoid email enumeration.
- * Passwords and Google are brand accounts only; creators (Network) keep
- * their emailed link.
+ * Passwords are brand accounts only; creators (Network) keep their emailed
+ * link. Google covers both: an address with no brand to enter that is an
+ * active creator lands in the creator portal (accountLanding in
+ * routes/google-auth.ts). With both kinds of account it's the brand, and
+ * "Add another account" (?add=1) only ever adds a brand account.
  *
- * Password and Google sign-in end in the same POST /auth/platform-verify
- * the emailed link's landing page makes (routes/password-auth.ts).
+ * Password and brand Google sign-in end in the same POST
+ * /auth/platform-verify the emailed link's landing page makes
+ * (routes/password-auth.ts); creator Google sign-in ends in the Network's
+ * POST /creators/verify, from /creator/auth/magic.
  */
 export function SigninPage() {
   const nav = useNavigate();

@@ -30,6 +30,12 @@
  *                           inside the workspace, safeNextPath) rides the
  *                           state cookie onto the magic link, as it rides
  *                           /signin's emailed one.
+ *                           Except a creator: /signin is where creators sign
+ *                           in too (its emailed link mails whichever kinds of
+ *                           account the address has), so `account` lands an
+ *                           active Network creator with no brand to enter on
+ *                           the creator portal instead (accountLanding).
+ *                           `account_add` never does: it adds a brand account.
  *   ops                     ops console; operators only.
  *   portal                  one brand's admin or partner (?slug= on multi-tenant).
  *   creator                 an OpenPartner Network creator (multi-tenant; the
@@ -78,6 +84,7 @@ import {
   platformSigninToken,
   tenantSigninCandidates,
   tenantSigninToken,
+  workspaceSeats,
 } from '../signin-handoff.js';
 import { isAllowedOperator } from './platform-admin.js';
 
@@ -345,9 +352,7 @@ googleAuthRouter.get('/auth/google/callback', async (req: Request, res: Response
   }
 
   if (state.f === 'account' || state.f === 'account_add') {
-    // → /auth/magic → POST /auth/platform-verify → /workspaces.
-    const token = await platformSigninToken(db, email, state.f === 'account_add');
-    return res.redirect(buildMagicLinkUrl(token, null, next));
+    return res.redirect(await accountLanding(req, email, state.f === 'account_add', next));
   }
 
   if (state.f === 'creator') return res.redirect(await creatorLanding(req, res, email));
@@ -393,39 +398,99 @@ function creatorNetworkUrl(): string | null {
 /** The Network's refusals worth showing as-is on /creator/login. */
 const CREATOR_ERRORS = new Set(['creator_not_active', 'country_not_supported']);
 
+/** No creator, or the Network's country check: everyday answers on /signin,
+ *  not worth a log line. */
+const EXPECTED_CREATOR_REFUSALS = new Set(['no_creator', 'country_not_supported', 'occupied_region_confirmation_required']);
+
+type CreatorSignin =
+  | { ok: true; url: string }
+  | { ok: false; status: number | null; code: string | null; err: unknown };
+
+/** Ask the Network for the token its sign-in email would carry, and where
+ *  to redeem it: /creator/auth/magic (POST /creators/verify through the
+ *  proxy makes the session). Refused: the Network's status and code —
+ *  404 'no_creator', 403 'creator_not_active', a country refusal — or
+ *  nulls when it gave no usable answer. */
+async function creatorSignin(req: Request, networkUrl: string, email: string): Promise<CreatorSignin> {
+  let token: unknown;
+  try {
+    token = await adminCreatorSigninToken(networkUrl, email, req.ip);
+  } catch (err) {
+    return err instanceof NetworkAdminError
+      ? { ok: false, status: err.status, code: err.code, err }
+      : { ok: false, status: null, code: null, err };
+  }
+  // A 200 without a token is no answer, not a landing that can't sign in.
+  if (typeof token !== 'string' || !token) {
+    return { ok: false, status: null, code: null, err: new Error('Network signin-token answered without a token') };
+  }
+  return { ok: true, url: `${getPortalBaseUrl()}/creator/auth/magic?token=${encodeURIComponent(token)}` };
+}
+
 /**
  * After Google: an existing creator → the Network's sign-in token on
- * /creator/auth/magic (POST /creators/verify through the proxy makes the
- * session). No creator → /creator/signup, the verified address held in a
- * signed cookie for the signup form. Nothing about the Google account is
- * stored anywhere.
+ * /creator/auth/magic. No creator → /creator/signup, the verified address
+ * held in a signed cookie for the signup form. Nothing about the Google
+ * account is stored anywhere.
  */
 async function creatorLanding(req: Request, res: Response, email: string): Promise<string> {
-  const base = getPortalBaseUrl();
   const networkUrl = creatorNetworkUrl();
   if (!networkUrl) return failureUrl('creator', undefined, 'google_unavailable');
-  try {
-    const token = await adminCreatorSigninToken(networkUrl, email, req.ip);
-    return `${base}/creator/auth/magic?token=${encodeURIComponent(token)}`;
-  } catch (err) {
-    if (err instanceof NetworkAdminError && err.code === 'no_creator') {
-      const exp = Date.now() + CREATOR_SIGNUP_TTL_MS;
-      const value = `${Buffer.from(email).toString('base64url')}.${exp}`;
-      res.cookie(GOOGLE_CREATOR_SIGNUP_COOKIE, `${value}.${macValue(CREATOR_SIGNUP_MAC, value)}`, {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'lax',
-        path: '/',
-        maxAge: CREATOR_SIGNUP_TTL_MS,
-      });
-      return `${base}/creator/signup?google=1`;
-    }
-    if (err instanceof NetworkAdminError && err.code && CREATOR_ERRORS.has(err.code)) {
-      return failureUrl('creator', undefined, err.code);
-    }
-    console.error('[google-auth] creator token request failed', err);
-    return failureUrl('creator', undefined, 'google_failed');
+  const signin = await creatorSignin(req, networkUrl, email);
+  if (signin.ok) return signin.url;
+  if (signin.code === 'no_creator') {
+    const exp = Date.now() + CREATOR_SIGNUP_TTL_MS;
+    const value = `${Buffer.from(email).toString('base64url')}.${exp}`;
+    res.cookie(GOOGLE_CREATOR_SIGNUP_COOKIE, `${value}.${macValue(CREATOR_SIGNUP_MAC, value)}`, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'lax',
+      path: '/',
+      maxAge: CREATOR_SIGNUP_TTL_MS,
+    });
+    return `${getPortalBaseUrl()}/creator/signup?google=1`;
   }
+  if (signin.code && CREATOR_ERRORS.has(signin.code)) return failureUrl('creator', undefined, signin.code);
+  console.error('[google-auth] creator token request failed', signin.err);
+  return failureUrl('creator', undefined, 'google_failed');
+}
+
+/**
+ * After Google on /signin (flow=account / account_add). The brand path is
+ * the platform token → /auth/magic → POST /auth/platform-verify →
+ * /workspaces. But /signin is where creators sign in too, and a creator
+ * with no brand would only meet /brands/new there. So the creator landing
+ * instead, when all of these hold:
+ *   - flow=account. account_add adds a brand account to this browser.
+ *   - no brand seat /workspaces would list (workspaceSeats). An address
+ *     with a brand and a creator account keeps the brand path, as before.
+ *   - not an operator. They keep the platform session, as before.
+ *   - the Network gives a sign-in token: an active creator.
+ * A suspended or blocked creator (403 creator_not_active) hears so on
+ * /signin, as on /creator/login. Anything else — no creator, a country
+ * refusal (the Network checks the country before it looks the address up,
+ * so that says nothing about a creator), no usable answer — keeps the
+ * brand path: a new address goes on to /brands/new, since this is also how
+ * a brand signs up with Google. ?next= is a page inside a brand, so the
+ * creator landing drops it.
+ *
+ * Google has proven the inbox, and the emailed link tells the inbox's
+ * owner just as much: which kinds of account the address has.
+ */
+async function accountLanding(req: Request, email: string, add: boolean, next: string | null): Promise<string> {
+  const networkUrl = add ? null : creatorNetworkUrl();
+  if (networkUrl && !(await workspaceSeats(db, email).first(`${TABLES.Admin}.id`)) && !(await isAllowedOperator(email))) {
+    const signin = await creatorSignin(req, networkUrl, email);
+    if (signin.ok) return signin.url;
+    if (signin.status === 403 && signin.code === 'creator_not_active') {
+      return failureUrl('account', undefined, signin.code, next);
+    }
+    if (!signin.code || !EXPECTED_CREATOR_REFUSALS.has(signin.code)) {
+      console.warn('[google-auth] creator lookup failed; brand sign-in instead', signin.err);
+    }
+  }
+  const token = await platformSigninToken(db, email, add);
+  return buildMagicLinkUrl(token, null, next);
 }
 
 /** The Google-verified address the signup cookie holds, if it's ours and
