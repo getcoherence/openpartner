@@ -689,6 +689,8 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     await db(TABLES.Config).insert({ tenantId: TENANT, key: 'partner_referrals', value: referralStages, updatedAt: new Date() });
     // And whether new Tracking health flags are emailed.
     await db(TABLES.Config).insert({ tenantId: TENANT, key: 'tracking_alerts', value: { email: false }, updatedAt: new Date() });
+    // And whether every admin must sign in with two-step.
+    await db(TABLES.Config).insert({ tenantId: TENANT, key: 'admin_security', value: { requireTwoFactor: true }, updatedAt: new Date() });
 
     const bundle = await exportAll(db, TENANT);
     const keys = (bundle[TABLES.Config] as Array<{ key: string }>).map((r) => r.key).sort();
@@ -710,6 +712,7 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect((await db(TABLES.Config).where({ key: 'stripe_connect' }).first()).value).toEqual(stripeConnect);
     expect((await db(TABLES.Config).where({ key: 'partner_referrals' }).first()).value).toEqual(referralStages);
     expect((await db(TABLES.Config).where({ key: 'tracking_alerts' }).first()).value).toEqual({ email: false });
+    expect((await db(TABLES.Config).where({ key: 'admin_security' }).first()).value).toEqual({ requireTwoFactor: true });
     expect(report.skipped[TABLES.Config]).toBe(1);
     expect(await db(TABLES.Config).where({ key: 'network_membership' })).toHaveLength(0);
     expect((await db(TABLES.Config).where({ key: 'partner_signup' }).first()).value).toEqual({

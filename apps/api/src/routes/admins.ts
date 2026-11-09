@@ -28,6 +28,7 @@ import { adminInviteEmail, buildMagicLinkUrl } from '../email-templates.js';
 import { linkTenantOf, type PortalLinkTenant } from '../portal-url.js';
 import { tenantOf } from '../tenancy.js';
 import { auditChanges } from '../audit-log.js';
+import { twoFactorEnabledFor } from '../two-factor.js';
 
 export const adminsRouter = Router();
 
@@ -82,7 +83,9 @@ async function sendInvite(db: Knex, tenantId: string, admin: AdminRow, linkTenan
 adminsRouter.get('/admins', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const admins = await db<AdminRow>(TABLES.Admin).where({ tenantId }).orderBy('createdAt', 'desc');
-  res.json({ admins });
+  // Whether each has two-step sign-in on (it's the person's, across brands).
+  const withTwoFactor = await twoFactorEnabledFor(admins.map((a) => a.email));
+  res.json({ admins: admins.map((a) => ({ ...a, twoFactor: withTwoFactor.has(a.email.toLowerCase()) })) });
 });
 
 // -------- Invite --------

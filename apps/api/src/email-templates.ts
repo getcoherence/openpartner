@@ -186,6 +186,35 @@ export function passwordResetEmail(link: string, brandName: string | null = null
   return { subject, text, html: wrap(text, link, 'Choose a password') };
 }
 
+/** Two-step sign-in was turned on or off, or new recovery codes were made,
+ *  for this address. Platform mail, like the reset above: the setting
+ *  covers every brand the person admins. `where` as there. */
+export function twoFactorChangedEmail(
+  change: 'enabled' | 'disabled' | 'recovery_codes',
+  brandName: string | null = null,
+): EmailTemplate {
+  const where = brandName ?? 'OpenPartner';
+  const what = {
+    enabled: `Two-step sign-in was turned on for your ${where} account. Signing in now asks for a code from your authenticator app.`,
+    disabled: `Two-step sign-in was turned off for your ${where} account. Signing in no longer asks for a code.`,
+    recovery_codes: `New recovery codes were made for your ${where} account. The old ones no longer work.`,
+  }[change];
+  const subject = {
+    enabled: 'Two-step sign-in is on',
+    disabled: 'Two-step sign-in is off',
+    recovery_codes: 'New recovery codes for two-step sign-in',
+  }[change];
+  const text = [
+    `Hi,`,
+    ``,
+    what,
+    ...(change === 'recovery_codes' ? [] : [``, `Every other sign-in to your account was ended.`]),
+    ``,
+    `If this wasn't you, reset your password and tell your program's administrator.`,
+  ].join('\n');
+  return { subject, text, html: plainHtml(text) };
+}
+
 export function partnerRevokedEmail(name: string, reason: string | null): EmailTemplate {
   const subject = `Your partner account has been suspended`;
   const text = [

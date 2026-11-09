@@ -18,6 +18,7 @@ import { ulid } from 'ulid';
 import type { CookieOptions } from 'express';
 import type { Knex } from 'knex';
 import { TABLES, type PlatformSessionBundleRow, type PlatformSessionRow } from '@openpartner/db';
+import { lacksRequiredCode, newSessionSecondFactor, pendingAndLive } from './two-factor.js';
 
 export const PLATFORM_SESSION_COOKIE = 'op_platform_session';
 export const PLATFORM_BUNDLE_COOKIE = 'op_bundle_id';
@@ -50,6 +51,9 @@ function constantTimeEqual(a: string, b: string): boolean {
 export interface IssuedPlatformSession {
   plaintext: string;
   expiresAt: Date;
+  /** Two-step sign-in is on for this email: the session works only once a
+   *  code is entered against it (two-factor.ts). Callers tell the browser. */
+  secondFactorPending?: boolean;
 }
 
 export async function createPlatformSession(db: Knex, email: string): Promise<IssuedPlatformSession> {
@@ -58,30 +62,50 @@ export async function createPlatformSession(db: Knex, email: string): Promise<Is
   const prefix = plaintext.slice(0, TOKEN_PREFIX_LEN);
   const tokenHash = hash(plaintext);
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+  const secondFactor = await newSessionSecondFactor(email, null);
   await db<PlatformSessionRow>(TABLES.PlatformSession).insert({
     id: ulid(),
     prefix,
     tokenHash,
     email: email.toLowerCase(),
     expiresAt,
+    ...secondFactor,
   });
-  return { plaintext, expiresAt };
+  return { plaintext, expiresAt, secondFactorPending: secondFactor.secondFactorPending };
 }
 
+/** A live session that has its two-step code, or never needed one. */
 export async function resolvePlatformSession(db: Knex, plaintext: string): Promise<PlatformSessionRow | null> {
   if (!plaintext || plaintext.length < TOKEN_PREFIX_LEN) return null;
   const prefix = plaintext.slice(0, TOKEN_PREFIX_LEN);
   const tokenHash = hash(plaintext);
   const now = new Date();
   const row = await db<PlatformSessionRow>(TABLES.PlatformSession)
-    .where({ prefix, tokenHash })
+    .where({ prefix, tokenHash, secondFactorPending: false })
     .whereNull('revokedAt')
     .andWhere('expiresAt', '>', now)
     .first();
   if (!row) return null;
   if (!constantTimeEqual(row.tokenHash, tokenHash)) return null;
+  // Two-step on, and this session never proved a code (two-factor.ts).
+  if (await lacksRequiredCode(row, row.email)) return null;
   void db<PlatformSessionRow>(TABLES.PlatformSession).where({ id: row.id }).update({ lastSeenAt: now });
   return row;
+}
+
+/** The session a cookie names if it is waiting for its two-step code (and
+ *  may still take one): the only lookup that returns a pending session,
+ *  for POST /auth/platform-two-factor. */
+export async function resolvePendingPlatformSession(db: Knex, plaintext: string): Promise<PlatformSessionRow | null> {
+  if (!plaintext || plaintext.length < TOKEN_PREFIX_LEN) return null;
+  const tokenHash = hash(plaintext);
+  const row = await db<PlatformSessionRow>(TABLES.PlatformSession)
+    .where({ prefix: plaintext.slice(0, TOKEN_PREFIX_LEN), tokenHash })
+    .whereNull('revokedAt')
+    .andWhere('expiresAt', '>', new Date())
+    .first();
+  if (!row || !constantTimeEqual(row.tokenHash, tokenHash)) return null;
+  return pendingAndLive(row) ? row : null;
 }
 
 export async function revokePlatformSession(db: Knex, plaintext: string): Promise<void> {
@@ -218,13 +242,14 @@ export async function attachSessionToBundle(
   }
 }
 
-/** List alive sessions in a bundle, oldest first. */
+/** List alive sessions in a bundle, oldest first. One still waiting for
+ *  its two-step code isn't one yet. */
 export async function listBundleSessions(
   db: Knex,
   bundleId: string,
 ): Promise<PlatformSessionRow[]> {
   return db<PlatformSessionRow>(TABLES.PlatformSession)
-    .where({ bundleId })
+    .where({ bundleId, secondFactorPending: false })
     .whereNull('revokedAt')
     .andWhere('expiresAt', '>', new Date())
     .orderBy('createdAt', 'asc');

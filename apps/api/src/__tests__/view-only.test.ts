@@ -61,6 +61,8 @@ const OPEN_WRITES: Record<string, string> = {
   'POST /auth/signin/password': 'tenant sign-in',
   'POST /auth/password/forgot': 'tenant password reset',
   'POST /auth/password/reset': 'tenant password reset',
+  'POST /auth/two-factor/verify': 'the two-step code for a sign-in not finished yet',
+  'POST /auth/platform-two-factor': 'the two-step code for a sign-in not finished yet',
   'POST /partner-signup': 'public partner join form',
   'POST /attribution/identify': 'browser SDK, unauthenticated',
   'POST /attribution/landing': 'browser SDK, unauthenticated',
@@ -118,6 +120,9 @@ async function seat(role: 'admin' | 'viewer', email: string): Promise<{ id: stri
 
 async function wipe(): Promise<void> {
   if (admins.length === 0) return;
+  // A viewer may start their own two-step setup, and the route walk does.
+  const emails = await db(TABLES.Admin).whereIn('id', admins).pluck('email');
+  await db(TABLES.TwoFactorCredential).whereIn('principalId', emails).del();
   await db(TABLES.Session).whereIn('principalId', admins).del();
   await db(TABLES.MagicLinkToken).whereIn('principalId', admins).del();
   await db(TABLES.Admin).whereIn('id', admins).del();

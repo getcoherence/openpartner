@@ -148,12 +148,17 @@ partnerAuthRouter.post('/auth/magic/verify', verifyLimit, requireServedCountry(p
     await db<AdminRow>(TABLES.Admin).where({ id: admin.id, tenantId }).update({ lastSignInAt: new Date() });
 
     const session = await createSession(db, { tenantId, principalKind: 'admin', principalId: admin.id });
-    await recordSignin(db, { tenantId, adminId: admin.id, email: admin.email, ip: req.ip ?? null, via: 'link' });
+    // Two-step on: the session waits for a code (POST /auth/two-factor/verify),
+    // and the sign-in is recorded when it's entered.
+    if (!session.secondFactorPending) {
+      await recordSignin(db, { tenantId, adminId: admin.id, email: admin.email, ip: req.ip ?? null, via: 'link' });
+    }
     res.cookie(SESSION_COOKIE_NAME, session.plaintext, sessionCookieOptions());
     return res.json({
       ok: true,
       role: 'admin',
       admin: { id: admin.id, email: admin.email, name: admin.name },
+      ...(session.secondFactorPending ? { twoFactorRequired: true } : {}),
     });
   }
 

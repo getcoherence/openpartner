@@ -22,16 +22,18 @@ import type { NextFunction, Request, Response } from 'express';
 import type { Knex } from 'knex';
 import { ulid } from 'ulid';
 import { TABLES, type AdminRole, type ApiKeyRow, type PartnerRow } from '@openpartner/db';
-import { viewerRefusal } from './view-only.js';
+import { routeKey, viewerRefusal } from './view-only.js';
 import { auditRequest } from './audit-log.js';
+import { getAdminSecurity, TWO_FACTOR_SETUP_ROUTES } from './two-factor.js';
 
 export type ApiKeyPrincipal =
   | { role: 'admin'; source: 'env' }
   // `scopes` is set when grantScope admitted a scoped key: the key's own
   // scopes, for the few handlers that narrow what one scope may do.
   | { role: 'admin'; source: 'db'; apiKeyId: string; scopes?: string[] }
-  // `adminRole` 'viewer' = a view-only seat (view-only.ts).
-  | { role: 'admin'; source: 'session'; sessionId: string; adminId: string; adminRole: AdminRole }
+  // `adminRole` 'viewer' = a view-only seat (view-only.ts). `secondFactor`:
+  // this session proved a two-step code (two-factor.ts).
+  | { role: 'admin'; source: 'session'; sessionId: string; adminId: string; adminRole: AdminRole; secondFactor: boolean }
   | { role: 'partner'; source: 'db'; apiKeyId: string; partnerId: string }
   | { role: 'partner'; source: 'session'; sessionId: string; partnerId: string }
   | { role: 'scoped'; source: 'db'; apiKeyId: string; scopes: string[] };
@@ -90,7 +92,12 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   }
   const principal = await resolvePrincipal(req);
   if (!principal) {
-    res.status(401).json({ error: 'unauthorized' });
+    // A signed-in admin who hasn't entered their two-step code yet: say so,
+    // so the portal asks for it instead of starting the sign-in again.
+    const cookie = req.header('authorization') ? undefined : sessionCookieOf(req);
+    const { resolvePendingSession } = await import('./auth-sessions.js');
+    const pending = cookie && req.tenantId ? await resolvePendingSession(req.db, cookie, req.tenantId) : null;
+    res.status(401).json({ error: pending ? 'two_factor_required' : 'unauthorized' });
     return;
   }
   req.principal = principal;
@@ -102,6 +109,19 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       res.status(403).json({ error: refusal });
       return;
     }
+  }
+  // A brand that requires two-step sign-in (two-factor.ts): an admin
+  // session that hasn't proven a code may only set one up. Keys aren't
+  // people and have no second factor.
+  if (
+    principal.role === 'admin' &&
+    principal.source === 'session' &&
+    !principal.secondFactor &&
+    !(routeKey(req) in TWO_FACTOR_SETUP_ROUTES) &&
+    (await getAdminSecurity(req.db, req.tenantId!)).requireTwoFactor
+  ) {
+    res.status(403).json({ error: 'two_factor_setup_required' });
+    return;
   }
   // The audit log (audit-log.ts): an admin's or key's write, written with
   // the request's own commit if it succeeds.
@@ -141,6 +161,10 @@ export function requirePartnerOrAdmin(paramName: string = 'id') {
   return Object.assign(guard, { partnerParam: paramName });
 }
 
+function sessionCookieOf(req: Request): string | undefined {
+  return (req as unknown as { cookies?: Record<string, string> }).cookies?.op_session;
+}
+
 async function resolvePrincipal(req: Request): Promise<ApiKeyPrincipal | null> {
   const db = req.db;
   if (!db) {
@@ -159,7 +183,7 @@ async function resolvePrincipal(req: Request): Promise<ApiKeyPrincipal | null> {
 
   const header = req.header('authorization');
   if (!header) {
-    const cookie = (req as unknown as { cookies?: Record<string, string> }).cookies?.op_session;
+    const cookie = sessionCookieOf(req);
     if (!cookie) return null;
     const { resolveSession } = await import('./auth-sessions.js');
     const session = await resolveSession(db, cookie, tenantId);
@@ -172,6 +196,7 @@ async function resolvePrincipal(req: Request): Promise<ApiKeyPrincipal | null> {
         adminId: session.principalId,
         // Fail closed: a role that didn't read back is a viewer's.
         adminRole: session.adminRole ?? 'viewer',
+        secondFactor: session.secondFactorAt !== null,
       };
     }
     return { role: 'partner', source: 'session', sessionId: session.id, partnerId: session.principalId };

@@ -6,6 +6,7 @@ import { theme } from '../../theme.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, StatusPill, Table, formatDate } from '../../ui.js';
 import { EditOnly, useViewOnly, ViewOnlyBadge } from '../../lib/viewOnly.js';
 import { ConfirmAction } from '../../lib/ConfirmAction.js';
+import { TwoFactorSection } from './TwoFactorSection.js';
 
 type Role = 'admin' | 'viewer';
 
@@ -18,6 +19,8 @@ interface Admin {
   revokedAt: string | null;
   lastSignInAt: string | null;
   createdAt: string;
+  /** Two-step sign-in is on for this person. */
+  twoFactor?: boolean;
 }
 
 /** The guards' refusals (routes/admins.ts), said plainly. */
@@ -69,7 +72,7 @@ export function AdminAdmins() {
         <EmptyState title="No admins yet" hint="Invite your team." icon={<UserCog size={28} strokeWidth={1.25} />} />
       ) : (
         <Table
-          columns={['Admin', 'Email', 'Role', 'Status', 'Last sign-in', 'Created', ...(viewOnly ? [] : ['Actions'])]}
+          columns={['Admin', 'Email', 'Role', 'Status', 'Two-step', 'Last sign-in', 'Created', ...(viewOnly ? [] : ['Actions'])]}
           rows={(admins.data?.admins ?? []).map((a) => [
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <Avatar name={a.name} size={28} />
@@ -80,6 +83,7 @@ export function AdminAdmins() {
             </a>,
             a.role === 'viewer' ? <ViewOnlyBadge /> : <span style={{ color: theme.textMuted }}>Admin</span>,
             a.revokedAt ? <StatusPill status="revoked" /> : a.activatedAt ? <StatusPill status="active" /> : <StatusPill status="invited" />,
+            a.twoFactor ? <StatusPill status="on" /> : <span style={{ color: theme.textDim }}>—</span>,
             a.lastSignInAt ? (
               <span style={{ color: theme.textMuted }}>{formatDate(a.lastSignInAt, { relative: true })}</span>
             ) : (
@@ -90,6 +94,8 @@ export function AdminAdmins() {
           ])}
         />
       )}
+      {/* A person's own setting: an API-key sign-in has no person. */}
+      {me.data?.source === 'session' && <TwoFactorSection />}
     </Page>
   );
 }

@@ -655,6 +655,9 @@ export function StatusPill({ status }: { status: string }) {
     'pending review': { bg: theme.infoSoft, fg: theme.info },
     active: { bg: theme.successSoft, fg: theme.success },
     revoked: { bg: theme.dangerSoft, fg: theme.danger },
+    // Two-step sign-in.
+    on: { bg: theme.successSoft, fg: theme.success },
+    off: { bg: theme.surface2, fg: theme.textMuted },
     // Performance bounties.
     draft: { bg: theme.surface2, fg: theme.textMuted },
     ended: { bg: theme.infoSoft, fg: theme.info },

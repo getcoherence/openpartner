@@ -138,6 +138,7 @@ export const TABLES = {
   Admin: 'Admin',
   MagicLinkToken: 'MagicLinkToken',
   PasswordCredential: 'PasswordCredential',
+  TwoFactorCredential: 'TwoFactorCredential',
   PartnerSigninLinkLog: 'PartnerSigninLinkLog',
   AuditLog: 'AuditLog',
   Session: 'Session',

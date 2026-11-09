@@ -39,10 +39,10 @@ export function PlatformMagicLandingPage() {
       body: JSON.stringify({ token }),
     })
       .then(async (r) => {
-        if (!r.ok) {
-          const j = await r.json().catch(() => ({}));
-          throw new Error((j as { error?: string }).error ?? `${r.status}`);
-        }
+        const j = (await r.json().catch(() => ({}))) as { error?: string; twoFactorRequired?: boolean };
+        if (!r.ok) throw new Error(j.error ?? `${r.status}`);
+        // Two-step on: the code first (pages/auth/TwoFactor.tsx).
+        if (j.twoFactorRequired) return nav(withNext('/signin/two-factor', next), { replace: true });
         setState('ok');
         setTimeout(() => nav(withNext('/workspaces', next), { replace: true }), 300);
       })

@@ -57,8 +57,8 @@ export function SigninPage() {
         }
         onPassword={async (email, password) => {
           const { token } = await postPlatform<{ token: string }>('/signin/password', { email, password, add: addMode });
-          await postPlatform('/auth/platform-verify', { token });
-          nav(withNext('/workspaces', next), { replace: true });
+          const verified = await postPlatform<{ twoFactorRequired?: boolean }>('/auth/platform-verify', { token });
+          nav(withNext(verified.twoFactorRequired ? '/signin/two-factor' : '/workspaces', next), { replace: true });
         }}
         onLink={(email) => postPlatform('/signin', { email, add: addMode, ...(next ? { next } : {}) }).then(() => undefined)}
         onForgot={(email) => postPlatform('/password/forgot', { email }).then(() => undefined)}

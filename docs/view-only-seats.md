@@ -48,7 +48,9 @@ pattern (`req.route.path`):
 - Writes (anything but GET and HEAD) are refused with
   `403 { "error": "read_only" }`, unless the route is on
   `VIEWER_ALLOWED_WRITES`: the viewer's own account. Today that is
-  `PUT /auth/password`. Sign-out, the platform identity routes (own
+  `PUT /auth/password` and their own [two-step sign-in](two-step-sign-in.md)
+  (`POST /auth/two-factor/setup`, `/enable`, `/disable`,
+  `/recovery-codes`). Sign-out, the platform identity routes (own
   password, workspace switching) and signed unsubscribe links don't go
   through `requireAuth`, so they work for viewers as for anyone. A future
   per-admin profile or notification setting goes on the list.

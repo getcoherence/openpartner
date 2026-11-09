@@ -56,7 +56,9 @@ export async function api<T = unknown>(
   });
   if (res.status === 401) {
     clearApiKey();
-    throw new ApiError(res.status, 'unauthorized');
+    // Signed in, but the two-step code isn't in yet: the Shell asks for it.
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new ApiError(res.status, body?.error === TWO_FACTOR_REQUIRED ? TWO_FACTOR_REQUIRED : 'unauthorized', body);
   }
   if (!res.ok) {
     let detail: unknown = null;
@@ -165,6 +167,9 @@ export function saveBlob(blob: Blob, filename: string): void {
 
 export const READ_ONLY_MESSAGE = 'You have view-only access.';
 
+/** A 401 for a session waiting for its two-step code (docs/two-step-sign-in.md). */
+export const TWO_FACTOR_REQUIRED = 'two_factor_required';
+
 function friendlyMessage(res: Response, detail: unknown): string {
   const fallback = res.statusText ? `${res.status} ${res.statusText}` : `${res.status}`;
   if (!detail || typeof detail !== 'object') return fallback;
@@ -192,4 +197,7 @@ export interface Principal {
   partner?: { id: string; name: string; email: string; stripeConnected: boolean };
   /** `role` 'viewer' = a view-only seat (lib/viewOnly.tsx). */
   admin?: { id: string; name: string; email: string; role?: 'admin' | 'viewer' };
+  /** A signed-in admin's two-step sign-in: on for them, proven by this
+   *  session, required by the brand. */
+  twoFactor?: { enabled: boolean; verified: boolean; required: boolean };
 }

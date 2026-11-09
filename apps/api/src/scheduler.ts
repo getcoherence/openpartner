@@ -610,6 +610,9 @@ export const TENANT_PURGE_ORDER = [
   // they sit under DEFAULT_TENANT_ID, like platform magic-link tokens, and
   // deleteOrphanedPlatformPasswords removes them once nobody holds them.
   TABLES.PasswordCredential,
+  // Two-step authenticators: only platform rows exist, under
+  // DEFAULT_TENANT_ID, and go the same way as platform passwords.
+  TABLES.TwoFactorCredential,
   TABLES.ApiKey,
   TABLES.ConversionPostbackToken,
   TABLES.Config,
@@ -694,10 +697,15 @@ export const TENANT_PURGE_ORDER = [
  * of Admin rows are never-activated admins replaced by signup's
  * abandoned-slug recovery or dropped by a failed /install. Those never
  * held an account, so a password one of them set goes on the next run.
+ *
+ * A person's two-step authenticator (TwoFactorCredential, keyed the same
+ * way) goes on the same rule: pass that table as `pc`.
  */
-async function deleteOrphanedPlatformPasswords(cutoff: Date): Promise<number> {
+async function deleteOrphanedPlatformPasswords(
+  cutoff: Date,
+  pc: typeof TABLES.PasswordCredential | typeof TABLES.TwoFactorCredential = TABLES.PasswordCredential,
+): Promise<number> {
   const { envAdminEmails } = await import('./routes/platform-admin.js');
-  const pc = TABLES.PasswordCredential;
   const holds = (table: string) => (q: Knex.QueryBuilder) =>
     q
       .select(db.raw('1'))
@@ -728,6 +736,8 @@ export async function hardDeleteExpiredTenants(): Promise<{
   failed: Array<{ tenantId: string; error: string }>;
   /** Orphaned platform passwords deleted; null if the sweep failed. */
   orphanedPasswordsDeleted: number | null;
+  /** Orphaned two-step authenticators deleted; null if the sweep failed. */
+  orphanedTwoFactorDeleted: number | null;
 }> {
   const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   const expired = await db<TenantRow>(TABLES.Tenant)
@@ -756,8 +766,10 @@ export async function hardDeleteExpiredTenants(): Promise<{
     }
   }
   let orphanedPasswordsDeleted: number | null = null;
+  let orphanedTwoFactorDeleted: number | null = null;
   try {
     orphanedPasswordsDeleted = await deleteOrphanedPlatformPasswords(cutoff);
+    orphanedTwoFactorDeleted = await deleteOrphanedPlatformPasswords(cutoff, TABLES.TwoFactorCredential);
   } catch (err) {
     console.error('[scheduler] orphaned platform password sweep failed', { err });
   }
@@ -771,6 +783,7 @@ export async function hardDeleteExpiredTenants(): Promise<{
     tenantIds,
     failed: failures.map(({ tenantId, error }) => ({ tenantId, error })),
     orphanedPasswordsDeleted,
+    orphanedTwoFactorDeleted,
   };
 }
 

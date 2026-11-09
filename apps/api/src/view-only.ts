@@ -14,6 +14,10 @@ import type { Request } from 'express';
 /** Writes a viewer may make: their own account. */
 export const VIEWER_ALLOWED_WRITES: Readonly<Record<string, string>> = {
   'PUT /auth/password': 'their own password',
+  'POST /auth/two-factor/setup': 'their own two-step sign-in',
+  'POST /auth/two-factor/enable': 'their own two-step sign-in',
+  'POST /auth/two-factor/disable': 'their own two-step sign-in',
+  'POST /auth/two-factor/recovery-codes': 'their own two-step sign-in',
 };
 
 /** Reads a viewer may not make: they hand over credentials or bulk

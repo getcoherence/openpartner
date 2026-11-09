@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { TABLES, type AdminRow, type PartnerRow } from '@openpartner/db';
 import { requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
+import { getAdminSecurity, twoFactorEnabled } from '../two-factor.js';
 
 export const authRouter = Router();
 
@@ -32,7 +33,7 @@ authRouter.get('/auth/introspect', requireAuth, async (req, res) => {
  * to render after login.
  */
 authRouter.get('/auth/whoami', requireAuth, async (req, res) => {
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
   const p = req.principal!;
   if (p.role === 'admin') {
     if (p.source === 'session') {
@@ -42,6 +43,13 @@ authRouter.get('/auth/whoami', requireAuth, async (req, res) => {
         source: 'session',
         // `role` from the session, as the gate reads it: 'viewer' = view only.
         admin: admin ? { id: admin.id, email: admin.email, name: admin.name, role: p.adminRole } : null,
+        // The portal asks for setup when the brand requires two-step and
+        // this session hasn't proven a code (two-factor.ts).
+        twoFactor: {
+          enabled: admin ? await twoFactorEnabled(admin.email) : false,
+          verified: p.secondFactor,
+          required: (await getAdminSecurity(db, tenantId)).requireTwoFactor,
+        },
       });
     }
     return res.json({ role: 'admin', source: p.source });

@@ -132,6 +132,10 @@ export const PORTABLE_CONFIG_KEYS = [
   // predates it skips the key and has no alert email at all; one that
   // knows it but restores an older bundle reads it as on, the default.
   'tracking_alerts',
+  // Whether every admin must sign in with two-step (two-factor.ts). The
+  // brand's rule, no credential in it. A key, so no version bump: an
+  // instance that predates it skips the key and doesn't require it.
+  'admin_security',
 ] as const;
 
 /**
