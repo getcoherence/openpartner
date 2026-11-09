@@ -14,6 +14,7 @@ import { CreatorSigninPage } from '../pages/creator/CreatorSignin.js';
 import { CreatorSignupPage } from '../pages/creator/CreatorSignup.js';
 import { CreatorResetPasswordPage } from '../pages/creator/CreatorResetPassword.js';
 import { CreatorPasswordCard } from '../pages/creator/CreatorMyProfile.js';
+import { SigninPage } from '../pages/Signin.js';
 
 interface Sent {
   method: string;
@@ -55,6 +56,7 @@ function renderAt(path: string, element: React.ReactNode, routePath: string, sta
         <Routes>
           <Route path={routePath} element={element} />
           <Route path="/creator" element={<Landed />} />
+          <Route path="/workspaces" element={<Landed />} />
           <Route path="/creator/login" element={routePath === '/creator/login' ? element : <CreatorSigninPage />} />
         </Routes>
       </QueryClientProvider>
@@ -128,6 +130,101 @@ describe('creator sign-in with a password', () => {
     cleanup();
     const country = renderAt('/creator/login?error=country_not_supported', <CreatorSigninPage />, '/creator/login');
     expect(country.getByText("Sorry — OpenPartner isn't available in your country.")).toBeTruthy();
+  });
+});
+
+// /signin is where the landing page and a creator's "Sign out" lead, so a
+// creator's password has to work there too, not only on /creator/login.
+describe('a creator password on the main sign-in page', () => {
+  function signIn(path: string, password: string) {
+    const page = renderAt(path, <SigninPage />, '/signin');
+    fireEvent.change(page.getByPlaceholderText('you@example.com'), { target: { value: 'ada@example.com' } });
+    fireEvent.change(page.container.querySelector('input[name="password"]')!, { target: { value: password } });
+    fireEvent.click(page.getByRole('button', { name: 'Sign in' }));
+    return page;
+  }
+
+  it('signs a creator in when the brand side doesn’t know the password', async () => {
+    routes['POST /signin/password'] = () => json(401, { error: 'invalid_credentials' });
+    routes['POST /creator-api/creators/signin/password'] = () => json(200, { ok: true, token: 'opmlcreator_t' });
+    routes['POST /creator-api/creators/verify'] = () => json(200, { ok: true });
+    const page = signIn('/signin', 'correct horse battery');
+
+    await waitFor(() => expect(page.getByText('landed at /creator')).toBeTruthy());
+    expect(posts('/api/creator-api/creators/signin/password')[0]!.body).toEqual({
+      email: 'ada@example.com',
+      password: 'correct horse battery',
+    });
+    expect(posts('/api/creator-api/creators/verify')[0]!.body).toEqual({ token: 'opmlcreator_t' });
+    expect(posts('/api/auth/platform-verify')).toHaveLength(0);
+  });
+
+  it('a brand password signs in to the workspaces and never reaches the Network', async () => {
+    routes['POST /signin/password'] = () => json(200, { ok: true, token: 'opml_platform' });
+    routes['POST /auth/platform-verify'] = () => json(200, { ok: true });
+    const page = signIn('/signin', 'brand passphrase');
+    await waitFor(() => expect(page.getByText('landed at /workspaces')).toBeTruthy());
+    expect(sent.filter((s) => s.url.startsWith('/api/creator-api/'))).toHaveLength(0);
+  });
+
+  it('wrong for both says they don’t match; a hold on either side says so', async () => {
+    routes['POST /signin/password'] = () => json(401, { error: 'invalid_credentials' });
+    routes['POST /creator-api/creators/signin/password'] = () => json(401, { error: 'invalid_credentials' });
+    const page = signIn('/signin', 'nope');
+    await waitFor(() => expect(page.getByText(/don’t match/)).toBeTruthy());
+    expect(posts('/api/creator-api/creators/verify')).toHaveLength(0);
+
+    routes['POST /creator-api/creators/signin/password'] = () => json(429, { error: 'too_many_attempts' });
+    fireEvent.click(page.getByRole('button', { name: 'Sign in' }));
+    await waitFor(() => expect(page.getByText(/Too many wrong passwords/)).toBeTruthy());
+
+    routes['POST /signin/password'] = () => json(429, { error: 'too_many_attempts' });
+    routes['POST /creator-api/creators/signin/password'] = () => json(401, { error: 'invalid_credentials' });
+    fireEvent.click(page.getByRole('button', { name: 'Sign in' }));
+    await waitFor(() => {
+      expect(posts('/api/creator-api/creators/signin/password')).toHaveLength(3);
+      expect(page.getByText(/Too many wrong passwords/)).toBeTruthy();
+    });
+  });
+
+  it('keeps the brand side’s answer when the Network can’t be asked', async () => {
+    routes['POST /signin/password'] = () => json(401, { error: 'invalid_credentials' });
+    routes['POST /creator-api/creators/signin/password'] = () => json(503, { error: 'network_not_configured' });
+    const page = signIn('/signin', 'nope');
+    await waitFor(() => expect(page.getByText(/don’t match/)).toBeTruthy());
+  });
+
+  it('shows why a matching creator password still can’t sign in', async () => {
+    routes['POST /signin/password'] = () => json(401, { error: 'invalid_credentials' });
+    routes['POST /creator-api/creators/signin/password'] = () => json(200, { ok: true, token: 'opmlcreator_t' });
+    routes['POST /creator-api/creators/verify'] = () => json(403, { error: 'creator_not_active' });
+    const page = signIn('/signin', 'correct horse battery');
+    await waitFor(() => expect(page.getByText(/This creator account can’t sign in/)).toBeTruthy());
+  });
+
+  it('doesn’t try the creator password for other refusals, or while adding a brand account', async () => {
+    routes['POST /signin/password'] = () => json(403, { error: 'country_not_supported' });
+    const blocked = signIn('/signin', 'whatever passphrase');
+    await waitFor(() => expect(blocked.getByText("Sorry — OpenPartner isn't available in your country.")).toBeTruthy());
+    cleanup();
+
+    routes['POST /signin/password'] = () => json(401, { error: 'invalid_credentials' });
+    const adding = signIn('/signin?add=1', 'correct horse battery');
+    await waitFor(() => expect(adding.getByText(/don’t match/)).toBeTruthy());
+    expect(sent.filter((s) => s.url.startsWith('/api/creator-api/'))).toHaveLength(0);
+  });
+
+  it('“Forgot password?” asks the Network for a creator reset link too', async () => {
+    routes['POST /password/forgot'] = () => json(200, { ok: true });
+    routes['POST /creator-api/creators/password/forgot'] = () => json(503, { error: 'network_not_configured' });
+    const page = renderAt('/signin', <SigninPage />, '/signin');
+    fireEvent.click(page.getByRole('button', { name: 'Forgot password?' }));
+    fireEvent.change(page.getByPlaceholderText('you@example.com'), { target: { value: 'ada@example.com' } });
+    fireEvent.click(page.getByRole('button', { name: 'Email me a password link' }));
+    // A Network that can't be asked doesn't fail the brand reset.
+    await waitFor(() => expect(page.getByText(/brand, creator or operator account/)).toBeTruthy());
+    expect(posts('/api/password/forgot')[0]!.body).toEqual({ email: 'ada@example.com' });
+    expect(posts('/api/creator-api/creators/password/forgot')[0]!.body).toEqual({ email: 'ada@example.com' });
   });
 });
 
