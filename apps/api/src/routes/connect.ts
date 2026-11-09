@@ -191,6 +191,11 @@ connectRouter.get(
 
     const stripe = requireStripe();
     const account = await stripe.accounts.retrieve(partner.stripeConnectAccountId);
+    // Stripe doesn't contact a Custom account's holder when it needs more
+    // details, so the portal asks before payouts pause. /connect/start's
+    // onboarding link collects what's due.
+    const requirements = account.requirements;
+    const requirementsDue = !!(requirements?.currently_due?.length || requirements?.past_due?.length);
     res.json({
       connected: true,
       accountId: account.id,
@@ -199,6 +204,10 @@ connectRouter.get(
       transfersEnabled: account.capabilities?.transfers === 'active',
       payoutsEnabled: account.payouts_enabled,
       detailsSubmitted: account.details_submitted,
+      requirementsDue,
+      requirementsDueBy: requirementsDue && requirements?.current_deadline
+        ? new Date(requirements.current_deadline * 1000).toISOString()
+        : null,
     });
   },
 );

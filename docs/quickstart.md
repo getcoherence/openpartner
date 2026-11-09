@@ -184,6 +184,8 @@ their country before onboarding; one outside your platform's country is onboarde
 under the `recipient` service agreement. US tax information is requested only
 from US partners, and collecting it does not file tax forms. Partners change
 their bank or details later with **Update payout details** on the Connect page.
+Stripe doesn't contact Custom partners itself: when it needs more details, the
+Connect page and dashboard ask them to finish onboarding, with Stripe's deadline.
 Hosted modes (`flat`, `revshare`) always use Standard accounts.
 
 Settings are per company. Account type and capabilities apply only to new

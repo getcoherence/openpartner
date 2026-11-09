@@ -222,6 +222,29 @@ describe('/connect page', () => {
     expect(page.queryByText('Charges enabled')).toBeNull();
     expect(page.getByText('Transfers enabled')).toBeTruthy();
   });
+
+  it('asks a payout-ready Custom partner to finish onboarding when Stripe needs more details', async () => {
+    routes['/api/partners/p1/connect/status'] = {
+      connected: true, accountId: 'acct_partner', accountType: 'custom', detailsSubmitted: true,
+      transfersEnabled: true, payoutsEnabled: true,
+      requirementsDue: true, requirementsDueBy: '2026-12-01T12:00:00.000Z',
+    };
+    const page = renderWith(<ConnectPage principal={PARTNER} />, true);
+    expect(await page.findByRole('button', { name: 'Finish onboarding' })).toBeTruthy();
+    expect(page.getByText('Stripe needs more details by Dec 1, 2026.')).toBeTruthy();
+    expect(page.queryByRole('button', { name: 'Update payout details' })).toBeNull();
+  });
+
+  it('leaves a Standard partner with due details to Stripe', async () => {
+    routes['/api/partners/p1/connect/status'] = {
+      connected: true, accountId: 'acct_partner', accountType: 'standard', detailsSubmitted: true,
+      transfersEnabled: true, payoutsEnabled: true, requirementsDue: true, requirementsDueBy: null,
+    };
+    const page = renderWith(<ConnectPage principal={PARTNER} />, true);
+    await page.findByText('acct_partner');
+    expect(page.queryByRole('button', { name: 'Finish onboarding' })).toBeNull();
+    expect(page.queryByText(/Stripe needs more details/)).toBeNull();
+  });
 });
 
 describe('partner dashboard getting-started', () => {
@@ -241,6 +264,27 @@ describe('partner dashboard getting-started', () => {
     } else {
       expect(await page.findByText('Getting started')).toBeTruthy();
       expect(page.getByRole('link', { name: 'Connect Stripe' }).getAttribute('href')).toBe('/connect');
+    }
+  });
+
+  it.each([
+    { accountType: 'custom', requirementsDueBy: '2026-12-01T12:00:00.000Z', body: 'Add them by Dec 1, 2026 to keep getting paid.' },
+    { accountType: 'custom', requirementsDueBy: null, body: 'Add them to keep getting paid.' },
+    { accountType: 'standard', requirementsDueBy: null, body: null },
+  ])('nudges a payout-ready $accountType partner when Stripe needs more details', async ({ accountType, requirementsDueBy, body }) => {
+    routes['/api/partners/p1/connect/status'] = {
+      connected: true, accountType, transfersEnabled: true, payoutsEnabled: true, requirementsDue: true, requirementsDueBy,
+    };
+    const page = renderWith(<Dashboard principal={PARTNER} />, true);
+    await page.findByText('Attributed events');
+    await waitFor(() => expect(qc.getQueryState(['connect-status', 'p1'])?.status).toBe('success'));
+    if (body) {
+      expect(await page.findByText('Stripe needs more details')).toBeTruthy();
+      expect(page.getByText(body)).toBeTruthy();
+      expect(page.getByRole('link', { name: 'Finish onboarding' }).getAttribute('href')).toBe('/connect');
+    } else {
+      await payoutProfileSettled();
+      expect(page.queryByText('Stripe needs more details')).toBeNull();
     }
   });
 

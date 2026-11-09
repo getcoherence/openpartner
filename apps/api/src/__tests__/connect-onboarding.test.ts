@@ -250,6 +250,21 @@ describe.skipIf(skipIntegration)('configurable Connect onboarding', () => {
     expect(res.body).toMatchObject({ connected: true, chargesEnabled: false, transfersEnabled: true, payoutsEnabled: true });
   });
 
+  it.each([
+    { requirements: { currently_due: [], past_due: [], current_deadline: null }, due: false, by: null },
+    { requirements: { currently_due: ['individual.id_number'], past_due: [], current_deadline: 1798200000 }, due: true, by: '2026-12-25T12:00:00.000Z' },
+    { requirements: { currently_due: ['external_account'], past_due: ['external_account'], current_deadline: null }, due: true, by: null },
+    { requirements: undefined, due: false, by: null },
+  ])('reports details Stripe needs: due=$due by=$by', async ({ requirements, due, by }) => {
+    await db(TABLES.Partner).where({ id: partnerId }).update({ stripeConnectAccountId: 'acct_onboarding_test' });
+    stripeApi.accounts.retrieve.mockResolvedValue({
+      id: 'acct_onboarding_test', type: 'custom', payouts_enabled: true, details_submitted: true,
+      capabilities: { transfers: 'active' }, requirements,
+    });
+    const res = await request(app).get(`/partners/${partnerId}/connect/status`).set(admin).expect(200);
+    expect(res.body).toMatchObject({ connected: true, requirementsDue: due, requirementsDueBy: by });
+  });
+
   it('asks for the partner country before creating a Custom account', async () => {
     await saveConnectSettings(db, DEFAULT_TENANT_ID, { accountMode: 'custom_payouts' });
     const res = await request(app).post(`/partners/${partnerId}/connect/start`).set(admin).send(body).expect(400);

@@ -6,7 +6,7 @@ import { theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
 import { useBrand, useConnectPayouts } from '../lib/useBrand.js';
 import { countryOptions } from '../lib/CountryField.js';
-import { Button, Card, EmptyState, ErrorBanner, Label, Page, Select } from '../ui.js';
+import { Button, Card, EmptyState, ErrorBanner, formatDate, Label, Page, Select } from '../ui.js';
 
 interface ConnectStatus {
   connected: boolean;
@@ -17,6 +17,8 @@ interface ConnectStatus {
   transfersEnabled?: boolean;
   payoutsEnabled?: boolean;
   detailsSubmitted?: boolean;
+  requirementsDue?: boolean;
+  requirementsDueBy?: string | null;
 }
 
 export function ConnectPage({ principal }: { principal: Principal }) {
@@ -89,6 +91,8 @@ export function ConnectPage({ principal }: { principal: Principal }) {
 
   const s = status.data;
   const custom = s?.connected ? s.accountType === 'custom' : s?.accountMode === 'custom_payouts';
+  // Stripe asks Standard account holders itself; Custom partners hear it here.
+  const detailsDue = !!s?.connected && custom && !!s.requirementsDue;
 
   return (
     <Page
@@ -159,8 +163,15 @@ export function ConnectPage({ principal }: { principal: Principal }) {
             <ChecklistItem label="Transfers enabled" ok={!!s.transfersEnabled} />
             <ChecklistItem label="Payouts enabled" ok={!!s.payoutsEnabled} />
           </div>
-          {!s.payoutsEnabled || !s.transfersEnabled ? (
+          {!s.payoutsEnabled || !s.transfersEnabled || detailsDue ? (
             <div style={{ marginTop: 16 }}>
+              {detailsDue && (
+                <div style={{ fontSize: 13, color: theme.warn, marginBottom: 10 }}>
+                  {s.requirementsDueBy
+                    ? `Stripe needs more details by ${formatDate(s.requirementsDueBy)}.`
+                    : 'Stripe needs more details.'}
+                </div>
+              )}
               <Button onClick={() => start.mutate()} disabled={start.isPending}>
                 {start.isPending ? 'Preparing…' : 'Finish onboarding'}
               </Button>

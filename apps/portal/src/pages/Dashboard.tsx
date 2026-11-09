@@ -28,6 +28,7 @@ import {
   Card,
   EmptyState,
   ErrorBanner,
+  formatDate,
   Page,
   SectionHeading,
   Select,
@@ -84,6 +85,8 @@ interface ConnectStatus {
   accountType?: 'standard' | 'custom' | 'express';
   transfersEnabled?: boolean;
   payoutsEnabled?: boolean;
+  requirementsDue?: boolean;
+  requirementsDueBy?: string | null;
 }
 
 /** GET /partners/:id/payout-profile, the parts the dashboard reads. `rail`
@@ -154,6 +157,9 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
     !paysManually &&
     connect.data != null &&
     !hasActiveConnect;
+  // Payouts still run, but Stripe wants more details from a Custom
+  // partner and won't ask them itself.
+  const detailsDue = !paysManually && hasActiveConnect && customConnect && !!connect.data?.requirementsDue;
 
   // Getting-started card shows while EITHER onboarding task is outstanding.
   // We only render it once we know the state of both (payouts + links),
@@ -176,6 +182,15 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
       )}
       {needsConnect && !showGettingStarted && (
         <ConnectNudge owed={moneyByCurrency(owed, amounts!.currency)} connected={connect.data!.connected} custom={customConnect} />
+      )}
+      {detailsDue && (
+        <NudgeCard
+          title="Stripe needs more details"
+          body={connect.data?.requirementsDueBy
+            ? `Add them by ${formatDate(connect.data.requirementsDueBy)} to keep getting paid.`
+            : 'Add them to keep getting paid.'}
+          cta="Finish onboarding"
+        />
       )}
       {isLoading || !data || !amounts ? (
         <Card>Loading…</Card>
@@ -338,6 +353,12 @@ function ConnectNudge({ owed, connected, custom }: { owed: string; connected: bo
     ? connected ? 'Finish setting up payouts to get paid' : 'Set up payouts to get paid'
     : connected ? 'Finish Stripe onboarding to receive payouts' : 'Connect Stripe to receive payouts';
   const cta = connected ? 'Finish onboarding' : custom ? 'Set up payouts' : 'Connect Stripe';
+  const body = `You have ${owed} in commissions ${connected ? 'waiting — complete onboarding to get paid.' : 'that can’t be paid out yet.'}`;
+  return <NudgeCard title={title} body={body} cta={cta} />;
+}
+
+/** A payout task for the partner, linking to the Connect page. */
+function NudgeCard({ title, body, cta }: { title: string; body: string; cta: string }) {
   return (
     <Card>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
@@ -349,7 +370,7 @@ function ConnectNudge({ owed, connected, custom }: { owed: string; connected: bo
             {title}
           </div>
           <div style={{ fontSize: 13, color: theme.textMuted }}>
-            You have {owed} in commissions {connected ? 'waiting — complete onboarding to get paid.' : 'that can’t be paid out yet.'}
+            {body}
           </div>
         </div>
         <TenantLink to="/connect" style={{ textDecoration: 'none' }}>
