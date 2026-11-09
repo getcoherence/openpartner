@@ -59,8 +59,33 @@ import { getMode } from '../stripe.js';
 import { connectPayoutsAvailable } from '../payout-method.js';
 import { isWhiteLabelEntitled, getWhiteLabelState } from '../white-label.js';
 import { currencyInputSchema } from '../currency.js';
+import { customAccountsAvailable, readConnectSettings, saveConnectSettings } from '../connect-settings.js';
 
 export const settingsRouter = Router();
+
+export const connectSettingsSchema = z.object({
+  accountMode: z.enum(['standard', 'custom_payouts']).optional(),
+  collectTaxInformation: z.boolean().optional(),
+  collect1099KTaxInformation: z.boolean().optional(),
+  collectEventuallyDue: z.boolean().optional(),
+  collectFutureRequirements: z.boolean().optional(),
+  productDescription: z.string().trim().max(500).optional(),
+}).strict();
+
+settingsRouter.get('/config/stripe-connect', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  res.json({ ...await readConnectSettings(db, tenantId), customAccountsAvailable: customAccountsAvailable() });
+});
+
+settingsRouter.post('/config/stripe-connect', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const body = connectSettingsSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  if (body.data.accountMode === 'custom_payouts' && !customAccountsAvailable()) {
+    return res.status(403).json({ error: 'custom_accounts_disabled_on_hosted', detail: 'OPENPARTNER_MODE must be selfhost' });
+  }
+  res.json({ ...await saveConnectSettings(db, tenantId, body.data), customAccountsAvailable: customAccountsAvailable() });
+});
 
 const CONFIG_KEY = 'program_settings';
 

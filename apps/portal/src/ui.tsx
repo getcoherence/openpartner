@@ -623,9 +623,10 @@ export function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement
   );
 }
 
-export function Label({ children }: { children: ReactNode }) {
+export function Label({ children, htmlFor }: { children: ReactNode; htmlFor?: string }) {
   return (
     <label
+      htmlFor={htmlFor}
       style={{
         display: 'block',
         fontSize: 12,

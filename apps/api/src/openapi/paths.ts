@@ -2096,6 +2096,33 @@ Conversion and click ingestion, Network message threads and previews aren't logg
     errors: { 409: ['network_not_connected'] },
   });
 
+  // ------------------------------------------------ Stripe Connect configuration
+  const connectSettingsResponse = settings.connectSettingsSchema.required()
+    .extend({ customAccountsAvailable: z.boolean() })
+    .openapi('StripeConnectSettings');
+  r.operation({
+    method: 'get',
+    path: '/config/stripe-connect',
+    tag: 'Payouts',
+    operationId: 'getStripeConnectSettings',
+    summary: 'Get the account setup for new Stripe Connect partners',
+    description: '`customAccountsAvailable` is true only when `OPENPARTNER_MODE=selfhost`. Hosted instances use Standard accounts.',
+    access: { kind: 'admin' },
+    responses: { 200: { description: 'Defaults to Standard accounts.', schema: connectSettingsResponse } },
+  });
+  r.operation({
+    method: 'post',
+    path: '/config/stripe-connect',
+    tag: 'Payouts',
+    operationId: 'updateStripeConnectSettings',
+    summary: 'Choose Standard accounts or Custom affiliate payout accounts',
+    description: 'Settings for partners\' new Stripe Connect accounts. Omitted fields keep their values. Account type, capabilities and description apply only to accounts created afterwards; existing accounts are never converted. `custom_payouts` requires `OPENPARTNER_MODE=selfhost`; hosted instances return `403 custom_accounts_disabled_on_hosted`.',
+    access: { kind: 'admin' },
+    body: settings.connectSettingsSchema.openapi('UpdateStripeConnectSettingsRequest'),
+    responses: { 200: { description: 'The saved settings.', schema: connectSettingsResponse } },
+    errors: { 403: ['custom_accounts_disabled_on_hosted'] },
+  });
+
   // ------------------------------------------------ Partner portal access
   r.operation({
     method: 'get',

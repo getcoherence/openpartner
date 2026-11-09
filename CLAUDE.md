@@ -34,8 +34,10 @@ Practical implication: **never add hosted-only fields to core tables.** Hosted-s
 
 All three must work from the same `main` branch. Feature flags (`OPENPARTNER_MODE=selfhost|flat|revshare`) gate the billing/payout layer, not the core product.
 
-### 4. Stripe Connect Standard accounts only
-For hosted revenue share tier, use **Stripe Connect Standard accounts**. Partners own their Stripe account; we just facilitate transfers and take a platform fee. This keeps us out of money-transmission licensing and limits platform liability. Do not use Express or Custom accounts without explicit sign-off.
+### 4. Stripe Connect Standard accounts on hosted
+For the hosted tiers, use **Stripe Connect Standard accounts**. Partners own their Stripe account; we just facilitate transfers and take a platform fee. This keeps us out of money-transmission licensing and limits platform liability. Do not use Express or Custom accounts without explicit sign-off.
+
+Signed-off exception: a self-hosted operator (`OPENPARTNER_MODE=selfhost`) may choose transfers-only Custom accounts, since their own Stripe account creates them and carries the risk. Hosted modes reject Custom (`apps/api/src/connect-settings.ts`).
 
 ### 5. No ToS changes to support engineering shortcuts
 "Your data stays yours" is a hard architectural constraint. If a feature would require ingesting customer data into a shared pool, training models on partner attribution, or making export lossy — it doesn't ship. Find another way.

@@ -28,6 +28,7 @@ import {
   Card,
   EmptyState,
   ErrorBanner,
+  formatDate,
   Page,
   SectionHeading,
   Select,
@@ -80,7 +81,12 @@ interface Funnel {
 
 interface ConnectStatus {
   connected: boolean;
+  accountMode?: 'standard' | 'custom_payouts';
+  accountType?: 'standard' | 'custom' | 'express';
+  transfersEnabled?: boolean;
   payoutsEnabled?: boolean;
+  requirementsDue?: boolean;
+  requirementsDueBy?: string | null;
 }
 
 /** GET /partners/:id/payout-profile, the parts the dashboard reads. `rail`
@@ -128,7 +134,12 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
 
   const linkCount = links.data?.links.length ?? 0;
   const hasLink = linkCount > 0;
-  const hasActiveConnect = !!connect.data?.connected && !!connect.data?.payoutsEnabled;
+  const hasActiveConnect = !!connect.data?.connected && !!connect.data?.transfersEnabled && !!connect.data?.payoutsEnabled;
+  // Custom accounts aren't Stripe accounts the partner sees, so they're
+  // asked to set up payouts rather than to connect Stripe.
+  const customConnect = connect.data?.connected
+    ? connect.data.accountType === 'custom'
+    : connect.data?.accountMode === 'custom_payouts';
   // On the manual rail, or wherever the brand can't pay through Connect
   // (hosted without payout funding), the brand pays from the partner's
   // payout details (bank transfer, PayPal or Wise files): that's the step,
@@ -145,7 +156,10 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
     !payoutProfile.isLoading &&
     !paysManually &&
     connect.data != null &&
-    (!connect.data.connected || !connect.data.payoutsEnabled);
+    !hasActiveConnect;
+  // Payouts still run, but Stripe wants more details from a Custom
+  // partner and won't ask them itself.
+  const detailsDue = !paysManually && hasActiveConnect && customConnect && !!connect.data?.requirementsDue;
 
   // Getting-started card shows while EITHER onboarding task is outstanding.
   // We only render it once we know the state of both (payouts + links),
@@ -160,10 +174,23 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
     >
       <ErrorBanner error={error} />
       {showGettingStarted && (
-        <GettingStarted hasLink={hasLink} payoutStep={paysManually ? 'details' : 'stripe'} payoutReady={payoutReady} />
+        <GettingStarted
+          hasLink={hasLink}
+          payoutStep={paysManually ? 'details' : customConnect ? 'custom' : 'stripe'}
+          payoutReady={payoutReady}
+        />
       )}
       {needsConnect && !showGettingStarted && (
-        <ConnectNudge owed={moneyByCurrency(owed, amounts!.currency)} connected={connect.data!.connected} />
+        <ConnectNudge owed={moneyByCurrency(owed, amounts!.currency)} connected={connect.data!.connected} custom={customConnect} />
+      )}
+      {detailsDue && (
+        <NudgeCard
+          title="Stripe needs more details"
+          body={connect.data?.requirementsDueBy
+            ? `Add them by ${formatDate(connect.data.requirementsDueBy)} to keep getting paid.`
+            : 'Add them to keep getting paid.'}
+          cta="Finish onboarding"
+        />
       )}
       {isLoading || !data || !amounts ? (
         <Card>Loading…</Card>
@@ -221,8 +248,9 @@ function GettingStarted({
   payoutReady,
 }: {
   hasLink: boolean;
-  /** `details`: the brand pays partners itself, from their payout details. */
-  payoutStep: 'stripe' | 'details';
+  /** `details`: the brand pays partners itself, from their payout details.
+   *  `custom`: Stripe Connect through a Custom account the brand creates. */
+  payoutStep: 'stripe' | 'custom' | 'details';
   payoutReady: boolean;
 }) {
   const { programName } = useBrand();
@@ -249,6 +277,15 @@ function GettingStarted({
             hint={`Tell ${programName} where to send your commissions: PayPal, a bank account or another way.`}
             cta="Add details"
             to="/payout-details"
+          />
+        ) : payoutStep === 'custom' ? (
+          <ChecklistRow
+            done={payoutReady}
+            icon={<CreditCard size={16} />}
+            title="Set up payouts to get paid"
+            hint={`Stripe collects your payout details so ${programName} can send your commissions.`}
+            cta={payoutReady ? 'Manage' : 'Set up payouts'}
+            to="/connect"
           />
         ) : (
           <ChecklistRow
@@ -311,7 +348,17 @@ function ChecklistRow({
   );
 }
 
-function ConnectNudge({ owed, connected }: { owed: string; connected: boolean }) {
+function ConnectNudge({ owed, connected, custom }: { owed: string; connected: boolean; custom: boolean }) {
+  const title = custom
+    ? connected ? 'Finish setting up payouts to get paid' : 'Set up payouts to get paid'
+    : connected ? 'Finish Stripe onboarding to receive payouts' : 'Connect Stripe to receive payouts';
+  const cta = connected ? 'Finish onboarding' : custom ? 'Set up payouts' : 'Connect Stripe';
+  const body = `You have ${owed} in commissions ${connected ? 'waiting — complete onboarding to get paid.' : 'that can’t be paid out yet.'}`;
+  return <NudgeCard title={title} body={body} cta={cta} />;
+}
+
+/** A payout task for the partner, linking to the Connect page. */
+function NudgeCard({ title, body, cta }: { title: string; body: string; cta: string }) {
   return (
     <Card>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
@@ -320,14 +367,14 @@ function ConnectNudge({ owed, connected }: { owed: string; connected: boolean })
         </div>
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 4 }}>
-            {connected ? 'Finish Stripe onboarding to receive payouts' : 'Connect Stripe to receive payouts'}
+            {title}
           </div>
           <div style={{ fontSize: 13, color: theme.textMuted }}>
-            You have {owed} in commissions {connected ? 'waiting — complete onboarding to get paid.' : 'that can’t be paid out yet.'}
+            {body}
           </div>
         </div>
         <TenantLink to="/connect" style={{ textDecoration: 'none' }}>
-          <Button icon={<CreditCard size={14} />}>{connected ? 'Finish onboarding' : 'Connect Stripe'}</Button>
+          <Button icon={<CreditCard size={14} />}>{cta}</Button>
         </TenantLink>
       </div>
     </Card>
