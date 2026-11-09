@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { FileJson, FileSpreadsheet, Archive, Upload, Database } from 'lucide-react';
-import { getApiKey } from '../api.js';
+import { api, apiDownload } from '../api.js';
 import { theme } from '../theme.js';
 import { Button, Card, Page, SectionHeading } from '../ui.js';
 
@@ -35,21 +35,8 @@ const TABLES = [
 ];
 
 export function AdminExport() {
-  const key = getApiKey() ?? '';
-
   function download(path: string) {
-    fetch(`/api${path}`, { headers: { Authorization: `Bearer ${key}` } })
-      .then((res) => res.blob())
-      .then((blob) => {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = path.split('/').pop() ?? 'export';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-      });
+    void apiDownload(path, path.split('/').pop() ?? 'export');
   }
 
   return (
@@ -160,7 +147,6 @@ interface ImportResult {
 }
 
 function PartnersCsvImporter() {
-  const key = getApiKey() ?? '';
   const [csv, setCsv] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
@@ -170,18 +156,15 @@ function PartnersCsvImporter() {
     setError(null);
     setBusy(true);
     try {
-      const res = await fetch(`/api/import/partners-csv?dryRun=${dryRun}`, {
+      const json = await api<ImportResult>(`/import/partners-csv?dryRun=${dryRun}`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'text/csv' },
+        headers: { 'Content-Type': 'text/csv' },
         body: csv,
       });
-      const json = await res.json();
-      if (!res.ok) {
-        setError(typeof json.detail === 'string' ? json.detail : json.error ?? 'failed');
-        setResult(null);
-      } else {
-        setResult(json as ImportResult);
-      }
+      setResult(json);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed');
+      setResult(null);
     } finally {
       setBusy(false);
     }
