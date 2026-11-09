@@ -32,6 +32,18 @@ export async function platformSigninToken(db: Knex, email: string, add: boolean)
   return issued.plaintext;
 }
 
+/** The brand seats a platform identity can enter: GET /me/workspaces lists
+ *  these, and with none /workspaces sends the identity to create a brand.
+ *  A seat that isn't revoked, in a brand that is active. Add the columns
+ *  you need. */
+export function workspaceSeats(db: Knex, email: string) {
+  return db(TABLES.Admin)
+    .join(TABLES.Tenant, `${TABLES.Tenant}.id`, `${TABLES.Admin}.tenantId`)
+    .where(`${TABLES.Admin}.email`, email.toLowerCase())
+    .whereNull(`${TABLES.Admin}.revokedAt`)
+    .andWhere(`${TABLES.Tenant}.status`, 'active');
+}
+
 /** Ops console. The caller has already checked isAllowedOperator. */
 export async function opsSigninToken(db: Knex, email: string): Promise<string> {
   const address = email.toLowerCase();
