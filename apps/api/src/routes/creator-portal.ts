@@ -178,6 +178,8 @@ const ALLOWED_PREFIX: Array<{ prefix: string; methods: Set<string> }> = [
   // answer, withdraw, deliver, refund or delete a booking (POST
   // .../:id/accept|decline|withdraw|deliver|refund, DELETE .../:id), and make
   // or revoke a report's share link (POST .../:id/report/shares[/:shareId/revoke]).
+  // Delivery dates and the draft (POST .../:id/schedule[/accept|decline],
+  // DELETE .../:id/schedule, POST .../:id/draft) fall under the same prefix.
   { prefix: '/creators/me/packages/', methods: new Set(['PATCH', 'DELETE']) },
   { prefix: '/creators/me/bookings/', methods: new Set(['POST', 'DELETE']) },
   // A conversation: read it (GET .../:id), write, send an offer, block, or

@@ -27,6 +27,7 @@ import {
   type LoadAttachment,
   type MessageAttachment,
 } from './conversation-media.js';
+import { scheduleEventText } from './booking-schedule.js';
 
 export type { LoadAttachment, MessageAttachment } from './conversation-media.js';
 
@@ -45,7 +46,17 @@ export type BookingEvent =
   | 'refunded'
   | 'disputed'
   | 'expired'
-  | 'tracked';
+  | 'tracked'
+  // Delivery dates (the Network's docs/creator-storefront.md §9).
+  | 'schedule_proposed'
+  | 'schedule_changed'
+  | 'schedule_declined'
+  | 'schedule_withdrawn'
+  | 'draft_shared'
+  | 'changes_requested'
+  | 'draft_approved'
+  | 'draft_overdue'
+  | 'overdue';
 
 export interface ConversationMessage {
   id: string;
@@ -166,7 +177,7 @@ export function eventText(
     case 'expired':
       return 'Cancelled: not paid within 30 days';
     default:
-      return 'Booking updated';
+      return (m.event && scheduleEventText(m.event, by, m.body, names)) ?? 'Booking updated';
   }
 }
 

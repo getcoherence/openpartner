@@ -14,6 +14,7 @@ import { theme } from '../../theme.js';
 import { TenantLink } from '../../tenant-link.js';
 import { BookingStatusPill, Face, formatMinor, formatWholeAmount, type BookingStatus } from '../creator/conversation-shared.js';
 import type { VendorBooking } from './NetworkMessages.js';
+import { formatDay, OverduePill } from '../creator/booking-schedule.js';
 
 const FILTERS: Array<{ key: BookingStatus | 'all'; label: string }> = [
   { key: 'all', label: 'All' },
@@ -73,10 +74,12 @@ export function AdminNetworkBookings() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <span style={{ fontSize: 14, fontWeight: 500, color: theme.text }}>{b.package?.title ?? 'Custom collaboration'}</span>
                     <BookingStatusPill status={b.status} />
+                    <OverduePill schedule={b.schedule} />
                   </div>
                   <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 2 }}>
                     {b.creator?.name ?? 'Creator removed'}
                     {b.offering && <> · tracked on {b.offering.title}</>}
+                    {b.schedule?.goLiveBy && ['awaiting_payment', 'paid'].includes(b.status) && <> · goes live by {formatDay(b.schedule.goLiveBy)}</>}
                   </div>
                 </div>
                 <div style={{ textAlign: 'right' }}>

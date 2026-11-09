@@ -23,11 +23,22 @@ export interface CaseStudyPost {
   reported: { views: number | null; likes: number | null; comments: number | null; shares: number | null; reportedAt: string } | null;
 }
 
+/** "Delivered on time" / "Delivered 3 days late"; null with no agreed date. */
+export function onTimeText(s: Pick<CaseStudy, 'onTime' | 'daysLate'>): string | null {
+  if (s.onTime == null) return null;
+  if (s.onTime) return 'Delivered on time';
+  return s.daysLate === 1 ? 'Delivered 1 day late' : `Delivered ${s.daysLate ?? 0} days late`;
+}
+
 export interface CaseStudy {
   title: string;
   platform: string | null;
   brand: { name: string; logoUrl: string | null };
   completedAt: string | null;
+  /** Went live by the agreed date; null with no date. Older Networks leave
+   *  these out (the Network's docs/creator-storefront.md §9.7). */
+  onTime?: boolean | null;
+  daysLate?: number | null;
   posts: CaseStudyPost[];
   /** The booking's currency: revenue in it is listed first. */
   currency: string | null;
@@ -131,7 +142,9 @@ function CaseStudyCard({ s }: { s: CaseStudy }) {
             <Tag tone="good" title="Booked, delivered and approved on OpenPartner">✓ Verified booking</Tag>
           </div>
           <div style={{ fontSize: 12.5, color: theme.textMuted, marginTop: 2 }}>
-            {[s.title, s.platform ? (PLATFORM_LABELS[s.platform] ?? s.platform) : null, s.completedAt ? formatDate(s.completedAt) : null].filter(Boolean).join(' · ')}
+            {[s.title, s.platform ? (PLATFORM_LABELS[s.platform] ?? s.platform) : null, s.completedAt ? formatDate(s.completedAt) : null, onTimeText(s)]
+              .filter(Boolean)
+              .join(' · ')}
           </div>
         </div>
       </div>

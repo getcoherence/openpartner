@@ -18,6 +18,7 @@ import { alpha, theme } from '../../theme.js';
 import { TenantLink } from '../../tenant-link.js';
 import { creatorApi } from '../creator/creator-api.js';
 import { formatPackagePrice, PACKAGE_CURRENCIES, type StorefrontPackage } from '../creator/storefront-shared.js';
+import { scheduleBody, scheduleDraftFrom, scheduleDraftProblem, ScheduleInputs, type ScheduleDraft } from '../creator/booking-schedule.js';
 
 interface OfferingOption {
   id: string;
@@ -63,6 +64,7 @@ const ERROR_TEXT: Record<string, string> = {
   tracking_not_verified: TRACKING_NOT_VERIFIED_TEXT,
   plan_required: 'Tracking a booking adds the creator as your partner, which needs an active plan. Leave the offering empty to book without tracking.',
   rate_limited: 'You’ve started a lot of conversations today. Try again tomorrow.',
+  invalid_schedule: 'Those dates can’t be used. Pick dates from today, with the draft before go-live.',
 };
 
 export function BookCreatorDialog({
@@ -94,6 +96,9 @@ export function BookCreatorDialog({
   const [amount, setAmount] = useState<string | null>(null);
   const [currency, setCurrency] = useState<string | null>(null);
   const [brief, setBrief] = useState('');
+  // Dates you propose (optional): the creator sets the final ones when
+  // accepting. A package's turnaround fills the go-live date.
+  const [sched, setSched] = useState<ScheduleDraft | null>(null);
 
   // The starting package (from its Book button), once packages load.
   const pickedId = packageId ?? (initialPackageId && packages.some((p) => p.id === initialPackageId) ? initialPackageId : '');
@@ -101,6 +106,8 @@ export function BookCreatorDialog({
   const fixedPrice = picked && picked.priceAmount != null && !picked.priceIsFrom ? picked.priceAmount : null;
   const amountText = amount ?? (fixedPrice != null ? String(fixedPrice) : '');
   const cur = currency ?? picked?.currency ?? 'USD';
+  const dates = sched ?? scheduleDraftFrom(null, picked);
+  const datesProblem = scheduleDraftProblem(dates, { requireGoLive: false });
 
   const book = useMutation({
     mutationFn: () =>
@@ -111,6 +118,7 @@ export function BookCreatorDialog({
           packageId: pickedId || null,
           ...(offeringId ? { offeringId } : {}),
           ...(amountText.trim() ? { amount: Number(amountText), currency: cur } : {}),
+          ...scheduleBody(dates),
           brief: brief.trim(),
         },
       }),
@@ -118,7 +126,7 @@ export function BookCreatorDialog({
 
   const code = networkErrorCode(book.error) ?? (book.error instanceof ApiError ? book.error.message : null);
   const amountOk = amountText.trim() === '' || (/^\d{1,8}$/.test(amountText.trim()) && Number(amountText) >= 1);
-  const canBook = amountOk && brief.trim().length >= 20 && !book.isPending;
+  const canBook = amountOk && !datesProblem && brief.trim().length >= 20 && !book.isPending;
   const currencies = (PACKAGE_CURRENCIES as readonly string[]).includes(cur) ? PACKAGE_CURRENCIES : [cur, ...PACKAGE_CURRENCIES];
 
   return (
@@ -188,6 +196,7 @@ export function BookCreatorDialog({
                   setPackageId(e.target.value);
                   setAmount(null);
                   setCurrency(null);
+                  setSched(null);
                 }}
               >
                 <option value="">Custom collaboration</option>
@@ -224,6 +233,10 @@ export function BookCreatorDialog({
               ) : (
                 `${creator.name} can accept at this price or name their own. Nothing is charged until you pay.`
               )}
+            </div>
+            <div style={{ marginBottom: 14 }}>
+              <ScheduleInputs value={dates} onChange={setSched} goLiveLabel="Go live by (optional)" />
+              {datesProblem && <div style={{ fontSize: 12, color: theme.danger, marginTop: 4 }}>{datesProblem}</div>}
             </div>
             <div style={{ marginBottom: 14 }}>
               <Label>Brief</Label>

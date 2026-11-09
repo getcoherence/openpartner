@@ -15,6 +15,12 @@ import { formatDate, money, moneyByCurrency } from '../ui.js';
 import { theme } from '../theme.js';
 import { PlatformMark } from './PlatformMark.js';
 
+/** A calendar date ("2026-11-20") as "Nov 20, 2026": the same everywhere. */
+function formatDay(date: string): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  return Number.isNaN(d.getTime()) ? date : d.toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' });
+}
+
 export type CreatorShare = 'none' | 'posts' | 'counts' | 'revenue';
 
 export interface ReportPost {
@@ -59,6 +65,16 @@ export interface BookingReport {
   status: string;
   deliveredAt: string | null;
   completedAt: string | null;
+  /** The agreed dates and whether each step was on time (the Network's
+   *  docs/creator-storefront.md §9.7). Null with none; older Networks leave it out. */
+  schedule?: {
+    goLiveBy: string | null;
+    draftDueBy: string | null;
+    revisionRounds: number | null;
+    revisionsRequested: number;
+    goLive: { onTime: boolean; daysLate: number } | null;
+    draft: { onTime: boolean; daysLate: number } | null;
+  } | null;
   refunded: boolean;
   brand: { name: string; logoUrl: string | null } | null;
   creator: { name: string; handle: string | null; avatarUrl: string | null; storefrontUrl: string | null } | null;
@@ -295,6 +311,14 @@ export function BookingReportView({
       <h2 style={{ fontSize: 18, margin: '14px 0 2px' }}>{report.title}</h2>
       <div style={{ fontSize: 13, color: theme.textMuted }}>
         Delivered {formatDate(report.deliveredAt)}
+        {report.schedule?.goLiveBy && report.schedule.goLive && (
+          <>
+            {' · '}
+            <span title={`Due to go live by ${formatDay(report.schedule.goLiveBy)}`} style={{ color: report.schedule.goLive.onTime ? theme.success : theme.warn }}>
+              {report.schedule.goLive.onTime ? 'on time' : report.schedule.goLive.daysLate === 1 ? '1 day late' : `${report.schedule.goLive.daysLate} days late`}
+            </span>
+          </>
+        )}
         {report.price && <> · {money(report.price.amount, report.price.currency)}</>}
       </div>
 

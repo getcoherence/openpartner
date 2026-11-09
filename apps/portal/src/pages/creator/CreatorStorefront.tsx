@@ -26,6 +26,7 @@ import {
   audienceNoun,
   formatPackagePrice,
   groupByChannel,
+  packageTermsText,
   parsePackagePrice,
   PACKAGE_CURRENCIES,
   PLATFORM_LABELS,
@@ -868,6 +869,7 @@ function PackageCard({
           {pkg.description && (
             <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 4, whiteSpace: 'pre-wrap' }}>{pkg.description}</div>
           )}
+          {packageTermsText(pkg) && <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>{packageTermsText(pkg)}</div>}
         </div>
         <div style={{ fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap' }}>{formatPackagePrice(pkg)}</div>
       </div>
@@ -1012,8 +1014,14 @@ function PackageForm({
   const [priceIsFrom, setPriceIsFrom] = useState(existing?.priceIsFrom ?? false);
   const [currency, setCurrency] = useState(existing?.currency ?? 'USD');
   const [published, setPublished] = useState(existing?.published ?? true);
+  // Delivery-date defaults (the Network's docs/creator-storefront.md §9). A
+  // Network from before them has none on its packages, and takes none.
+  const supportsDates = !existing || 'turnaroundDays' in existing;
+  const [turnaround, setTurnaround] = useState(existing?.turnaroundDays != null ? String(existing.turnaroundDays) : '');
+  const [rounds, setRounds] = useState(existing?.revisionRounds != null ? String(existing.revisionRounds) : '');
 
   const parsed = parsePackagePrice(price);
+  const turnaroundValid = turnaround.trim() === '' || (/^\d{1,3}$/.test(turnaround.trim()) && Number(turnaround) >= 1 && Number(turnaround) <= 365);
   const priceValid = parsed.valid;
   const draft: PackageDraft = {
     title: title.trim(),
@@ -1023,6 +1031,12 @@ function PackageForm({
     priceIsFrom: parsed.amount == null ? false : priceIsFrom,
     currency,
     published,
+    ...(supportsDates
+      ? {
+          turnaroundDays: turnaroundValid && turnaround.trim() ? Number(turnaround) : null,
+          revisionRounds: rounds === '' ? null : Number(rounds),
+        }
+      : {}),
   };
   const draftKey = JSON.stringify(draft);
   useEffect(() => {
@@ -1087,6 +1101,24 @@ function PackageForm({
           </div>
         </div>
         {!priceValid && <div style={{ fontSize: 13, color: theme.danger }}>Use a whole number up to 10,000,000, like 500.</div>}
+        {supportsDates && (
+          <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <Label>Live within (days)</Label>
+              <Input aria-label="Live within (days)" value={turnaround} inputMode="numeric" onChange={(e) => setTurnaround(e.target.value)} placeholder="14" />
+            </div>
+            <div>
+              <Label>Revision rounds</Label>
+              <Select aria-label="Revision rounds" value={rounds} onChange={(e) => setRounds(e.target.value)}>
+                <option value="">Not set</option>
+                {Array.from({ length: 11 }, (_, n) => (
+                  <option key={n} value={String(n)}>{n}</option>
+                ))}
+              </Select>
+            </div>
+          </div>
+        )}
+        {!turnaroundValid && <div style={{ fontSize: 13, color: theme.danger }}>Use a number of days from 1 to 365.</div>}
         <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', fontSize: 13 }}>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, opacity: price.trim() === '' ? 0.5 : 1 }}>
             <input type="checkbox" checked={priceIsFrom} disabled={price.trim() === ''} onChange={(e) => setPriceIsFrom(e.target.checked)} />
@@ -1099,7 +1131,7 @@ function PackageForm({
         </div>
       </div>
       <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
-        <Button onClick={() => save.mutate()} disabled={!title.trim() || !priceValid || save.isPending}>
+        <Button onClick={() => save.mutate()} disabled={!title.trim() || !priceValid || !turnaroundValid || save.isPending}>
           {save.isPending ? 'Saving…' : existing ? 'Save' : 'Add package'}
         </Button>
         <Button variant="secondary" onClick={onCancel}>Cancel</Button>
