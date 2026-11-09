@@ -47,6 +47,7 @@ import {
   rotatePlatformSessionToken,
   touchBundle,
 } from '../platform-sessions.js';
+import { workspaceSeats } from '../signin-handoff.js';
 
 export const platformAuthRouter = Router();
 
@@ -175,18 +176,13 @@ platformAuthRouter.get('/me/workspaces', async (req, res) => {
   const session = await resolvePlatformSession(db, cookie);
   if (!session) return res.status(401).json({ error: 'invalid_or_expired_session' });
 
-  const rows = (await db(TABLES.Admin)
-    .join(TABLES.Tenant, `${TABLES.Tenant}.id`, `${TABLES.Admin}.tenantId`)
-    .where(`${TABLES.Admin}.email`, session.email)
-    .whereNull(`${TABLES.Admin}.revokedAt`)
-    .andWhere(`${TABLES.Tenant}.status`, 'active')
-    .select(
-      `${TABLES.Tenant}.slug as tenantSlug`,
-      `${TABLES.Tenant}.displayName as tenantDisplayName`,
-      `${TABLES.Admin}.id as adminId`,
-      `${TABLES.Admin}.activatedAt as activatedAt`,
-      `${TABLES.Admin}.role as role`,
-    )) as Array<{ tenantSlug: string; tenantDisplayName: string; adminId: string; activatedAt: Date | null; role: AdminRole }>;
+  const rows = (await workspaceSeats(db, session.email).select(
+    `${TABLES.Tenant}.slug as tenantSlug`,
+    `${TABLES.Tenant}.displayName as tenantDisplayName`,
+    `${TABLES.Admin}.id as adminId`,
+    `${TABLES.Admin}.activatedAt as activatedAt`,
+    `${TABLES.Admin}.role as role`,
+  )) as Array<{ tenantSlug: string; tenantDisplayName: string; adminId: string; activatedAt: Date | null; role: AdminRole }>;
 
   const workspaces: Workspace[] = rows.map((r) => ({
     tenantSlug: r.tenantSlug,

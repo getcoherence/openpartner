@@ -44,11 +44,16 @@ async function signInAsCreator(email: string, password: string, brandError: Erro
  * right link(s), always answering 200 to avoid email enumeration. A
  * password is tried as the brand or operator one first, then as the
  * creator one (the Network's), and "Forgot password?" asks both. Google
- * here is brand accounts only; creators use it on /creator/login.
+ * covers both too: an address with no brand to enter that is an active
+ * creator lands in the creator portal (accountLanding in
+ * routes/google-auth.ts). With both kinds of account it's the brand, and
+ * "Add another account" (?add=1) only ever adds a brand account.
  *
- * Brand passwords and Google end in the same POST /auth/platform-verify the
- * emailed link's landing page makes (routes/password-auth.ts); a creator
- * password ends in the Network's POST /creators/verify.
+ * Brand passwords and brand Google sign-in end in the same POST
+ * /auth/platform-verify the emailed link's landing page makes
+ * (routes/password-auth.ts); a creator password or creator Google sign-in
+ * ends in the Network's POST /creators/verify (Google's via
+ * /creator/auth/magic).
  */
 export function SigninPage() {
   const nav = useNavigate();
