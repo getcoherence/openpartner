@@ -275,8 +275,12 @@ describe.skipIf(skipIntegration)('the engine', () => {
 
     const rows = await commissions();
     expect(rows.map((r) => r.amount)).toEqual(['21.60', '4.50', '2.00', '2.50']);
-    expect(rows[0]!.metadata).toEqual({ rateType: 'percent', products: { ruleIndex: 0, matched: ['prod_pro'], basis: 72 } });
-    expect(rows[1]!.metadata).toEqual({ rateType: 'percent' });
+    expect(rows[0]!.metadata).toEqual({
+      rateType: 'percent',
+      trigger: 'every',
+      products: { ruleIndex: 0, matched: ['prod_pro'], basis: 72 },
+    });
+    expect(rows[1]!.metadata).toEqual({ rateType: 'percent', trigger: 'every' });
   });
 
   it('matches a price id, so monthly and annual can pay differently', async () => {

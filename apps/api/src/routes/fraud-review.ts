@@ -25,7 +25,7 @@ import { Router } from 'express';
 import { z } from '../zod.js';
 import { TABLES, type ClickRow, type IdentityRow } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
-import { attributeBacklogForUser } from '../attribution.js';
+import { attributeBacklogForUser, lockCustomer } from '../attribution.js';
 import { tenantOf } from '../tenancy.js';
 
 export const fraudReviewRouter = Router();
@@ -75,8 +75,14 @@ fraudReviewRouter.post('/clicks/:id/unflag', requireAuth, requireAdmin, async (r
   if (!click) return res.status(404).json({ error: 'click_not_found' });
   if (!click.fraudFlag) return res.status(409).json({ error: 'not_flagged' });
 
-  const identities = await db<IdentityRow>(TABLES.Identity).where({ clickId, tenantId });
+  const identities = await db<IdentityRow>(TABLES.Identity).where({ clickId, tenantId }).orderBy('userId');
   let reattributed = 0;
+
+  // Every customer this replays, locked before anything is dropped, in
+  // userId order: attribution takes the same lock per customer
+  // (lockCustomer), so a webhook can't attribute between the drop and the
+  // replay, and two unflags sharing customers can't deadlock.
+  for (const identity of identities) await lockCustomer(db, tenantId, identity.userId);
 
   // The request is already in a transaction (per-request via tenantMiddleware).
   // No nested transaction needed — operate on req.db directly.

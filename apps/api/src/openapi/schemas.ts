@@ -585,7 +585,7 @@ const CommissionRowShape = z.object({
   payoutId: z.string().nullable(),
   metadata: z.record(z.string(), z.unknown()).openapi({
     description:
-      "How the amount was worked out. `rateType` is the sub-rule's `percent` or `fixed` (absent on commissions accrued before October 2026). A banded or tiered rule also records `slab`: which sub-rule (`ruleIndex`), `kind` (`band` or `tier`), the `level` reached and its `threshold` and `value`, and for tiers the `metric` and its `metricValue` over the `window`. A replacement accrued for what a partial refund left records `refund`. A recruiter commission has `rateType: \"recruiter\"` and `recruiter`: the `percent` it was worked out at and the `recruitedPartnerId`.",
+      "How the amount was worked out. `rateType` is the sub-rule's `percent` or `fixed` (absent on commissions accrued before October 2026), and `trigger` its `every`, `first` or `subsequent` (absent before November 2026). A banded or tiered rule also records `slab`: which sub-rule (`ruleIndex`), `kind` (`band` or `tier`), the `level` reached and its `threshold` and `value`, and for tiers the `metric` and its `metricValue` over the `window`. A replacement accrued for what a partial refund left records `refund`. A recruiter commission has `rateType: \"recruiter\"` and `recruiter`: the `percent` it was worked out at and the `recruitedPartnerId`.",
   }),
 });
 

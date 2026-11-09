@@ -46,7 +46,7 @@ import {
 import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { afterCommit, getTenancyMode, tenantOf } from '../tenancy.js';
 import { getMode } from '../stripe.js';
-import { attributeEvent } from '../attribution.js';
+import { attributeEvent, lockCustomer } from '../attribution.js';
 import { sameConversion } from '../conversion-ingest.js';
 import { currencyInputSchema, ingestCurrency } from '../currency.js';
 import { codeExistsInStripe, deactivateCustomerReward, provisionCustomerReward } from '../customer-rewards.js';
@@ -466,6 +466,11 @@ couponsRouter.post('/coupons/redeem', requireAuth, grantScope('events:write'), r
     ts,
   };
 
+  // The customer lock before any write, as on every path that attributes
+  // (lockCustomer): Stripe's coupon redemption for this user takes it
+  // before it writes the same rows.
+  await lockCustomer(db, tenantId, userId);
+
   // The Event goes in FIRST, with the (tenantId, externalEventId) unique
   // constraint as the idempotency arbiter (same as /attribution/events). A
   // replay or a conflict then returns before anything else is written — the
@@ -611,11 +616,13 @@ export async function ensureCouponClickAndIdentity(
   // verification date on subsequent redemptions. Cross-tenant write,
   // which means the privileged db (not RLS-scoped trx) — but we
   // already know the tenantId came from a verified Coupon lookup.
+  // Only while unset: the update row-locks the Tenant until commit, which
+  // would queue every redemption in the tenant behind each other, and
+  // behind whichever holds a customer lock (lockCustomer).
   await trx('Tenant')
     .where({ id: tenantId })
-    .update({
-      couponIntegrationVerifiedAt: trx.raw('COALESCE("couponIntegrationVerifiedAt", NOW())'),
-    });
+    .whereNull('couponIntegrationVerifiedAt')
+    .update({ couponIntegrationVerifiedAt: trx.raw('NOW()') });
 
   return { clickId, reused: false };
 }
