@@ -121,6 +121,9 @@ const ALLOWED_EXACT = new Set([
   '/creators/me/packages',
   '/creators/me/packages/order',
   '/creators/me/bookings',
+  // Suggested rates for the package editor (the Network's
+  // docs/rate-suggestions.md §5).
+  '/creators/me/rate-suggestions',
   // Completed bookings shown on the storefront as verified work (GET the
   // choices, PUT the ones shown in order; the Network's
   // docs/campaign-reports.md §10).
