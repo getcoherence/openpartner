@@ -37,7 +37,15 @@ const stripeApi = vi.hoisted(() => ({
   couponsRetrieve: vi.fn(),
   chargesRetrieve: vi.fn(),
   invoicePaymentsList: vi.fn(),
+  invoicesListLineItems: vi.fn(),
+  checkoutSessionsListLineItems: vi.fn(),
 }));
+
+/** A Stripe list call's return: a promise-like with autoPagingToArray, as
+ *  the SDK's list methods give. */
+function stripeList<T>(items: T[]) {
+  return { autoPagingToArray: async () => items };
+}
 
 function resetStripeApi() {
   stripeApi.customersRetrieve.mockReset().mockResolvedValue({ id: 'cus_test_mocked', metadata: {}, deleted: false });
@@ -50,6 +58,11 @@ function resetStripeApi() {
   stripeApi.couponsRetrieve.mockReset().mockRejectedValue(new Error('unexpected coupons.retrieve'));
   stripeApi.chargesRetrieve.mockReset().mockRejectedValue(new Error('unexpected charges.retrieve'));
   stripeApi.invoicePaymentsList.mockReset().mockRejectedValue(new Error('unexpected invoicePayments.list'));
+  stripeApi.invoicesListLineItems.mockReset().mockImplementation(() => {
+    throw new Error('unexpected invoices.listLineItems');
+  });
+  // A one-time Checkout's revenue reads its line items (product commissions).
+  stripeApi.checkoutSessionsListLineItems.mockReset().mockImplementation(() => stripeList([]));
 }
 resetStripeApi();
 
@@ -69,9 +82,14 @@ vi.mock('stripe', async () => {
     (instance as unknown as { invoices: unknown }).invoices = {
       retrieve: stripeApi.invoicesRetrieve,
       list: stripeApi.invoicesList,
+      listLineItems: stripeApi.invoicesListLineItems,
     };
     (instance as unknown as { checkout: unknown }).checkout = {
-      sessions: { list: stripeApi.checkoutSessionsList, retrieve: stripeApi.checkoutSessionsRetrieve },
+      sessions: {
+        list: stripeApi.checkoutSessionsList,
+        retrieve: stripeApi.checkoutSessionsRetrieve,
+        listLineItems: stripeApi.checkoutSessionsListLineItems,
+      },
     };
     (instance as unknown as { promotionCodes: unknown }).promotionCodes = {
       retrieve: stripeApi.promotionCodesRetrieve,
@@ -3943,5 +3961,183 @@ describe.skipIf(skipIntegration)('stripe webhook — a forwarded conversion keye
     }
     // Still lost: the warning makes it visible, it doesn't repair it.
     expect(await db(TABLES.Event).where({ type: 'invoice_paid', externalEventId: sessionId })).toHaveLength(0);
+  });
+});
+
+describe.skipIf(skipIntegration)('stripe webhook — products on sales (product commissions)', () => {
+  // docs/product-commissions.md: a sale's Stripe line items become the
+  // Event's metadata.products, and a rule limited to products pays on their
+  // share of the sale.
+
+  async function productProgram(programId: string) {
+    await db(TABLES.Program)
+      .where({ id: programId })
+      .update({
+        commissionRule: JSON.stringify([
+          { trigger: 'every', eventType: 'invoice_paid', type: 'percent', value: 30, products: [{ id: 'prod_pro', name: 'Pro' }] },
+        ]),
+      });
+  }
+
+  async function stitch(clickId: string, customerId: string) {
+    await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'checkout.session.completed',
+      created: Math.floor(Date.now() / 1000),
+      data: { object: { id: `cs_${ulid()}`, mode: 'subscription', client_reference_id: clickId, customer: customerId } },
+    });
+  }
+
+  function invoiceEvent(lines: unknown[], fields: Record<string, unknown> = {}) {
+    return {
+      id: `evt_${ulid()}`,
+      type: 'invoice.paid',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: `in_${ulid()}`,
+          amount_paid: 9000,
+          currency: 'usd',
+          lines: { object: 'list', data: lines, has_more: false },
+          ...fields,
+        },
+      },
+    };
+  }
+
+  it('records an invoice\'s lines (basil shape) and pays a Pro-only rule on Pro\'s share', async () => {
+    const { clickId, programId } = await seedClick();
+    await productProgram(programId);
+    const customerId = `cus_${ulid()}`;
+    await stitch(clickId, customerId);
+
+    const res = await postWebhook(
+      invoiceEvent(
+        [
+          {
+            id: 'il_1',
+            amount: 8000,
+            discount_amounts: [{ amount: 0, discount: 'di_1' }],
+            description: '1 × Pro (at $80.00 / month)',
+            quantity: 1,
+            pricing: { type: 'price_details', price_details: { price: 'price_pro_m', product: 'prod_pro' } },
+          },
+          {
+            id: 'il_2',
+            amount: 2000,
+            description: '2 × Seat (at $10.00 / month)',
+            quantity: 2,
+            pricing: { type: 'price_details', price_details: { price: 'price_seat', product: 'prod_seat' } },
+          },
+        ],
+        { customer: { id: customerId, metadata: {}, object: 'customer' } },
+      ),
+    );
+    expect(res.status).toBe(200);
+
+    const event = await db(TABLES.Event).where({ userId: customerId, type: 'invoice_paid' }).first();
+    expect(event!.metadata.products).toEqual([
+      { id: 'prod_pro', price: 'price_pro_m', name: 'Pro', amount: 80, quantity: 1 },
+      { id: 'prod_seat', price: 'price_seat', name: 'Seat', amount: 20, quantity: 2 },
+    ]);
+    const attribution = await db(TABLES.Attribution).where({ eventId: event!.id }).first();
+    const [commission] = await db(TABLES.Commission).where({ attributionId: attribution!.id });
+    // $90 paid; Pro is 80 of the 100 in lines, so its share is $72. 30% of it.
+    expect(commission!.amount).toBe('21.60');
+    expect(commission!.metadata.products).toEqual({ ruleIndex: 0, matched: ['prod_pro'], basis: 72 });
+  });
+
+  it('reads the rest of an invoice\'s lines when Stripe sent only the first page (older shape)', async () => {
+    const { clickId, programId } = await seedClick();
+    await productProgram(programId);
+    const customerId = `cus_${ulid()}`;
+    await stitch(clickId, customerId);
+    const line = (id: string, product: string, amount: number) => ({
+      id,
+      amount,
+      description: 'Setup',
+      price: { id: `price_${product}`, object: 'price', product },
+    });
+    stripeApi.invoicesListLineItems.mockImplementation(() =>
+      stripeList([line('il_1', 'prod_pro', 4500), line('il_2', 'prod_addon', 4500)]),
+    );
+
+    const res = await postWebhook({
+      ...invoiceEvent([line('il_1', 'prod_pro', 4500)], { customer: { id: customerId, metadata: {}, object: 'customer' } }),
+    });
+    // has_more on the payload's first page.
+    expect(res.status).toBe(200);
+    expect(stripeApi.invoicesListLineItems).not.toHaveBeenCalled();
+
+    const event2 = invoiceEvent([line('il_1', 'prod_pro', 4500)], { customer: { id: customerId, metadata: {}, object: 'customer' } });
+    (event2.data.object.lines as { has_more: boolean }).has_more = true;
+    expect((await postWebhook(event2)).status).toBe(200);
+    expect(stripeApi.invoicesListLineItems).toHaveBeenCalledWith(event2.data.object.id, { limit: 100 });
+    const recorded = await db(TABLES.Event).where({ externalEventId: event2.id }).first();
+    expect(recorded!.metadata.products.map((p: { id: string }) => p.id)).toEqual(['prod_pro', 'prod_addon']);
+    const attribution = await db(TABLES.Attribution).where({ eventId: recorded!.id }).first();
+    const [commission] = await db(TABLES.Commission).where({ attributionId: attribution!.id });
+    expect(commission!.amount).toBe('13.50'); // 30% of half of $90
+  });
+
+  it("a one-time Checkout's revenue lists the session's line items", async () => {
+    const { clickId, programId } = await seedClick();
+    await productProgram(programId);
+    stripeApi.checkoutSessionsListLineItems.mockImplementation(() =>
+      stripeList([
+        {
+          id: 'li_1',
+          object: 'item',
+          description: 'Pro lifetime',
+          quantity: 1,
+          amount_subtotal: 10000,
+          amount_discount: 1000,
+          price: { id: 'price_life', object: 'price', product: 'prod_pro' },
+        },
+        {
+          // $50 sticker at a tax-inclusive rate: $8.33 of it is tax.
+          id: 'li_2',
+          object: 'item',
+          description: 'Sticker pack',
+          quantity: 1,
+          amount_subtotal: 5000,
+          amount_discount: 0,
+          taxes: [{ amount: 833, rate: { id: 'txr_1', inclusive: true } }],
+          price: { id: 'price_sticker', object: 'price', product: 'prod_sticker' },
+        },
+      ]),
+    );
+    const sessionId = `cs_${ulid()}`;
+    const res = await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'checkout.session.completed',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: sessionId,
+          object: 'checkout.session',
+          mode: 'payment',
+          status: 'complete',
+          payment_status: 'paid',
+          amount_total: 14000,
+          currency: 'usd',
+          customer: null,
+          payment_intent: `pi_${ulid()}`,
+          invoice: null,
+          client_reference_id: clickId,
+        },
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(stripeApi.checkoutSessionsListLineItems).toHaveBeenCalledWith(sessionId, { limit: 100, expand: ['data.taxes'] });
+    const revenue = await db(TABLES.Event).where({ externalEventId: sessionId }).first();
+    expect(revenue!.metadata.products).toEqual([
+      { id: 'prod_pro', price: 'price_life', name: 'Pro lifetime', amount: 90, quantity: 1 },
+      { id: 'prod_sticker', price: 'price_sticker', name: 'Sticker pack', amount: 41.67, quantity: 1 },
+    ]);
+    const attribution = await db(TABLES.Attribution).where({ eventId: revenue!.id }).first();
+    const [commission] = await db(TABLES.Commission).where({ attributionId: attribution!.id });
+    // $140 paid; Pro is 90 of the 131.67 before tax: a $95.69 share, 30% of it.
+    expect(commission!.amount).toBe('28.71');
   });
 });

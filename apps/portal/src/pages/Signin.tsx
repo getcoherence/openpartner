@@ -10,17 +10,45 @@ import {
   useAuthProviders,
   type AuthLocationState,
 } from './auth/PasswordAuth.js';
+import { creatorApi } from './creator/creator-api.js';
+import { creatorPasswordToken, redeemCreatorToken } from './creator/CreatorSignin.js';
+
+/** The brand side's "not this password" answers, after which the same
+ *  password is tried as the address's creator password. */
+const PASSWORD_REFUSALS = new Set(['invalid_credentials', 'too_many_attempts']);
+
+/**
+ * The creator half of a password the brand side refused. Each side answers
+ * a wrong password, an unknown address and a link-only account alike, so
+ * trying both says nothing about which accounts the address has. If the
+ * Network refuses too, the brand side's answer stands, unless the Network
+ * is holding the address or this browser: then that's the reason to show.
+ */
+async function signInAsCreator(email: string, password: string, brandError: Error): Promise<void> {
+  let token: string;
+  try {
+    token = await creatorPasswordToken(email, password);
+  } catch (e) {
+    const code = e instanceof Error ? e.message : '';
+    throw code === 'too_many_attempts' || code === 'rate_limited' ? e : brandError;
+  }
+  // The password matched: whatever stops the session now (a takedown, a
+  // deletion in progress, the country check) is worth saying as-is.
+  await redeemCreatorToken(token);
+}
 
 /**
  * Sign-in for the multi-tenant deployment: Google, email + password, or an
  * emailed link. We don't make the user pick "brand vs creator" up front —
  * a link request looks up which accounts the address has and mails the
- * right link(s), always answering 200 to avoid email enumeration.
- * Passwords and Google are brand accounts only; creators (Network) keep
- * their emailed link.
+ * right link(s), always answering 200 to avoid email enumeration. A
+ * password is tried as the brand or operator one first, then as the
+ * creator one (the Network's), and "Forgot password?" asks both. Google
+ * here is brand accounts only; creators use it on /creator/login.
  *
- * Password and Google sign-in end in the same POST /auth/platform-verify
- * the emailed link's landing page makes (routes/password-auth.ts).
+ * Brand passwords and Google end in the same POST /auth/platform-verify the
+ * emailed link's landing page makes (routes/password-auth.ts); a creator
+ * password ends in the Network's POST /creators/verify.
  */
 export function SigninPage() {
   const nav = useNavigate();
@@ -56,19 +84,36 @@ export function SigninPage() {
             : null
         }
         onPassword={async (email, password) => {
-          const { token } = await postPlatform<{ token: string }>('/signin/password', { email, password, add: addMode });
+          let token: string;
+          try {
+            ({ token } = await postPlatform<{ token: string }>('/signin/password', { email, password, add: addMode }));
+          } catch (e) {
+            // Adding a second account adds a brand account; anything else
+            // may be signing in with the address's creator password.
+            if (addMode || !(e instanceof Error) || !PASSWORD_REFUSALS.has(e.message)) throw e;
+            await signInAsCreator(email, password, e);
+            nav('/creator', { replace: true });
+            return;
+          }
           const verified = await postPlatform<{ twoFactorRequired?: boolean }>('/auth/platform-verify', { token });
           nav(withNext(verified.twoFactorRequired ? '/signin/two-factor' : '/workspaces', next), { replace: true });
         }}
         onLink={(email) => postPlatform('/signin', { email, add: addMode, ...(next ? { next } : {}) }).then(() => undefined)}
-        onForgot={(email) => postPlatform('/password/forgot', { email }).then(() => undefined)}
+        onForgot={(email) =>
+          Promise.all([
+            postPlatform('/password/forgot', { email }),
+            // The Network mails a creator its own reset link, and answers
+            // the same 200 for an address that isn't one.
+            addMode ? null : creatorApi('/creators/password/forgot', { method: 'POST', body: { email } }).catch(() => undefined),
+          ]).then(() => undefined)
+        }
         linkSentText={(email) =>
           addMode
             ? `If ${email} is an admin on a brand, we just emailed it a sign-in link. If it isn’t, we emailed it to say so.`
             : `If we found accounts for ${email}, we just emailed sign-in links — one per account type if you have both a brand and a creator account. They’re good for 15 minutes.`
         }
         forgotSentText={(email) =>
-          `If ${email} has an OpenPartner brand or operator account, we just emailed it a link to choose a password. It’s good for 15 minutes. A partner address gets a list of its partner portals instead.`
+          `If ${email} has an OpenPartner ${addMode ? 'brand or operator' : 'brand, creator or operator'} account, we just emailed it a link to choose a password. It’s good for 15 minutes. A partner address gets a list of its partner portals instead.`
         }
         forgotHint="Partners: reset your password from your brand’s partner portal."
         footer={

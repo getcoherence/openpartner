@@ -151,7 +151,7 @@ describe.skipIf(skipIntegration)('PATCH /network/me/profile', () => {
       bio: 'I make weekly videos about design tools for indie founders.',
       categories: ['Design', 'tech'],
       audienceLocations: ['us', 'GB'],
-      audienceAgeRange: '25-34',
+      audienceAgeRanges: ['25-34', '18-24'],
       audienceSize: '10k_50k',
       portfolioLinks: ['https://youtube.com/watch?v=1'],
       pastBrands: ['Linear'],
@@ -176,6 +176,12 @@ describe.skipIf(skipIntegration)('PATCH /network/me/profile', () => {
     expect(JSON.parse(calls[0]!.raw.toString('utf8'))).toEqual({ audienceSize: null, audienceAgeRange: null });
   });
 
+  it('still forwards the one-bucket audienceAgeRange', async () => {
+    const res = await request(app).patch('/network/me/profile').set('Cookie', cookie).send({ audienceAgeRange: '45-54' });
+    expect(res.status).toBe(200);
+    expect(JSON.parse(calls[0]!.raw.toString('utf8'))).toEqual({ audienceAgeRange: '45-54' });
+  });
+
   it('removes the cover with null', async () => {
     const res = await request(app).patch('/network/me/profile').set('Cookie', cookie).send({ coverImageUrl: null });
     expect(res.status).toBe(200);
@@ -185,6 +191,7 @@ describe.skipIf(skipIntegration)('PATCH /network/me/profile', () => {
   it.each([
     ['an unknown audience bucket', { audienceSize: 'huge' }],
     ['a bad country code', { audienceLocations: ['USA'] }],
+    ['an unknown age range', { audienceAgeRanges: ['18-25'] }],
     ['too many categories', { categories: Array.from({ length: 13 }, (_, i) => `c${i}`) }],
     ['a non-URL portfolio link', { portfolioLinks: ['not a url'] }],
     ['a non-http cover', { coverImageUrl: 'javascript:alert(1)' }],

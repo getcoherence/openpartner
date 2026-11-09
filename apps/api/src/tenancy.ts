@@ -199,14 +199,16 @@ async function resolveTenantFromHost(
   const { db } = await import('./db.js');
   const row = await db<TenantRow>(TABLES.Tenant)
     .where({ customDomain: host, status: 'active' })
-    .first(['id', 'slug', 'whiteLabel', 'status', 'pendingDeletionAt']);
-  if (!row) return null;
+    .first(['id', 'slug', 'customDomain', 'whiteLabel', 'status', 'pendingDeletionAt']);
+  if (!row?.customDomain) return null;
   if (row.pendingDeletionAt) {
     const isRecoveryPath =
       req.url.includes('/account/restore') || req.url.includes('/account/deletion-status');
     if (!isRecoveryPath) throw new TenantPendingDeletionError(row.slug);
   }
-  req.tenantCustomDomain = host;
+  // The stored domain, not the request's Host: the two are equal here, but
+  // emailed links then never carry a value read off the request.
+  req.tenantCustomDomain = row.customDomain;
   // Effective entitlement drives branding + Network-hiding downstream
   // (surfaced via /branding and /config/program). Computed here once so
   // pre-auth surfaces see the same truth as authenticated ones.

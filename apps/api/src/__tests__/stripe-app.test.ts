@@ -68,6 +68,8 @@ function resetStripeApi() {
     'customers.update': async (id: unknown) => ({ id }),
     'checkout.sessions.list': async () => ({ object: 'list', data: [], has_more: false }),
     'checkout.sessions.retrieve': missing('checkout session'),
+    // A one-time Checkout's revenue reads its line items (product commissions).
+    'checkout.sessions.listLineItems': () => ({ autoPagingToArray: async () => [] }),
     'invoices.retrieve': missing('invoice'),
     'charges.retrieve': missing('charge'),
     'invoicePayments.list': async () => ({ object: 'list', data: [], has_more: false }),
@@ -94,7 +96,11 @@ vi.mock('stripe', async () => {
       };
     instance.customers = { retrieve: call('customers.retrieve'), update: call('customers.update') };
     instance.checkout = {
-      sessions: { list: call('checkout.sessions.list'), retrieve: call('checkout.sessions.retrieve') },
+      sessions: {
+        list: call('checkout.sessions.list'),
+        retrieve: call('checkout.sessions.retrieve'),
+        listLineItems: call('checkout.sessions.listLineItems'),
+      },
     };
     instance.invoices = { retrieve: call('invoices.retrieve') };
     instance.charges = { retrieve: call('charges.retrieve') };

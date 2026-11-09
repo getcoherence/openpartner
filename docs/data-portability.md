@@ -475,6 +475,14 @@ that predates it) is read as possibly the first one. That's the
 conservative choice: it can withhold a `first` commission, never pay one
 twice. No version bump: it's a key inside an existing JSON column.
 
+Product commissions (Nov 2026, [product-commissions.md](product-commissions.md))
+need nothing extra and no version bump either. A rule's `products` is JSON
+in the rule columns, what a sale was for is `Event.metadata.products`, and
+what a commission was paid on is `Commission.metadata.products`. An
+instance from before it imports the rules but ignores `products`, so it
+pays them on every product: upgrade before importing a bundle that uses
+them.
+
 Refunds and chargebacks (Oct 2026) need nothing extra either, and no
 version bump. The refund itself is an `Event` (`type` `refund` or
 `chargeback`, negative `value`; an API refund names its conversion in

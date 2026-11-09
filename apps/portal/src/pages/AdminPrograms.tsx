@@ -23,7 +23,13 @@ import {
   statusAmounts,
 } from '../ui.js';
 import { renderCommissionSummary } from '../lib/commission-summary.js';
-import { CompoundRuleEditor, ruleEventTypeMissing, ruleSlabProblem, type CommissionSubRule } from '../lib/CompoundRuleEditor.js';
+import {
+  CompoundRuleEditor,
+  ruleEventTypeMissing,
+  ruleProductProblem,
+  ruleSlabProblem,
+  type CommissionSubRule,
+} from '../lib/CompoundRuleEditor.js';
 import { EditOnly, useViewOnly } from '../lib/viewOnly.js';
 import { PROGRAM_CATEGORIES, clickDestinationProblem, clickDestinationWarning, parseVideoUrl } from '@openpartner/db';
 
@@ -586,6 +592,7 @@ function EditProgramDates({
             rules.length === 0 ||
             rules.some(ruleEventTypeMissing) ||
             rules.some((r) => ruleSlabProblem(r) !== null) ||
+            rules.some((r) => ruleProductProblem(r) !== null) ||
             (shareOnNetwork && !marketplaceDescription.trim()) ||
             (shareOnNetwork && videoLinkInvalid(videoUrl)) ||
             revenueEventTypesProblem(revenueEventTypes) !== null ||
@@ -871,6 +878,7 @@ function CreateProgram({
             rules.some((r) => !r.value) ||
             rules.some(ruleEventTypeMissing) ||
             rules.some((r) => ruleSlabProblem(r) !== null) ||
+            rules.some((r) => ruleProductProblem(r) !== null) ||
             !destinationUrl ||
             urlProblem != null ||
             (networkEnabled && shareOnNetwork && !marketplaceDescription.trim()) ||

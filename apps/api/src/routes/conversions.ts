@@ -5,6 +5,7 @@ import { grantScope, requireAdmin, requireAuth } from '../auth.js';
 import type { AttributeResult } from '../attribution.js';
 import { recordClickConversion, type ClickConversionResult, type ReplayedAttribution } from '../conversion-ingest.js';
 import { currencyInputSchema } from '../currency.js';
+import { eventProductsInputSchema, metadataWithProducts } from '../product-commissions.js';
 import { recordedFromStripeDetail } from '../stripe-app.js';
 import {
   MAX_IP_ALLOWLIST,
@@ -64,6 +65,10 @@ export const conversionSchema = z.object({
   userId: z.string().min(1).max(255).optional(),
   ts: utcDateTime().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  /** What was bought, as on /attribution/events: one item per product,
+   *  each with its `amount` when there's more than one. Stored as
+   *  `metadata.products`. */
+  products: eventProductsInputSchema.optional(),
 });
 
 conversionsRouter.post(
@@ -76,8 +81,12 @@ conversionsRouter.post(
     const body = conversionSchema.safeParse(req.body);
     if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-    const { ts, ...input } = body.data;
-    const result = await recordClickConversion(db, tenantId, { ...input, ts: ts ? new Date(ts) : undefined });
+    const { ts, products, ...input } = body.data;
+    const result = await recordClickConversion(db, tenantId, {
+      ...input,
+      metadata: metadataWithProducts(input.metadata, products),
+      ts: ts ? new Date(ts) : undefined,
+    });
     if (!result.ok) return res.status(result.status).json(errorBody(result));
     if ('test' in result) return res.json({ ok: true, test: true });
     res.json({

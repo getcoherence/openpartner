@@ -208,6 +208,24 @@ describe.skipIf(skipIntegration)('first trigger pays once', () => {
 
     expect(await amountsByEvent(partner.id)).toEqual({ [low.id]: ['100.00'], [high.id]: ['10.00'] });
   });
+
+  it("a rule limited to products: once per product however they arrive, and another product's first holds nothing", async () => {
+    const { partner, userId } = await setup([
+      { trigger: 'first', eventType: 'invoice_paid', type: 'fixed', value: 50, products: [{ id: 'prod_team' }] },
+      { trigger: 'first', eventType: 'invoice_paid', type: 'fixed', value: 20, products: [{ id: 'prod_pro' }] },
+    ]);
+    const team = { products: [{ id: 'prod_team', amount: 99 }] };
+    const pro = { products: [{ id: 'prod_pro', amount: 80 }] };
+    const proSale = await insertEvent(userId, 'invoice_paid', '80.00', new Date('2026-03-01T00:00:00Z'), ulid(), pro);
+    const teamNewer = await insertEvent(userId, 'invoice_paid', '99.00', new Date('2026-02-01T00:00:00Z'), ulid(), team);
+    const teamOlder = await insertEvent(userId, 'invoice_paid', '99.00', new Date('2026-01-01T00:00:00Z'), ulid(), team);
+
+    // The Pro sale's first-time commission doesn't hold the Team rule's; the
+    // older Team sale, delivered last, finds the newer one holding it.
+    for (const e of [proSale, teamNewer, teamOlder]) await attributeEvent(db, e);
+
+    expect(await amountsByEvent(partner.id)).toEqual({ [proSale.id]: ['20.00'], [teamNewer.id]: ['50.00'] });
+  });
 });
 
 describe.skipIf(skipIntegration)('first trigger through a fraud-review replay', () => {
@@ -446,7 +464,14 @@ async function click(partnerId: string, programId: string, userId: string, ts: D
   return clickId;
 }
 
-async function insertEvent(userId: string, type: string, value: string | null, ts: Date, id = ulid()): Promise<EventRow> {
+async function insertEvent(
+  userId: string,
+  type: string,
+  value: string | null,
+  ts: Date,
+  id = ulid(),
+  metadata: Record<string, unknown> = {},
+): Promise<EventRow> {
   await db(TABLES.Event).insert({
     id,
     tenantId: DEFAULT_TENANT_ID,
@@ -455,7 +480,7 @@ async function insertEvent(userId: string, type: string, value: string | null, t
     value,
     currency: 'USD',
     externalEventId: `evt_${ulid()}`,
-    metadata: {},
+    metadata,
     ts,
   });
   return (await db(TABLES.Event).where({ id }).first()) as EventRow;

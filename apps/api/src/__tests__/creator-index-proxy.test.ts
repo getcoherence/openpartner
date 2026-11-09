@@ -108,6 +108,14 @@ beforeAll(async () => {
             return json(200, { settings, updatedAt: new Date().toISOString(), updatedByEmail, visibilityChanged: 2 });
           }
           if (path === '/admin/creator-index/stats') return json(200, { creators: { listed: 3 } });
+          // Rate estimates (the Network's docs/rate-suggestions.md §8).
+          if (path === '/admin/rates' && req.method === 'GET') {
+            return json(200, { settings: { minAudience: 1000 }, defaults: { minAudience: 1000 }, updatedAt: null, updatedByEmail: null, spend: { todayUsd: 0.01, monthUsd: 0.2, youtubeToday: 4 } });
+          }
+          if (path === '/admin/rates' && req.method === 'PUT') {
+            const { settings, updatedByEmail } = (body ?? {}) as { settings?: unknown; updatedByEmail?: string };
+            return json(200, { settings, defaults: { minAudience: 1000 }, updatedAt: new Date().toISOString(), updatedByEmail, spend: { todayUsd: 0, monthUsd: 0, youtubeToday: 0 } });
+          }
           if (path.startsWith('/admin/creator-index/creators?')) return json(200, { creators: [] });
           if (path === '/admin/creator-index/creators/ixc_gone' && req.method === 'DELETE') return json(404, { error: 'not_found' });
           if (path === '/admin/creator-index/creators/hidden' && req.method === 'POST') return json(200, { changed: body?.ids ? (body.ids as string[]).length : 7 });
@@ -321,6 +329,24 @@ describe.skipIf(skipIntegration)('creator index: claim through the creator porta
     expect(String(claim.headers['set-cookie'])).toContain('op_network_creator_session=abc');
     expect(String(claim.headers['set-cookie'])).not.toContain('Domain=');
     expect(last('/creator-index/claim')!.cookie).toContain('op_network_creator_session=old');
+  });
+});
+
+describe.skipIf(skipIntegration)('rate estimates: ops console', () => {
+  it('reads the rate table and spend with the admin key, and saves it with the operator, audited', async () => {
+    const cookie = await operator();
+    const got = await request(app).get('/platform-admin/rates').set('Cookie', cookie);
+    expect(got.status).toBe(200);
+    expect(got.body.spend).toEqual({ todayUsd: 0.01, monthUsd: 0.2, youtubeToday: 4 });
+    expect(last('/admin/rates')!.auth).toBe(`Bearer ${NETWORK_ADMIN}`);
+
+    const settings = { minAudience: 2000, platforms: { youtube: { basis: 'views', formats: { integration: { label: 'Integration', low: 20, high: 40 } } } } };
+    const put = await request(app).put('/platform-admin/rates').set('Cookie', cookie).send({ settings });
+    expect(put.status).toBe(200);
+    expect(last('/admin/rates')!.body).toEqual({ settings, updatedByEmail: OPS_EMAIL });
+    expect(await db(TABLES.PlatformAuditLog).where({ action: 'rates.settings', platformAdminEmail: OPS_EMAIL }).first()).toBeTruthy();
+    expect((await request(app).put('/platform-admin/rates').set('Cookie', cookie).send({ settings, extra: 1 })).status).toBe(400);
+    expect((await request(app).get('/platform-admin/rates')).status).toBe(401);
   });
 });
 
