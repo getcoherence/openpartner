@@ -21,6 +21,7 @@ import {
   formatCompact,
   formatPackagePrice,
   groupByChannel,
+  packageTermsText,
   PLATFORM_LABELS,
   type StorefrontChannel,
   type StorefrontPackage,
@@ -222,6 +223,7 @@ function PackageRow({ pkg, action, onAction }: { pkg: StorefrontPackage; action:
           {pkg.description}
         </div>
       )}
+      {packageTermsText(pkg) && <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>{packageTermsText(pkg)}</div>}
       {action && (
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
           <Button size="sm" onClick={onAction}>{action}</Button>

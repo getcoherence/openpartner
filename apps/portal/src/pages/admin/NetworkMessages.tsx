@@ -55,6 +55,7 @@ import { ClaimError, fetchClaimPreview } from '../creator/BookingConfirm.js';
 import { BookCreatorDialog, networkErrorCode, TRACKING_NOT_VERIFIED_TEXT } from './BookCreatorDialog.js';
 import { DeliveryChecksPanel, type DeliveryChecks } from './DeliveryChecks.js';
 import { useViewOnly } from '../../lib/viewOnly.js';
+import { draftStatusText, hasDraftStep, ReviewDraft, ScheduleChange, ScheduleLine, type BookingSchedule } from '../creator/booking-schedule.js';
 
 interface CreatorFace {
   id: string;
@@ -105,6 +106,9 @@ export interface VendorBooking {
   hasReport?: boolean;
   trackedUrl?: string | null;
   linkState?: 'none' | 'pending' | 'ready' | 'failed';
+  /** Delivery dates (the Network's docs/creator-storefront.md §9). Older
+   *  Networks leave it out. */
+  schedule?: BookingSchedule;
 }
 
 interface VendorThread {
@@ -148,6 +152,13 @@ const ACTION_ERRORS: Record<string, string> = {
   brand_pending_review: 'Your brand is still being reviewed. You can do this once it’s approved.',
   vendor_pending_review: 'Your brand is still being reviewed. You can do this once it’s approved.',
   tracking_not_verified: TRACKING_NOT_VERIFIED_TEXT,
+  schedule_passed: 'A date on this booking has passed. Agree new dates with the creator before paying.',
+  invalid_schedule: 'Those dates can’t be used. Pick dates from today, with the draft before go-live.',
+  schedule_unchanged: 'Those are the dates already agreed.',
+  proposal_changed: 'Those dates changed meanwhile. Have another look.',
+  not_schedulable: 'The dates can’t change now.',
+  no_revisions_left: 'All the agreed revision rounds are used. You can still message the creator.',
+  no_draft_to_review: 'There’s no draft waiting for review.',
 };
 
 function errorText(err: unknown): unknown {
@@ -500,9 +511,16 @@ function VendorBookingCard({
       }),
     onSuccess: (r) => window.location.assign(r.url),
   });
+  // Delivery dates and the draft (the Network's docs/creator-storefront.md §9).
+  const dates = useMutation({
+    mutationFn: (v: { path: string; method?: 'POST' | 'DELETE'; body?: unknown }) =>
+      api(`/admin/network/bookings/${encodeURIComponent(b.id)}/${v.path}`, { method: v.method ?? 'POST', body: v.body ?? {} }),
+    onSuccess: onChanged,
+  });
   const lines = priceLines(b);
   const title = b.package?.title ?? 'Custom collaboration';
-  const error = act.error ?? pay.error ?? approve.error;
+  const error = act.error ?? pay.error ?? approve.error ?? dates.error;
+  const s = b.schedule;
 
   return (
     <div style={{ border: `1px solid ${theme.border}`, borderRadius: theme.radiusSm, padding: 14, background: theme.surface }}>
@@ -526,6 +544,31 @@ function VendorBookingCard({
         </div>
       </div>
       <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 10, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{b.brief}</div>
+      <ScheduleLine schedule={s} />
+      {s && !viewOnly && (b.status === 'awaiting_payment' || b.status === 'paid') && (
+        <ScheduleChange
+          schedule={s}
+          side="vendor"
+          otherName={creatorName}
+          pending={dates.isPending}
+          onPropose={(d) => dates.mutate({ path: 'schedule', body: d })}
+          onAnswer={(accept) => dates.mutate({ path: `schedule/${accept ? 'accept' : 'decline'}` })}
+          onWithdraw={() => dates.mutate({ path: 'schedule', method: 'DELETE' })}
+        />
+      )}
+      {b.status === 'paid' && hasDraftStep(s) && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 13, color: theme.textMuted }}>{draftStatusText(s, 'vendor', creatorName)}</div>
+          {!viewOnly && s.draftState === 'shared' && (
+            <ReviewDraft
+              schedule={s}
+              pending={dates.isPending}
+              onApprove={() => dates.mutate({ path: 'draft/approve' })}
+              onChanges={(body) => dates.mutate({ path: 'draft/changes', body: { body } })}
+            />
+          )}
+        </div>
+      )}
 
       {b.deliverableUrls.length > 0 && (
         <DeliveryChecksPanel
@@ -556,7 +599,7 @@ function VendorBookingCard({
 
       <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         {!viewOnly && b.status === 'awaiting_payment' && !b.paymentProcessing && (
-          <Button onClick={() => pay.mutate()} disabled={pay.isPending || pay.isSuccess}>
+          <Button onClick={() => pay.mutate()} disabled={pay.isPending || pay.isSuccess || !!s?.datesPassed}>
             {pay.isPending || pay.isSuccess ? 'Opening Checkout…' : `Pay ${lines?.total ?? ''}`.trim()}
           </Button>
         )}

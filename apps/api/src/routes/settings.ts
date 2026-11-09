@@ -1152,7 +1152,9 @@ settingsRouter.post('/admin/network/bookings', requireAuth, requireAdmin, async 
   // the fee rate are the server's to say.
   const b = bodyOf(req);
   const fields = Object.fromEntries(
-    (['creatorId', 'packageId', 'brief', 'amount', 'currency', 'offeringId'] as const).filter((k) => k in b).map((k) => [k, b[k]]),
+    (['creatorId', 'packageId', 'brief', 'amount', 'currency', 'offeringId', 'goLiveBy', 'draftDueBy', 'revisionRounds'] as const)
+      .filter((k) => k in b)
+      .map((k) => [k, b[k]]),
   );
   return proxy(
     req,
@@ -1231,6 +1233,39 @@ settingsRouter.post('/admin/network/bookings/:id/report/shares/:shareId/revoke',
 settingsRouter.patch('/admin/network/report-sharing', requireAuth, requireAdmin, async (req, res) =>
   proxy(req, res, (db, tenantId) =>
     networkProxy.setReportSharingDefault(db, tenantId, { defaultCreatorShare: bodyOf(req).defaultCreatorShare }),
+  ),
+);
+
+// A booking's delivery dates and its draft (the Network's
+// docs/creator-storefront.md §9). The dates and the draft notes come from the
+// browser; who is acting is the server's to say.
+settingsRouter.post('/admin/network/bookings/:id/schedule', requireAuth, requireAdmin, async (req, res) => {
+  const b = bodyOf(req);
+  const dates = Object.fromEntries((['goLiveBy', 'draftDueBy'] as const).filter((k) => k in b).map((k) => [k, b[k]]));
+  return proxy(req, res, async (db, tenantId) =>
+    networkProxy.bookingSchedule(db, tenantId, req.params.id!, 'schedule', { ...dates, ...(await actingAdmin(req)) }),
+  );
+});
+
+for (const answer of ['accept', 'decline'] as const) {
+  settingsRouter.post(`/admin/network/bookings/:id/schedule/${answer}`, requireAuth, requireAdmin, async (req, res) =>
+    proxy(req, res, async (db, tenantId) =>
+      networkProxy.bookingSchedule(db, tenantId, req.params.id!, `schedule/${answer}`, await actingAdmin(req)),
+    ),
+  );
+}
+
+settingsRouter.delete('/admin/network/bookings/:id/schedule', requireAuth, requireAdmin, async (req, res) =>
+  proxy(req, res, (db, tenantId) => networkProxy.withdrawBookingSchedule(db, tenantId, req.params.id!)),
+);
+
+settingsRouter.post('/admin/network/bookings/:id/draft/approve', requireAuth, requireAdmin, async (req, res) =>
+  proxy(req, res, async (db, tenantId) => networkProxy.bookingSchedule(db, tenantId, req.params.id!, 'draft/approve', await actingAdmin(req))),
+);
+
+settingsRouter.post('/admin/network/bookings/:id/draft/changes', requireAuth, requireAdmin, async (req, res) =>
+  proxy(req, res, async (db, tenantId) =>
+    networkProxy.bookingSchedule(db, tenantId, req.params.id!, 'draft/changes', { body: bodyOf(req).body, ...(await actingAdmin(req)) }),
   ),
 );
 
