@@ -31,6 +31,10 @@ import { routeKey } from './view-only.js';
 export const AUDIT_ACTION_LABELS: Readonly<Record<string, string>> = {
   signin: 'Signed in',
   'PUT /auth/password': 'Changed their password',
+  'POST /auth/two-factor/enable': 'Turned on two-step sign-in',
+  'POST /auth/two-factor/disable': 'Turned off two-step sign-in',
+  'POST /auth/two-factor/recovery-codes': 'Made new recovery codes',
+  'POST /config/admin-security': 'Changed admin sign-in security',
 
   'POST /admins': 'Added an admin',
   'PATCH /admins/:id': 'Changed an admin',
@@ -202,6 +206,7 @@ export const NOT_AUDITED: Readonly<Record<string, string>> = {
   'POST /clicks': 'click data, kept as Click rows',
   'POST /coupons/redeem': 'conversion data, kept as Event rows',
   'POST /billing/report-usage': 'usage metering',
+  'POST /auth/two-factor/setup': 'a secret waiting for its first code; turning two-step on is logged',
   'POST /network/notify-recipients': 'the Network asking who to notify; changes nothing',
   'POST /partners/signin-link': 'kept in PartnerSigninLinkLog, one per partner portal visit',
   'POST /partners/:id/signin-link': 'kept in PartnerSigninLinkLog, one per partner portal visit',
@@ -343,7 +348,15 @@ async function changesOf(trx: Knex, req: Request): Promise<Record<string, unknow
  *  the tenant pinned (or the privileged pool). */
 export async function recordSignin(
   db: Knex,
-  params: { tenantId: string; adminId: string; email: string; ip: string | null; via: 'link' | 'workspace' | 'claim' },
+  params: {
+    tenantId: string;
+    adminId: string;
+    email: string;
+    ip: string | null;
+    via: 'link' | 'workspace' | 'claim';
+    /** The two-step code it took, when it took one (two-factor.ts). */
+    secondFactor?: 'totp' | 'recovery_code';
+  },
 ): Promise<void> {
   await insertEntry(db, {
     tenantId: params.tenantId,
@@ -353,7 +366,7 @@ export async function recordSignin(
     targetId: null,
     params: null,
     fields: null,
-    detail: { via: params.via },
+    detail: { via: params.via, ...(params.secondFactor ? { secondFactor: params.secondFactor } : {}) },
     status: null,
     ip: params.ip,
   });

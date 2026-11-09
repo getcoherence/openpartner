@@ -22,11 +22,13 @@ import { ulid } from 'ulid';
 import {
   TABLES,
   type AdminRole,
+  type AdminRow,
   type MagicLinkTokenRow,
   type MagicLinkPurpose,
   type PrincipalKind,
   type SessionRow,
 } from '@openpartner/db';
+import { lacksRequiredCode, newSessionSecondFactor, pendingAndLive } from './two-factor.js';
 
 export const SESSION_COOKIE_NAME = 'op_session';
 const TOKEN_PREFIX_LEN = 8;
@@ -106,6 +108,9 @@ export interface IssuedSession {
   plaintext: string;
   id: string;
   expiresAt: Date;
+  /** The admin has two-step sign-in on: the session works only once a code
+   *  is entered against it (two-factor.ts). Callers tell the browser. */
+  secondFactorPending: boolean;
 }
 
 export async function createSession(
@@ -114,11 +119,20 @@ export async function createSession(
     tenantId: string;
     principalKind: PrincipalKind;
     principalId: string;
+    /** When this person last proved a code, if they did on the way here
+     *  (entering a brand from a verified OpenPartner account). */
+    secondFactorAt?: Date | null;
   },
 ): Promise<IssuedSession> {
   const { plaintext, prefix, tokenHash } = generate('ops');
   const id = ulid();
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+  // Two-step belongs to admins; partners never have it.
+  const email =
+    params.principalKind === 'admin'
+      ? ((await db<AdminRow>(TABLES.Admin).where({ id: params.principalId, tenantId: params.tenantId }).first('email'))?.email ?? null)
+      : null;
+  const secondFactor = await newSessionSecondFactor(email, params.secondFactorAt);
   await db<SessionRow>(TABLES.Session).insert({
     id,
     tenantId: params.tenantId,
@@ -127,8 +141,9 @@ export async function createSession(
     principalKind: params.principalKind,
     principalId: params.principalId,
     expiresAt,
+    ...secondFactor,
   });
-  return { plaintext, id, expiresAt };
+  return { plaintext, id, expiresAt, secondFactorPending: secondFactor.secondFactorPending };
 }
 
 /** A live session, with its admin's role read fresh from the Admin row
@@ -161,8 +176,10 @@ export async function resolveSession(
   const prefix = plaintext.slice(0, TOKEN_PREFIX_LEN);
   const tokenHash = hash(plaintext);
   const now = new Date();
+  // A session waiting for its two-step code is nobody's yet
+  // (resolvePendingSession is the one lookup that returns it).
   const q = db<SessionRow>(TABLES.Session)
-    .where({ prefix, tokenHash })
+    .where({ prefix, tokenHash, secondFactorPending: false })
     .whereNull('revokedAt')
     .andWhere('expiresAt', '>', now);
   if (expectTenantId !== null) q.andWhere({ tenantId: expectTenantId });
@@ -185,13 +202,31 @@ export async function resolveSession(
   } else if (row.principalKind === 'admin') {
     const admin = (await db('Admin')
       .where({ id: row.principalId, tenantId: row.tenantId })
-      .first()) as { revokedAt: Date | null; activatedAt: Date | null; role: AdminRole } | undefined;
+      .first()) as { email: string; revokedAt: Date | null; activatedAt: Date | null; role: AdminRole } | undefined;
     if (!admin || admin.revokedAt || !admin.activatedAt) return null;
+    // Two-step on, and this session never proved a code (two-factor.ts).
+    if (await lacksRequiredCode(row, admin.email)) return null;
     adminRole = admin.role;
   }
 
   void db<SessionRow>(TABLES.Session).where({ id: row.id }).update({ lastSeenAt: now });
   return { ...row, adminRole };
+}
+
+/**
+ * The session a cookie names if it is waiting for its two-step code (and
+ * may still take one): the only lookup that returns a pending session, for
+ * POST /auth/two-factor/verify and requireAuth's "enter your code" answer.
+ * Bound to the tenant like resolveSession.
+ */
+export async function resolvePendingSession(db: Knex, plaintext: string, tenantId: string): Promise<SessionRow | null> {
+  if (!plaintext || plaintext.length < TOKEN_PREFIX_LEN) return null;
+  const row = await db<SessionRow>(TABLES.Session)
+    .where({ prefix: plaintext.slice(0, TOKEN_PREFIX_LEN), tokenHash: hash(plaintext), tenantId, principalKind: 'admin' })
+    .whereNull('revokedAt')
+    .andWhere('expiresAt', '>', new Date())
+    .first();
+  return row && pendingAndLive(row) ? row : null;
 }
 
 export async function revokeSession(db: Knex, id: string): Promise<void> {

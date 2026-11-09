@@ -356,6 +356,7 @@ async function seedEverything(tenantId: string): Promise<void> {
     principalId: partnerId,
     passwordHash: 'scrypt$32768$8$1$c2FsdA==$aGFzaA==',
   });
+  await db(TABLES.TwoFactorCredential).insert({ id: u(), tenantId, principalKind: 'platform', principalId: `p-${u()}@example.com`, secret: 'sealed' });
   await db(TABLES.WebhookEndpoint).insert({
     id: endpointId,
     tenantId,

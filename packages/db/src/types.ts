@@ -520,6 +520,35 @@ export interface PasswordCredentialRow {
   updatedAt: Date;
 }
 
+/** A person's authenticator (migration 20261109120000_two_factor,
+ *  apps/api/src/two-factor.ts). Keyed like a platform PasswordCredential. */
+export interface TwoFactorCredentialRow {
+  id: string;
+  tenantId: string;
+  principalKind: 'platform';
+  /** Lower-cased email. */
+  principalId: string;
+  /** The TOTP secret, sealed (crypto.ts encryptSecret). */
+  secret: string;
+  /** Null while setup waits for the first code. */
+  enabledAt: Date | null;
+  /** pg returns bigint as a string. */
+  lastUsedStep: string | null;
+  recoveryCodes: Array<{ hash: string; usedAt: string | null }>;
+  recoverySalt: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** A session's second factor: pending = made for someone with two-step on
+ *  and waiting for their code (it resolves to nobody until then);
+ *  `secondFactorAt` = when a code was proven for it. */
+export interface SecondFactorColumns {
+  secondFactorPending: boolean;
+  secondFactorAt: Date | null;
+  secondFactorAttempts: number;
+}
+
 export interface MagicLinkTokenRow {
   id: string;
   tenantId: string;
@@ -534,7 +563,7 @@ export interface MagicLinkTokenRow {
   createdAt: Date;
 }
 
-export interface SessionRow {
+export interface SessionRow extends SecondFactorColumns {
   id: string;
   tenantId: string;
   prefix: string;
@@ -547,7 +576,7 @@ export interface SessionRow {
   revokedAt: Date | null;
 }
 
-export interface PlatformSessionRow {
+export interface PlatformSessionRow extends SecondFactorColumns {
   id: string;
   prefix: string;
   tokenHash: string;

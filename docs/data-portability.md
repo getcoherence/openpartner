@@ -386,6 +386,7 @@ Only these keys are exported, and only these are imported:
 | `stripe_connect` | Standard or Custom account setup, requested capabilities, verification collection, and activity description; no credentials |
 | `partner_referrals` | which event types partners see as referral stages, with their labels and order, and whether partners see customer labels ([referral timeline](referral-timeline.md)) |
 | `tracking_alerts` | whether new Tracking health flags are emailed to the admins (`email`), [tracking-health.md](tracking-health.md#email) |
+| `admin_security` | whether every admin must sign in with two-step (`requireTwoFactor`), [two-step-sign-in.md](two-step-sign-in.md#requiring-it); added Nov 2026 without a version bump, and an older instance skips it and doesn't require it |
 
 `onboarding`, `payout_statements`, `paypal_payouts`, `partner_referrals` and
 `tracking_alerts` were added in Oct 2026 without a version bump. Each is a
@@ -668,7 +669,12 @@ logs — not customer data):
 `PlatformAuditLog`, `SignupBlocklist`, `WebhookDelivery`, `NetworkOutbox`,
 `StripeWebhookInbox`, `LocationDeclaration`, `SanctionsScreening`,
 `PartnerSigninLinkLog`, `AuditLog`, `TrackingIssue`, `TrackingAlert`, `StripeEventLog`,
-`PaymentEventLog`, `PaypalSubscription`, `TestClick`.
+`PaymentEventLog`, `PaypalSubscription`, `TestClick`, `TwoFactorCredential`.
+
+`TwoFactorCredential` is a person's two-step authenticator secret and
+recovery codes ([two-step-sign-in.md](two-step-sign-in.md)): credentials,
+like `PasswordCredential`. On a restored instance each admin sets two-step
+up again; the brand's rule (`admin_security`) travels and asks them to.
 
 `TrackingIssue` counts, per day, the input this deployment had to drop: a
 click id that `identify()`, a conversion or the landing beacon named but the

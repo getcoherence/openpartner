@@ -38,8 +38,8 @@ import {
   Lock,
   History,
 } from 'lucide-react';
-import { useQuery } from '@tanstack/react-query';
-import { clearApiKey, api, type Principal } from './api.js';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { clearApiKey, api, ApiError, TWO_FACTOR_REQUIRED, type Principal } from './api.js';
 import { useTenantBase } from './tenant-base.js';
 import { alpha, theme } from './theme.js';
 import { useIsMobile } from './lib/useMediaQuery.js';
@@ -109,6 +109,7 @@ import { isViewOnly, ViewOnlyBadge, ViewOnlyProvider } from './lib/viewOnly.js';
 import { ThemeToggle } from './lib/ThemeToggle.js';
 import { CookieSettingsButton } from './lib/ConsentBanner.js';
 import { PlatformMagicLandingPage } from './pages/auth/PlatformMagicLanding.js';
+import { PlatformTwoFactorPage, TwoFactorChallenge, TwoFactorSetupGate } from './pages/auth/TwoFactor.js';
 import { PlatformLoginPage } from './pages/platform/PlatformLogin.js';
 import { PlatformAuthPage } from './pages/platform/PlatformAuth.js';
 import { PlatformConsole } from './pages/platform/PlatformConsole.js';
@@ -129,6 +130,8 @@ import { AccountPage, TenantAccountPage } from './pages/Account.js';
 interface AuthState {
   loading: boolean;
   principal: Principal | null;
+  /** Signed in, but the two-step code isn't in yet. */
+  twoFactorPending?: boolean;
 }
 
 interface InstallStatus {
@@ -216,6 +219,7 @@ function AppRoutes() {
             <Route path="/" element={<LandingPage />} />
             <Route path="/signup" element={<SignupPage />} />
             <Route path="/signin" element={<SigninPage />} />
+            <Route path="/signin/two-factor" element={<PlatformTwoFactorPage />} />
             <Route path="/workspaces" element={<WorkspacesPage />} />
             <Route path="/brands/new" element={<AddBrandPage />} />
             <Route path="/account" element={<AccountPage />} />
@@ -291,12 +295,24 @@ function Shell() {
   const { approvalStatus } = usePublicBrand();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [reviewBannerDismissed, setReviewBannerDismissed] = useState(false);
+  const qc = useQueryClient();
+  const [whoamiRound, setWhoamiRound] = useState(0);
 
   useEffect(() => {
     api<Principal>('/auth/whoami')
       .then((p) => setAuth({ loading: false, principal: p }))
-      .catch(() => setAuth({ loading: false, principal: null }));
-  }, []);
+      .catch((e) =>
+        setAuth({ loading: false, principal: null, twoFactorPending: e instanceof ApiError && e.message === TWO_FACTOR_REQUIRED }),
+      );
+  }, [whoamiRound]);
+
+  /** The code is in, or two-step is set up: read who's signed in again,
+   *  and drop whatever was refused before. */
+  const reloadAuth = () => {
+    qc.invalidateQueries();
+    setAuth({ loading: true, principal: null });
+    setWhoamiRound((n) => n + 1);
+  };
 
   // Close the drawer whenever the route changes — a NavItem tap navigates,
   // which should dismiss the overlay. Also covers backdrop/programmatic nav.
@@ -312,7 +328,13 @@ function Shell() {
   const brandLocationMissing = useBrandLocationMissing(auth.principal?.role === 'admin');
 
   if (auth.loading || brandLoading || partnerNetwork.loading) return <CenteredMessage>Loading…</CenteredMessage>;
+  // Two-step sign-in (docs/two-step-sign-in.md): a sign-in waiting for its
+  // code, whichever way in it took, and a brand that requires it of an
+  // admin who hasn't set it up.
+  if (auth.twoFactorPending) return <TwoFactorChallenge onDone={reloadAuth} />;
   if (!auth.principal) return <Navigate to={`${tenantBase}/login`} state={{ from: location }} replace />;
+  const twoFactor = auth.principal.twoFactor;
+  if (twoFactor?.required && !twoFactor.verified) return <TwoFactorSetupGate onDone={reloadAuth} />;
 
   const showNetwork = !whiteLabel && (auth.principal.role === 'admin' ? true : partnerNetwork.show);
   // The one-time "join the Network?" prompt: partners the brand offers it

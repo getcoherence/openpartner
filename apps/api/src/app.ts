@@ -71,6 +71,7 @@ import { clicksRouter } from './routes/clicks.js';
 import { networkRecipientsRouter } from './routes/network-recipients.js';
 import { sessionHomeRouter } from './routes/session-home.js';
 import { platformAuthRouter } from './routes/platform-auth.js';
+import { platformTwoFactorRouter, twoFactorRouter } from './routes/two-factor.js';
 import { platformAdminRouter } from './routes/platform-admin.js';
 import { emailPreferencesRouter } from './routes/email-preferences.js';
 import { openapiRouter } from './routes/openapi.js';
@@ -252,6 +253,8 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   app.use(signinRouter);
   app.use(sessionHomeRouter);
   app.use(platformAuthRouter);
+  // The two-step code for an OpenPartner account sign-in (routes/two-factor.ts).
+  app.use(platformTwoFactorRouter);
   // Platform-ops console (brand review). Cross-tenant, privileged-pool,
   // its own operator auth — must sit before tenantMiddleware.
   app.use(platformAdminRouter);
@@ -305,6 +308,7 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   app.use(openapiRouter);
   app.use(authRouter);
   app.use(partnerAuthRouter);
+  app.use(twoFactorRouter);
   app.use(passwordTenantRouter);
   app.use(portalDomainsRouter);
   app.use(partnerSignupRouter);

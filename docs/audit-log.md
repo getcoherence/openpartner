@@ -41,7 +41,9 @@ request it admits:
   details, a partner's postback URL, and the audit log's own CSV.
 - **Sign-ins**: an admin redeeming a sign-in link or a password sign-in
   (`via: "link"`), entering a workspace from their OpenPartner account
-  (`workspace`), or the first sign-in of a booking claim (`claim`).
+  (`workspace`), or the first sign-in of a booking claim (`claim`). With
+  [two-step sign-in](two-step-sign-in.md) on, it's recorded once the code
+  is in, with `secondFactor: "totp"` or `"recovery_code"`.
 
 Not recorded:
 

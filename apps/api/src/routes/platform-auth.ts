@@ -148,7 +148,8 @@ platformAuthRouter.post('/auth/platform-verify', platformVerifyCountry, async (r
     res.cookie(PLATFORM_BUNDLE_COOKIE, newBundleCookie, platformBundleCookieOptions());
   }
 
-  res.json({ ok: true, kind: 'platform', email });
+  // Two-step on: the session waits for a code (POST /auth/platform-two-factor).
+  res.json({ ok: true, kind: 'platform', email, ...(session.secondFactorPending ? { twoFactorRequired: true } : {}) });
 });
 
 // -------- List workspaces the platform-identity owns --------
@@ -426,11 +427,22 @@ platformAuthRouter.post('/workspaces/enter', async (req, res) => {
   // (when enabled) accepts the write. Use the appDb pool.
   const trx = await appDb.transaction();
   let sessionPlaintext: string;
+  let secondFactorPending = false;
   try {
     await trx.raw(`set local app.tenant_id = '${tenant.id.replace(/'/g, "''")}'`);
-    const created = await createSession(trx, { tenantId: tenant.id, principalKind: 'admin', principalId: admin.id });
+    // The account's two-step code, if it proved one, covers the brand too.
+    const created = await createSession(trx, {
+      tenantId: tenant.id,
+      principalKind: 'admin',
+      principalId: admin.id,
+      secondFactorAt: platform.secondFactorAt,
+    });
     sessionPlaintext = created.plaintext;
-    await recordSignin(trx, { tenantId: tenant.id, adminId: admin.id, email: admin.email, ip: req.ip ?? null, via: 'workspace' });
+    secondFactorPending = created.secondFactorPending;
+    // A pending one is recorded when its code is entered.
+    if (!created.secondFactorPending) {
+      await recordSignin(trx, { tenantId: tenant.id, adminId: admin.id, email: admin.email, ip: req.ip ?? null, via: 'workspace' });
+    }
     await trx.commit();
   } catch (err) {
     await trx.rollback();
@@ -438,7 +450,12 @@ platformAuthRouter.post('/workspaces/enter', async (req, res) => {
   }
 
   res.cookie(SESSION_COOKIE_NAME, sessionPlaintext, sessionCookieOptions());
-  res.json({ ok: true, tenantSlug: tenant.slug, home: `/t/${tenant.slug}/` });
+  res.json({
+    ok: true,
+    tenantSlug: tenant.slug,
+    home: `/t/${tenant.slug}/`,
+    ...(secondFactorPending ? { twoFactorRequired: true } : {}),
+  });
 });
 
 // -------- Multi-identity: list bundle, switch, remove --------
@@ -493,6 +510,9 @@ platformAuthRouter.post('/identities/switch', async (req, res) => {
   }
   if (target.revokedAt) return res.status(401).json({ error: 'session_revoked' });
   if (target.expiresAt <= new Date()) return res.status(401).json({ error: 'session_expired' });
+  // Never got its two-step code: switching to it would hand over an
+  // account nobody finished signing in to.
+  if (target.secondFactorPending) return res.status(401).json({ error: 'session_pending' });
 
   const rotated = await rotatePlatformSessionToken(db, target.id);
   await touchBundle(db, bundle.id);
