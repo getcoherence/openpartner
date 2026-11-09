@@ -8,6 +8,7 @@ import { useIsMobile } from './useMediaQuery.js';
 import { VerifiedBadge } from './VerifiedBadge.js';
 import { CoverSourceLink, type CoverSource } from './PlatformMark.js';
 import { useUnsavedChanges } from './useUnsavedChanges.js';
+import { CountryTagInput } from './CountryTagInput.js';
 
 /**
  * The Network profile editor: completeness checklist, basics, audience,
@@ -59,6 +60,10 @@ export interface NetworkProfile {
   profile: Record<string, unknown> | null;
   categories: string[];
   audienceLocations: string[];
+  /** Every bucket the audience spans, youngest first. Absent on a Network
+   *  that predates it, which has only audienceAgeRange. */
+  audienceAgeRanges?: AgeRange[];
+  /** The youngest of audienceAgeRanges. */
   audienceAgeRange: AgeRange | null;
   /** Absent on a Network that predates the field. */
   audienceSize?: AudienceSize | null;
@@ -136,6 +141,9 @@ const CATEGORIES = [
 
 const AGE_RANGES: AgeRange[] = ['13-17', '18-24', '25-34', '35-44', '45-54', '55+'];
 
+/** The Network's cap on audienceLocations. */
+const MAX_AUDIENCE_LOCATIONS = 5;
+
 /** Every platform a creator can list, in the order the editors show them. */
 export const PLATFORMS: { kind: Platform; label: string; placeholder: string }[] = [
   { kind: 'tiktok', label: 'TikTok', placeholder: 'your-handle' },
@@ -176,12 +184,8 @@ export function NetworkProfileEditor({
   const [coverBusy, setCoverBusy] = useState(false);
   const [bio, setBio] = useState('');
   const [categories, setCategories] = useState<string[]>([]);
-  // Audience locations is kept as a raw text string while the user is
-  // typing; we only split + normalize at save. Otherwise mid-keystroke
-  // values like "U" get filtered out as not-yet-2-chars and the input
-  // wipes itself.
-  const [audienceLocationsRaw, setAudienceLocationsRaw] = useState('');
-  const [audienceAgeRange, setAudienceAgeRange] = useState<AgeRange | ''>('');
+  const [audienceLocations, setAudienceLocations] = useState<string[]>([]);
+  const [audienceAgeRanges, setAudienceAgeRanges] = useState<AgeRange[]>([]);
   const [audienceSize, setAudienceSize] = useState<AudienceSize | ''>('');
   const [portfolioLinks, setPortfolioLinks] = useState<string[]>([]);
   const [pastBrandsRaw, setPastBrandsRaw] = useState('');
@@ -196,8 +200,8 @@ export function NetworkProfileEditor({
       setCoverSource(data.coverSource ?? null);
       setBio(saved.bio);
       setCategories(saved.categories);
-      setAudienceLocationsRaw(saved.audienceLocationsRaw);
-      setAudienceAgeRange(saved.audienceAgeRange);
+      setAudienceLocations(saved.audienceLocations);
+      setAudienceAgeRanges(saved.audienceAgeRanges);
       setAudienceSize(saved.audienceSize);
       setPortfolioLinks(saved.portfolioLinks);
       setPastBrandsRaw(saved.pastBrandsRaw);
@@ -205,7 +209,7 @@ export function NetworkProfileEditor({
   }, [data]);
 
   const dirty =
-    formKey({ name, handle, avatarUrl, coverImageUrl, bio, categories, audienceLocationsRaw, audienceAgeRange, audienceSize, portfolioLinks, pastBrandsRaw }) !==
+    formKey({ name, handle, avatarUrl, coverImageUrl, bio, categories, audienceLocations, audienceAgeRanges, audienceSize, portfolioLinks, pastBrandsRaw }) !==
     formKey(formFromProfile(data));
   useUnsavedChanges(dirty);
 
@@ -227,11 +231,6 @@ export function NetworkProfileEditor({
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean);
-      const audienceLocations = audienceLocationsRaw
-        .split(',')
-        .map((s) => s.trim().toUpperCase())
-        .filter((s) => /^[A-Z]{2}$/.test(s))
-        .slice(0, 5);
       return adapter.updateProfile({
         name: name || undefined,
         handle: handle || null,
@@ -240,7 +239,10 @@ export function NetworkProfileEditor({
         bio: bio || null,
         categories,
         audienceLocations,
-        audienceAgeRange: audienceAgeRange || null,
+        // A Network from before audienceAgeRanges takes one: the youngest.
+        ...(data && 'audienceAgeRanges' in data
+          ? { audienceAgeRanges }
+          : { audienceAgeRange: audienceAgeRanges[0] ?? null }),
         // Only when the Network reports the field, so a save never
         // depends on an older Network tolerating the unknown key.
         ...(data && 'audienceSize' in data ? { audienceSize: audienceSize || null } : {}),
@@ -312,24 +314,22 @@ export function NetworkProfileEditor({
         </p>
         <div style={{ display: 'grid', gap: 14 }}>
           <Field label="Categories" hint="Required, pick at least one. Brands filter by these.">
-            <CategoryChips selected={categories} onChange={setCategories} />
+            <Chips options={CATEGORIES} selected={categories} onChange={setCategories} />
           </Field>
-          <Field label="Audience locations" hint="Top countries your audience comes from. ISO-3166 alpha-2 codes (e.g. US, CA, GB), max 5, comma-separated. Validated on save.">
-            <Input
-              value={audienceLocationsRaw}
-              onChange={(e) => setAudienceLocationsRaw(e.target.value)}
-              placeholder="US, CA, GB"
-              style={{ fontFamily: theme.fontMono }}
+          <Field label="Audience locations" hint="Your top countries, up to 5.">
+            <CountryTagInput
+              label="Audience locations"
+              value={audienceLocations}
+              onChange={setAudienceLocations}
+              max={MAX_AUDIENCE_LOCATIONS}
             />
           </Field>
-          <Field label="Audience age range" hint="Single bucket — finer slicing comes with verified platform connections.">
-            <Select
-              value={audienceAgeRange}
-              onChange={(e) => setAudienceAgeRange(e.target.value as AgeRange | '')}
-            >
-              <option value="">— pick a range —</option>
-              {AGE_RANGES.map((r) => <option key={r} value={r}>{r}</option>)}
-            </Select>
+          <Field label="Audience age range" hint="Pick every range that applies.">
+            <Chips
+              options={AGE_RANGES}
+              selected={audienceAgeRanges}
+              onChange={(v) => setAudienceAgeRanges(AGE_RANGES.filter((r) => v.includes(r)))}
+            />
           </Field>
           {'audienceSize' in data && (
             <Field label="Audience size" hint="Your total reach across platforms. Brands filter by this.">
@@ -405,8 +405,8 @@ function formFromProfile(p: NetworkProfile) {
     coverImageUrl: p.coverImageUrl ?? '',
     bio: p.bio ?? '',
     categories: p.categories ?? [],
-    audienceLocationsRaw: (p.audienceLocations ?? []).join(', '),
-    audienceAgeRange: (p.audienceAgeRange ?? '') as AgeRange | '',
+    audienceLocations: p.audienceLocations ?? [],
+    audienceAgeRanges: p.audienceAgeRanges ?? (p.audienceAgeRange ? [p.audienceAgeRange] : []),
     audienceSize: (p.audienceSize ?? '') as AudienceSize | '',
     portfolioLinks: p.portfolioLinks ?? [],
     pastBrandsRaw: (p.pastBrands ?? []).join(', '),
@@ -671,18 +671,28 @@ function pickerStyle(busy: boolean): React.CSSProperties {
   };
 }
 
-function CategoryChips({ selected, onChange }: { selected: string[]; onChange: (v: string[]) => void }) {
-  function toggle(c: string) {
+/** Toggle chips: any number of `options` on. */
+function Chips<T extends string>({
+  options,
+  selected,
+  onChange,
+}: {
+  options: readonly T[];
+  selected: T[];
+  onChange: (v: T[]) => void;
+}) {
+  function toggle(c: T) {
     onChange(selected.includes(c) ? selected.filter((x) => x !== c) : [...selected, c]);
   }
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-      {CATEGORIES.map((c) => {
+      {options.map((c) => {
         const on = selected.includes(c);
         return (
           <button
             key={c}
             type="button"
+            aria-pressed={on}
             onClick={() => toggle(c)}
             style={{
               padding: '5px 10px',
