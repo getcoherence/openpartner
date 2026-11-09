@@ -13,9 +13,30 @@ map $http_x_forwarded_proto $api_forwarded_proto {
     https https;
 }
 
+# Access log without query strings. Sign-in landings carry a single-use
+# token in the query (/auth/magic?token=, /reset-password?token=, OAuth
+# ?code=, and others), and the image's stock "main" format logs the whole
+# request line and Referer, so anyone reading the logs could redeem one.
+# Keep the path, and the Referer up to its query.
+map $request_uri $log_path {
+    default "-";
+    "~^([^?]+)" $1;
+}
+map $http_referer $log_referer {
+    default "-";
+    "~^([^?#]+)" $1;
+}
+log_format path_only '$remote_addr - $remote_user [$time_local] '
+                     '"$request_method $log_path $server_protocol" '
+                     '$status $body_bytes_sent "$log_referer" '
+                     '"$http_user_agent" "$http_x_forwarded_for"';
+
 server {
     listen       8080 default_server;
     server_name  _;
+
+    # Replaces the http-level "main" log for this server and every location.
+    access_log /var/log/nginx/access.log path_only;
 
     root   /usr/share/nginx/html;
     index  index.html;
