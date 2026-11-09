@@ -47,6 +47,7 @@ export const SCOPED_ROUTES_OUTSIDE_SPEC: Record<string, string> = {
   'GET /brand-resources': 'partners:read: brand logo, colours and shareable assets, read by Network creator dashboards.',
   'POST /network/notify-recipients':
     'partners:read: which addresses are still active admins, asked by the Network before each conversation or booking email to the brand.',
+  'POST /mcp': 'reports:read: the read-only MCP server (docs/mcp.md), which describes its own tools over tools/list.',
 };
 
 /** Authenticated routes outside the spec that carry no admin, partner or
