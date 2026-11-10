@@ -4,6 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!--
+      Referer is the origin only, even to /api on this origin. Landing pages
+      hold single-use secrets in the query (?token=, ?ntoken=, ?invitation=,
+      ?code=), and the browser default sends the full page URL on
+      same-origin requests, so the API's request log would see them.
+      Cross-origin requests already got only the origin, so embeds and
+      outbound links see no change. A meta tag rather than a header, for the
+      reason given below: not every host that serves this file adds headers.
+    -->
+    <meta name="referrer" content="strict-origin" />
+    <!--
       Theme bootstrap: resolve the System / Light / Dark preference and set
       <html data-theme> before first paint so the page never flashes the
       wrong palette. Mirrors src/lib/theme-preference.ts (localStorage key

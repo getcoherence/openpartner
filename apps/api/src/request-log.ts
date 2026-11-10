@@ -8,6 +8,12 @@
  *     Stripe redirect back with (/auth/google/callback,
  *     /stripe-app/oauth/callback)
  *   - Authorization and Cookie headers: Bearer API keys, session cookies
+ *   - the Referer header's whole query, whatever its names: portal landing
+ *     pages hold single-use secrets there (?token=, ?ntoken=, ?invitation=,
+ *     ?code=), and a page that calls /api before taking them out of the
+ *     address bar sends the full landing URL. The portal's own referrer
+ *     policy (apps/portal/index.html) keeps current browsers to the origin;
+ *     this covers whatever else sends one.
  *   - Set-Cookie on the response: every sign-in hands the browser a session
  *     token (op_session, op_platform_session, op_platform_admin_session) and
  *     the op_bundle_id cookie this way. The values are replaced; cookie
@@ -36,6 +42,19 @@ export function redactUrl(url: string): string {
     })
     .join('&');
   return `${url.slice(0, q + 1)}${redacted}${hash === -1 ? '' : url.slice(hash)}`;
+}
+
+/**
+ * A Referer cut at its query: `https://app.example/reset-password?token=x`
+ * → `https://app.example/reset-password?[REDACTED]`. Unlike the request
+ * URL, nothing in a Referer's query is worth keeping, so there is no list
+ * of names to fall behind the portal's landing pages. A fragment goes too.
+ */
+export function redactReferer(referer: unknown): unknown {
+  if (typeof referer !== 'string') return REDACTED;
+  const cut = referer.search(/[?#]/);
+  if (cut === -1) return referer;
+  return referer[cut] === '?' ? `${referer.slice(0, cut)}?${REDACTED}` : referer.slice(0, cut);
 }
 
 function decodeName(name: string): string {
@@ -69,6 +88,7 @@ export function redactRequest(req: SerializedRequest): SerializedRequest {
   if (req.headers && typeof req.headers === 'object') {
     out.headers = { ...req.headers };
     for (const h of SECRET_HEADERS) if (h in out.headers) out.headers[h] = REDACTED;
+    if ('referer' in out.headers) out.headers.referer = redactReferer(out.headers.referer);
   }
   return out;
 }
