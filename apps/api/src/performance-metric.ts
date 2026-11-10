@@ -115,47 +115,10 @@ export async function performanceByPartner(db: Knex, q: PerformanceQuery): Promi
     }
   }
 
-  if (q.netOfRefunds && q.measure !== 'commissions') {
-    // Refund Events grouped by the conversion they name. Tenant-filtered
-    // inside the subquery, which can't see the outer rows.
-    query.leftJoin(
-      db(TABLES.Event)
-        .whereIn('type', REFUND_EVENT_TYPES)
-        .whereRaw(`metadata->>'conversionEventId' is not null`)
-        .modify((r) => {
-          if (q.tenantId) r.andWhere('tenantId', q.tenantId);
-        })
-        .groupByRaw(`metadata->>'conversionEventId'`)
-        .select(
-          db.raw(`metadata->>'conversionEventId' as "eventId"`),
-          db.raw('sum(greatest(-coalesce(value, 0), 0)) as refunded'),
-          db.raw('bool_or(value is null) as "nullRefund"'),
-        )
-        .as('rf'),
-      'rf.eventId',
-      'e.id',
-    );
-    // Stripe refunds of the conversion's invoice or PaymentIntent, which
-    // only an invoice_paid conversion has.
-    for (const [key, alias] of [
-      ['stripeInvoiceId', 'rsi'],
-      ['stripePaymentIntentId', 'rspi'],
-    ] as const) {
-      query.leftJoin(stripeRefundShares(db, q.tenantId, key).as(alias), (on) =>
-        on.on(`${alias}.k`, '=', db.raw(`"e"."metadata"->>'${key}'`)).andOnVal('e.type', '=', 'invoice_paid'),
-      );
-    }
-  }
+  if (q.netOfRefunds && q.measure !== 'commissions') joinConversionRefunds(db, query, q.tenantId);
 
   const share = `"a"."weight" / nullif((select sum("w"."weight") from "${TABLES.Attribution}" as "w" where "w"."eventId" = "a"."eventId" and "w"."model" = "a"."model"), 0)`;
-  const stripeShare = `greatest(coalesce("rsi"."share", 0), coalesce("rspi"."share", 0))`;
-  // The value a conversion keeps: none after a value-less refund, else the
-  // smaller of what the API refunds and the Stripe share leave.
-  const kept = `case when coalesce("rf"."nullRefund", false) then 0 else greatest(0, least(coalesce("e"."value", 0) - coalesce("rf"."refunded", 0), coalesce("e"."value", 0) * (1 - ${stripeShare}))) end`;
-  // Refunded in full: a refund left it nothing. A value-less refund, a
-  // refund of a value-less conversion, refunds adding up to its whole
-  // value, or a full Stripe refund.
-  const refundedOut = `(("rf"."eventId" is not null or ${stripeShare} > 0) and ${kept} <= 0)`;
+  const { kept, refundedOut } = CONVERSION_REFUND_SQL;
 
   let total: string;
   if (q.measure === 'count') {
@@ -195,6 +158,60 @@ export async function performanceByPartner(db: Knex, q: PerformanceQuery): Promi
   for (const r of rows) out.set(r.partnerId, Number(r.total));
   return out;
 }
+
+/**
+ * Joins each conversion's refunds onto `query`, whose conversion Event is
+ * aliased "e": "rf" (refunds POST /attribution/refunds recorded against it)
+ * and "rsi" / "rspi" (the largest share a Stripe refund of its invoice or
+ * PaymentIntent reported). CONVERSION_REFUND_SQL then reads what it keeps.
+ * Shared with the MCP report (mcp/report.ts) so "net of refunds" means one
+ * thing everywhere.
+ */
+export function joinConversionRefunds(db: Knex, query: Knex.QueryBuilder, tenantId: string | null): void {
+  // Refund Events grouped by the conversion they name. Tenant-filtered
+  // inside the subquery, which can't see the outer rows.
+  query.leftJoin(
+    db(TABLES.Event)
+      .whereIn('type', REFUND_EVENT_TYPES)
+      .whereRaw(`metadata->>'conversionEventId' is not null`)
+      .modify((r) => {
+        if (tenantId) r.andWhere('tenantId', tenantId);
+      })
+      .groupByRaw(`metadata->>'conversionEventId'`)
+      .select(
+        db.raw(`metadata->>'conversionEventId' as "eventId"`),
+        db.raw('sum(greatest(-coalesce(value, 0), 0)) as refunded'),
+        db.raw('bool_or(value is null) as "nullRefund"'),
+      )
+      .as('rf'),
+    'rf.eventId',
+    'e.id',
+  );
+  // Stripe refunds of the conversion's invoice or PaymentIntent, which
+  // only an invoice_paid conversion has.
+  for (const [key, alias] of [
+    ['stripeInvoiceId', 'rsi'],
+    ['stripePaymentIntentId', 'rspi'],
+  ] as const) {
+    query.leftJoin(stripeRefundShares(db, tenantId, key).as(alias), (on) =>
+      on.on(`${alias}.k`, '=', db.raw(`"e"."metadata"->>'${key}'`)).andOnVal('e.type', '=', 'invoice_paid'),
+    );
+  }
+}
+
+/** Over joinConversionRefunds' joins: `kept`, the value a conversion keeps,
+ *  and `refundedOut`, true when a refund left it nothing. */
+export const CONVERSION_REFUND_SQL = (() => {
+  const stripeShare = `greatest(coalesce("rsi"."share", 0), coalesce("rspi"."share", 0))`;
+  // The value a conversion keeps: none after a value-less refund, else the
+  // smaller of what the API refunds and the Stripe share leave.
+  const kept = `case when coalesce("rf"."nullRefund", false) then 0 else greatest(0, least(coalesce("e"."value", 0) - coalesce("rf"."refunded", 0), coalesce("e"."value", 0) * (1 - ${stripeShare}))) end`;
+  // Refunded in full: a refund left it nothing. A value-less refund, a
+  // refund of a value-less conversion, refunds adding up to its whole
+  // value, or a full Stripe refund.
+  const refundedOut = `(("rf"."eventId" is not null or ${stripeShare} > 0) and ${kept} <= 0)`;
+  return { kept, refundedOut };
+})();
 
 /** The largest share any Stripe `charge.refunded` refund reported, per
  *  value of its metadata[key] (usage-ledger.ts stripeShareBy). An API

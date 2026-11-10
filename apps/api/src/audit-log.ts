@@ -206,6 +206,7 @@ const PARTNERS_OWN = "a partner's own profile and applications; admins don't rea
 
 /** Writes behind requireAuth that aren't logged, and why. */
 export const NOT_AUDITED: Readonly<Record<string, string>> = {
+  'POST /mcp': 'read-only MCP tool calls (docs/mcp.md): reads, like the GET reports they mirror',
   'POST /attribution/events': 'conversion data, kept as Event rows',
   'POST /attribution/conversions': 'conversion data, kept as Event rows',
   'POST /attribution/refunds': 'refund data, kept as Event rows',

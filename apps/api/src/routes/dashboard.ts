@@ -6,6 +6,7 @@ import { tenantOf } from '../tenancy.js';
 import { parseUserAgent } from '../ua-parse.js';
 import { byCurrency, byCurrencyAndStatus, currencySql, tenantDefaultCurrency } from '../currency.js';
 import { readReferralSettings, referralIdFor } from '../referrals.js';
+import { attributedEvents } from '../attributed-events.js';
 
 export const dashboardRouter = Router();
 
@@ -375,56 +376,17 @@ dashboardRouter.get(
     const asPartner = req.principal?.role === 'partner';
     const shownTypes = asPartner ? (await readReferralSettings(db, tenantId)).stages.map((s) => s.eventType) : null;
 
-    const rows = (await db(`${TABLES.Attribution} as a`)
-      .join(`${TABLES.Event} as e`, 'e.id', 'a.eventId')
-      .leftJoin(`${TABLES.Click} as cl`, (j) => j.on('cl.id', 'a.clickId').andOnVal('cl.tenantId', tenantId))
-      .leftJoin(`${TABLES.Link} as l`, (j) => j.on('l.id', 'cl.linkId').andOnVal('l.tenantId', tenantId))
-      .where('a.tenantId', tenantId)
-      .andWhere('a.partnerId', partnerId)
-      .andWhere('e.tenantId', tenantId)
-      .modify((qb) => {
-        if (shownTypes) qb.whereIn('e.type', shownTypes);
-        if (q.data.programId) qb.andWhere('a.programId', q.data.programId);
-        if (q.data.type) qb.andWhere('e.type', q.data.type);
-        if (q.data.since) qb.andWhere('e.ts', '>=', new Date(q.data.since));
-        if (q.data.until) qb.andWhere('e.ts', '<=', new Date(q.data.until));
-      })
-      .orderBy('e.ts', 'desc')
-      .limit(limit)
-      .offset(offset)
-      .select(
-        'a.id as attributionId',
-        'a.weight as attributionWeight',
-        'a.model as attributionModel',
-        'e.id as eventId',
-        'e.type as eventType',
-        'e.value as eventValue',
-        'e.currency as eventCurrency',
-        'e.ts as eventTs',
-        'e.userId as userId',
-        'cl.id as clickId',
-        'cl.referer as clickReferer',
-        'cl.landingUrl as clickLandingUrl',
-        'cl.ts as clickTs',
-        'cl.subId as clickSubId',
-        'l.linkKey as linkKey',
-      )) as Array<{
-        attributionId: string;
-        attributionWeight: string;
-        attributionModel: string;
-        eventId: string;
-        eventType: string;
-        eventValue: string | null;
-        eventCurrency: string | null;
-        eventTs: Date;
-        userId: string;
-        clickId: string | null;
-        clickReferer: string | null;
-        clickLandingUrl: string | null;
-        clickTs: Date | null;
-        clickSubId: string | null;
-        linkKey: string | null;
-      }>;
+    const rows = await attributedEvents(db, {
+      tenantId,
+      partnerId,
+      types: shownTypes,
+      programId: q.data.programId,
+      type: q.data.type,
+      since: q.data.since ? new Date(q.data.since) : undefined,
+      until: q.data.until ? new Date(q.data.until) : undefined,
+      limit,
+      offset,
+    });
 
     // The brand's userId is the brand's own data: a partner gets the
     // customer's pseudonymous referralId (referrals.ts) instead.
