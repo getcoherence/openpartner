@@ -23,6 +23,7 @@ import { getMailer } from './mailer.js';
 import { getBrandSignupSettings } from './platform-settings.js';
 import { platformOpsEmail, sendOpsEmail } from './platform-ops-mail.js';
 import { getPortalBaseUrl } from './portal-url.js';
+import { cancelSubscriptionOnReject } from './billing-lifecycle.js';
 import {
   brandApprovedEmail,
   brandRejectedEmail,
@@ -365,6 +366,10 @@ export async function rejectBrand(
   // applications.
   await setBrandReviewOnNetwork(db, tenant.id, 'rejected', reason);
   await suspendBrandOnNetwork(db, tenant.id, reason ?? `brand rejected by ${actor.email}`);
+
+  // No charge for a brand we turned away: a plan it started while waiting
+  // (or held before a retroactive removal) ends now.
+  await cancelSubscriptionOnReject(db, tenant);
 
   if (opts.notifyBrand) {
     await notifyBrandRejected(db, tenant, reason);

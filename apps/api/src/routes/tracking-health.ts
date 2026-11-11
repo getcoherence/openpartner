@@ -34,6 +34,9 @@
  * GET /admin/tracking-health/test-click/:id — how far that test got: the
  * link opened, the script reported it, a signup was linked to it.
  *
+ * POST /admin/tracking-health/send-to-developer — `{ email }`: mail the
+ * script tag and install guide to the person who edits the brand's site.
+ *
  * GET|POST /config/tracking-alerts — `{ email }`: whether failing checks
  * and new flags are emailed to the admins (tracking-alerts.ts). On by
  * default.
@@ -44,9 +47,14 @@
 
 import { Router } from 'express';
 import { z } from '../zod.js';
-import { TABLES } from '@openpartner/db';
+import { TABLES, type AdminRow } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
+import { resolveBrandName } from '../brand-name.js';
+import { trackingInstallForDeveloperEmail } from '../email-templates.js';
+import { getMailer } from '../mailer.js';
+import { KeyedLimiter } from '../middleware/rate-limit.js';
+import { getApiBaseUrl, linkTenantOf, type PortalLinkTenant } from '../portal-url.js';
 import { TRACKING_HEALTH_MAX_DAYS, trackingHealth } from '../tracking-health.js';
 import { computeTrackingFlags } from '../tracking-flags.js';
 import { computeSetupChecks } from '../setup-checks.js';
@@ -114,6 +122,66 @@ trackingHealthRouter.get('/admin/tracking-health/test-click/:id', requireAuth, r
   const result = await testClickResult(db, tenantId, id);
   if (!result) return res.status(404).json({ error: 'test_click_not_found' });
   res.json(result);
+});
+
+export const INSTALL_GUIDE_URL =
+  'https://github.com/getcoherence/openpartner/blob/main/packages/sdk/README.md#script-tag-no-bundler';
+
+/** The tag a brand adds to its site: the same string the portal shows
+ *  (apps/portal/src/lib/InstallSnippet.tsx). */
+export function trackingScriptTag(tenant: PortalLinkTenant): string {
+  const origin = tenant.customDomain
+    ? `https://${tenant.customDomain}`
+    : new URL(process.env.PORTAL_URL ?? 'http://localhost:5673').origin;
+  return `<script src="${origin}/op.js" data-api-url="${getApiBaseUrl(tenant)}"></script>`;
+}
+
+export const sendToDeveloperSchema = z.object({
+  email: z.string().trim().email().max(254),
+});
+
+/** Per brand. The mail goes to an address the admin typed, with content
+ *  they don't control, so a handful a day is plenty. */
+const developerMailLimit = new KeyedLimiter(5, 24 * 60 * 60_000);
+
+/** For tests. */
+export function __resetDeveloperMailLimit(tenantId: string): void {
+  developerMailLimit.reset(tenantId);
+}
+
+/**
+ * POST /admin/tracking-health/send-to-developer — `{ email }`: mail the
+ * script tag and the install guide to whoever edits the brand's site. The
+ * body is built here, never taken from the request.
+ */
+trackingHealthRouter.post('/admin/tracking-health/send-to-developer', requireAuth, requireAdmin, async (req, res) => {
+  const body = sendToDeveloperSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const { db, tenantId } = tenantOf(req);
+  if (!developerMailLimit.hit(tenantId)) return res.status(429).json({ error: 'too_many_emails' });
+
+  const principal = req.principal;
+  const sender =
+    principal?.role === 'admin' && principal.source === 'session'
+      ? await db<AdminRow>(TABLES.Admin).where({ id: principal.adminId, tenantId }).first(['email'])
+      : undefined;
+  const tmpl = trackingInstallForDeveloperEmail({
+    brandName: (await resolveBrandName(db, tenantId)) ?? 'Your team',
+    senderEmail: sender?.email ?? null,
+    scriptTag: trackingScriptTag(linkTenantOf(req)),
+    guideUrl: INSTALL_GUIDE_URL,
+  });
+  try {
+    await getMailer().send(
+      { db, tenantId },
+      { to: body.data.email, subject: tmpl.subject, text: tmpl.text, html: tmpl.html, tag: 'tracking_install_for_developer' },
+    );
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error('[tracking-health] developer mail failed', { tenantId, detail });
+    return res.status(422).json({ error: 'mail_send_failed' });
+  }
+  res.json({ ok: true });
 });
 
 export const trackingAlertSettingsSchema = z.object({

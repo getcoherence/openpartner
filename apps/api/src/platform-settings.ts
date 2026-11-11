@@ -252,3 +252,64 @@ export async function setBrandSignupSettings(
     .merge({ value: next as unknown as never, updatedByEmail: operatorEmail, updatedAt: new Date() });
   return next;
 }
+
+/**
+ * The first-run setup wizard for new hosted brands (apps/portal
+ * SetupWizard): program, commission, tracking, marketplace, plan. Off until
+ * an operator turns it on; then a brand with no program yet is sent there on
+ * first sign-in. Brands that already have a program never see it.
+ */
+export interface SetupWizardSettings {
+  enabled: boolean;
+  /** One short line under the commission value, per commission type. Not
+   *  audited benchmark data, just a starting point; blank hides it. */
+  hints: { percent: string; fixed: string };
+}
+
+export const SETUP_WIZARD_DEFAULTS: SetupWizardSettings = {
+  enabled: false,
+  hints: {
+    percent: 'Most SaaS programs pay 20–30%.',
+    fixed: 'Flat rewards usually run $20–$100 per customer.',
+  },
+};
+
+export const SETUP_WIZARD_HINT_MAX = 160;
+
+const SETUP_WIZARD_KEY = 'setupWizard';
+
+function hint(v: unknown, fallback: string): string {
+  return typeof v === 'string' ? v.trim().slice(0, SETUP_WIZARD_HINT_MAX) : fallback;
+}
+
+export async function getSetupWizardSettings(db: Knex): Promise<SetupWizardSettings> {
+  const row = await db<PlatformSettingRow>(TABLES.PlatformSetting).where({ key: SETUP_WIZARD_KEY }).first();
+  const v = (row?.value ?? {}) as Partial<SetupWizardSettings>;
+  return {
+    enabled: typeof v.enabled === 'boolean' ? v.enabled : SETUP_WIZARD_DEFAULTS.enabled,
+    hints: {
+      percent: hint(v.hints?.percent, SETUP_WIZARD_DEFAULTS.hints.percent),
+      fixed: hint(v.hints?.fixed, SETUP_WIZARD_DEFAULTS.hints.fixed),
+    },
+  };
+}
+
+export async function setSetupWizardSettings(
+  db: Knex,
+  patch: { enabled?: boolean; hints?: Partial<SetupWizardSettings['hints']> },
+  operatorEmail: string,
+): Promise<SetupWizardSettings> {
+  const current = await getSetupWizardSettings(db);
+  const next: SetupWizardSettings = {
+    enabled: patch.enabled ?? current.enabled,
+    hints: {
+      percent: hint(patch.hints?.percent, current.hints.percent),
+      fixed: hint(patch.hints?.fixed, current.hints.fixed),
+    },
+  };
+  await db(TABLES.PlatformSetting)
+    .insert({ key: SETUP_WIZARD_KEY, value: next as unknown as never, updatedByEmail: operatorEmail, updatedAt: new Date() })
+    .onConflict('key')
+    .merge({ value: next as unknown as never, updatedByEmail: operatorEmail, updatedAt: new Date() });
+  return next;
+}

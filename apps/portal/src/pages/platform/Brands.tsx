@@ -5,6 +5,7 @@ import { countryName } from '../../lib/CountryField.js';
 import { Button, Card, ErrorBanner, Label, Page, Select, Textarea, formatDate } from '../../ui.js';
 import { ApprovalBadge, Pill, StatusBadge } from './components.js';
 import { TrackingGatePanel } from './TrackingGate.js';
+import { SetupWizardPanel } from './SetupWizardSettings.js';
 import { ScreeningDetail, screeningSummary } from './ScreeningReview.js';
 import {
   papi,
@@ -122,6 +123,7 @@ export function BrandsPage({ operator }: { operator: PlatformOperator }) {
       )}
 
       <TrackingGatePanel canWrite={canWrite} />
+      <SetupWizardPanel canWrite={canWrite} />
 
       <ErrorBanner error={actionError ? friendlyPlatformError(actionError) : brands.error} />
 
