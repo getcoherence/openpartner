@@ -33,6 +33,7 @@ import { getMailer } from '../mailer.js';
 import { db as platformDb } from '../db.js';
 import { networkReviewFor, TRACKING_NOT_VERIFIED_DETAIL } from '../tracking-verification.js';
 import {
+  callNetworkAsBrandProfile,
   completeNetworkConnect,
   getNetworkMembership,
   getPublicNetworkMembership,
@@ -50,6 +51,7 @@ import { CONVERSATION_IMAGE_MAX_BYTES, CONVERSATION_IMAGE_TYPES } from '../conve
 import { readPartnerAccessSettings, savePartnerAccessSettings } from '../partner-portal-access.js';
 import { readStatementSettings, saveStatementSettings } from '../payout-statements.js';
 import { clearNetworkListingSkip } from '../onboarding-settings.js';
+import { brandDeclaredLocation, brandProfileContacts, networkErrorCode, suggestedWebsite } from '../brand-profile.js';
 import { createApiKeyRow } from '../auth.js';
 import { afterCommit, getTenancyMode, tenantOf } from '../tenancy.js';
 import { NETWORK_FEDERATION_SCOPES } from './api-keys.js';
@@ -985,6 +987,188 @@ settingsRouter.post('/admin/network/requests/:id/approve', requireAuth, requireA
 settingsRouter.post('/admin/network/requests/:id/reject', requireAuth, requireAdmin, async (req, res) =>
   proxy(req, res, (db, tenantId) => networkProxy.rejectRequest(db, tenantId, req.params.id!, req.body ?? {})),
 );
+
+// ---------- The brand's own promoter profile (brand-profile.ts) ----------
+//
+// A brand joins other brands' programs through a profile the Network keeps
+// for it, and works that profile from this portal alone: there is no
+// sign-in to it anywhere else. Creating it is for a signed-in full admin,
+// because its address must be one of this brand's own admins'.
+
+/** Network refusals the portal words itself; anything else goes through
+ *  as network_call_failed. */
+const BRAND_PROFILE_REFUSALS = new Set([
+  'email_taken',
+  'email_fixed',
+  'country_not_supported',
+  'occupied_region_confirmation_required',
+]);
+
+async function brandProfileCall(req: Request, res: Response, fn: (db: Knex, tenantId: string) => Promise<unknown>): Promise<void> {
+  const { db, tenantId } = tenantOf(req);
+  try {
+    res.json(await fn(db, tenantId));
+  } catch (err) {
+    if (!(err instanceof NetworkProxyError)) throw err;
+    if (await heldByTrackingGate(db, tenantId, err)) {
+      res.status(403).json({ error: 'tracking_not_verified', detail: TRACKING_NOT_VERIFIED_DETAIL });
+      return;
+    }
+    const code = networkErrorCode(err.message);
+    if (code && BRAND_PROFILE_REFUSALS.has(code)) {
+      res.status(err.status).json({ error: code });
+      return;
+    }
+    res.status(err.status).json({ error: 'network_call_failed', detail: err.message });
+  }
+}
+
+const requireAdminSession: RequestHandler = (req, res, next) => {
+  if (req.principal?.role !== 'admin' || req.principal.source !== 'session') {
+    res.status(403).json({ error: 'admin_session_required' });
+    return;
+  }
+  next();
+};
+
+settingsRouter.get('/admin/network/brand-profile', requireAuth, requireAdmin, async (req, res) =>
+  brandProfileCall(req, res, async (db, tenantId) => {
+    const { profile } = await networkProxy.getBrandProfile(db, tenantId);
+    // What the setup form offers, for whoever may submit it.
+    const canManage = req.principal?.role === 'admin' && req.principal.source === 'session' && req.principal.adminRole === 'admin';
+    if (profile || !canManage) return { profile, contacts: [], suggestedWebsite: null };
+    return {
+      profile,
+      contacts: await brandProfileContacts(db, tenantId),
+      suggestedWebsite: await suggestedWebsite(db, tenantId),
+    };
+  }),
+);
+
+const brandProfileSchema = z
+  .object({
+    email: z.string().trim().toLowerCase().email().max(254),
+    websiteUrl: z
+      .string()
+      .trim()
+      .url()
+      .max(500)
+      .refine((u) => /^https?:\/\//i.test(u), 'websiteUrl must be http(s)')
+      .optional(),
+  })
+  .strict();
+
+settingsRouter.put('/admin/network/brand-profile', requireAuth, requireAdmin, requireAdminSession, async (req, res) => {
+  const body = brandProfileSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const { db, tenantId } = tenantOf(req);
+  // Only a mailbox this brand has proven it reads: one of its own admins'.
+  const contacts = await brandProfileContacts(db, tenantId);
+  if (!contacts.some((c) => c.email === body.data.email)) return res.status(400).json({ error: 'email_not_admin' });
+  const location = await brandDeclaredLocation(tenantId);
+  return brandProfileCall(req, res, async () => {
+    const { profile } = await networkProxy.createBrandProfile(db, tenantId, {
+      email: body.data.email,
+      ...(body.data.websiteUrl ? { websiteUrl: body.data.websiteUrl } : {}),
+      ...(location ?? {}),
+    });
+    return { profile };
+  });
+});
+
+// Working the profile. A brand profile has no sign-in of its own (the
+// Network's docs/brand-profiles.md), so the Promote pages of this portal
+// reach the Network's creator routes through here, as the profile. The
+// reply is the Network's own, status and body, which is what those pages
+// read. Only the paths a promoter needs: programs, applications,
+// partnerships with their links, codes and numbers, and the profile.
+// Nothing of a creator's account, storefront or bookings.
+const PROMOTER_EXACT: Record<string, ReadonlySet<string>> = {
+  '/creators/whoami': new Set(['GET']),
+  '/creators/me': new Set(['GET', 'PATCH']),
+  '/creators/me/affiliations': new Set(['GET']),
+  '/creators/me/requests': new Set(['GET']),
+  '/creators/me/partnerships': new Set(['GET']),
+  '/creators/me/platforms': new Set(['GET']),
+  '/creators/me/recommendations': new Set(['GET']),
+  '/creators/me/uploads/avatar': new Set(['POST']),
+  '/creators/me/uploads/cover': new Set(['POST']),
+  '/creators/me/cover/youtube': new Set(['POST']),
+  '/offerings': new Set(['GET']),
+  '/marketplace/brands': new Set(['GET']),
+};
+/** One path segment: an id or a token. */
+const SEG = '[A-Za-z0-9_~.%-]+';
+// Whole-path patterns, not prefixes: the brand's token also opens the
+// Network's vendor routes (/vendors/me/...), which must never be reachable
+// from here, least of all by a view-only seat's GET.
+const PROMOTER_PATTERN: Array<{ pattern: RegExp; methods: ReadonlySet<string> }> = [
+  { pattern: new RegExp(`^/offerings/${SEG}$`), methods: new Set(['GET']) },
+  { pattern: new RegExp(`^/offerings/${SEG}/apply$`), methods: new Set(['POST']) },
+  // Another brand's public page; never this brand's own vendor record.
+  { pattern: new RegExp(`^/vendors/(?!me$)${SEG}$`), methods: new Set(['GET']) },
+  { pattern: new RegExp(`^/creators/me/affiliations/${SEG}/earnings$`), methods: new Set(['GET']) },
+  { pattern: new RegExp(`^/creators/me/requests/${SEG}/cancel$`), methods: new Set(['POST']) },
+  // A partnership: its slug, and the numbers behind it.
+  { pattern: new RegExp(`^/creators/me/partnerships/${SEG}$`), methods: new Set(['PATCH']) },
+  {
+    pattern: new RegExp(`^/creators/me/partnerships/${SEG}/(commissions|events|referrals|timeseries|breakdowns|brand-info|recruits|coupons)$`),
+    methods: new Set(['GET']),
+  },
+  // Its codes: add one, drop one.
+  { pattern: new RegExp(`^/creators/me/partnerships/${SEG}/coupons$`), methods: new Set(['POST']) },
+  { pattern: new RegExp(`^/creators/me/partnerships/${SEG}/coupons/${SEG}$`), methods: new Set(['DELETE']) },
+  { pattern: new RegExp(`^/creators/me/platforms/${SEG}$`), methods: new Set(['PUT', 'DELETE']) },
+  { pattern: new RegExp(`^/creators/me/platforms/${SEG}/verify(/start)?$`), methods: new Set(['POST']) },
+  // An invitation from another brand: read it, take it up.
+  { pattern: new RegExp(`^/invitations/${SEG}$`), methods: new Set(['GET']) },
+  { pattern: new RegExp(`^/invitations/${SEG}/consume$`), methods: new Set(['POST']) },
+];
+
+export function promoterPathAllowed(method: string, subpath: string): boolean {
+  // Plain segments only (no dot segments, no doubled slashes): the path is
+  // forwarded as it is.
+  if (!new RegExp(`^(/${SEG})+$`).test(subpath) || subpath.split('/').some((seg) => seg === '.' || seg === '..')) return false;
+  if (PROMOTER_EXACT[subpath]?.has(method)) return true;
+  return PROMOTER_PATTERN.some((p) => p.pattern.test(subpath) && p.methods.has(method));
+}
+
+const promoterImageBody = express.raw({ type: ['image/jpeg', 'image/png', 'image/webp'], limit: 2 * 1024 * 1024 });
+
+const promoterApi: RequestHandler = async (req, res) => {
+  const subpath = `/${(req.params as Record<string, string>)[0] ?? ''}`;
+  if (!promoterPathAllowed(req.method, subpath)) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  const { db, tenantId } = tenantOf(req);
+  const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+  const image = Buffer.isBuffer(req.body);
+  try {
+    const upstream = await callNetworkAsBrandProfile(
+      db,
+      tenantId,
+      req.method,
+      `${subpath}${qs}`,
+      image ? req.body : (req.body ?? {}),
+      image ? (req.header('content-type') ?? 'application/octet-stream') : undefined,
+    );
+    res.status(upstream.status === 204 ? 200 : upstream.status).set('Cache-Control', 'no-store');
+    // JSON or nothing: whatever the Network answers never renders as a page.
+    if (!upstream.body || upstream.contentType.includes('application/json')) res.type('application/json').send(upstream.body || 'null');
+    else res.json({ raw: upstream.body, contentType: upstream.contentType || null });
+  } catch (err) {
+    if (!(err instanceof NetworkProxyError)) throw err;
+    res.status(err.status).json({ error: 'network_call_failed', detail: err.message });
+  }
+};
+
+const PROMOTER_API = '/admin/network/promoter-api/*';
+settingsRouter.get(PROMOTER_API, requireAuth, requireAdmin, promoterApi);
+settingsRouter.post(PROMOTER_API, requireAuth, requireAdmin, promoterImageBody, promoterApi);
+settingsRouter.put(PROMOTER_API, requireAuth, requireAdmin, promoterApi);
+settingsRouter.patch(PROMOTER_API, requireAuth, requireAdmin, promoterApi);
+settingsRouter.delete(PROMOTER_API, requireAuth, requireAdmin, promoterApi);
 
 // Brand-side creator discovery — vendor-authenticated proxy passes the
 // browser's querystring straight through to Network's directory endpoint.

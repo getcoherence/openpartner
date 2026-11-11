@@ -3,7 +3,7 @@ import { Link } from 'react-router';
 import { ArrowUpRight, Globe } from 'lucide-react';
 import { Card, EmptyState, ErrorBanner, Page, Stat, StatusPill, formatDate, money } from '../../ui.js';
 import { theme } from '../../theme.js';
-import { creatorApi, ApiError } from './creator-api.js';
+import { creatorApi, ApiError, creatorPath } from './creator-api.js';
 
 interface PartnershipLite {
   id: string;
@@ -149,7 +149,7 @@ export function CreatorMyAffiliationsPage() {
           <Card key={a.id}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
               <h3 style={{ marginTop: 0, marginBottom: 4, flex: 1 }}>
-                <Link to={`/creator/vendors/${a.vendorId}`}>{a.vendorName}</Link>
+                <Link to={creatorPath(`/vendors/${a.vendorId}`)}>{a.vendorName}</Link>
               </h3>
               <StatusPill status={a.status} />
             </div>
@@ -162,12 +162,12 @@ export function CreatorMyAffiliationsPage() {
                     const partnershipId = partnershipByOffering.get(o.id);
                     return (
                       <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
-                        <Link to={`/creator/offerings/${o.id}`} style={{ color: theme.text }}>
+                        <Link to={creatorPath(`/offerings/${o.id}`)} style={{ color: theme.text }}>
                           {o.title}
                         </Link>
                         {partnershipId && (
                           <Link
-                            to={`/creator/programs/${partnershipId}`}
+                            to={creatorPath(`/programs/${partnershipId}`)}
                             style={{
                               display: 'inline-flex',
                               alignItems: 'center',
