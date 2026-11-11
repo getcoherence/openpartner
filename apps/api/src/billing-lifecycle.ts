@@ -28,11 +28,14 @@ import { applyWhiteLabelFromSubscription } from './white-label-billing.js';
 import { mirrorHostedBillingState, type InvoiceOverdue, type MirroredSubscriptionStatus } from './billing-plan.js';
 import { invoiceDueTracked, refreshInvoiceDue } from './invoice-billing.js';
 import { sendOpsEmail } from './platform-ops-mail.js';
+import { stripe as platformStripe } from './stripe.js';
 import { stripeMinorToMajorString } from './stripe-amounts.js';
 import {
   opsTenantCancellationResumedEmail,
   opsTenantCancellationScheduledEmail,
   opsTenantInvoiceOverdueEmail,
+  opsPendingBrandChargeDeferredEmail,
+  opsRejectedBrandCancelFailedEmail,
   opsTenantInvoicePaymentFailedEmail,
   opsTenantSubscriptionEndedEmail,
 } from './email-templates.js';
@@ -112,6 +115,77 @@ export async function handleTenantSubscriptionEnded(
     'ops_tenant_subscription_ended',
   );
   return wl;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** How close to its first charge a pending brand's trial is moved. Stripe's
+ *  trial_will_end fires 3 days out; the nightly pass needs a day of slack. */
+const PENDING_CHARGE_WINDOW_MS = 4 * DAY_MS;
+const PENDING_CHARGE_EXTENSION_MS = 7 * DAY_MS;
+
+/**
+ * A brand may subscribe while it waits for review (the setup wizard's plan
+ * step), with its first charge on the end of its sign-up trial
+ * (billing-plan.ts checkoutTrialEnd). OpenPartner must not take money from a
+ * brand it hasn't accepted, so when that charge comes due and the brand is
+ * still pending, the Stripe trial moves out a week. Tenant.trialEndsAt is
+ * untouched: this defers a charge, it doesn't extend the product trial.
+ *
+ * Called from customer.subscription.trial_will_end and from the nightly
+ * reconcile (an endpoint not subscribed to that event still gets covered).
+ * Idempotent: once moved, the charge is outside the window again.
+ */
+export async function deferChargeWhilePendingReview(
+  db: Knex,
+  stripe: Pick<Stripe, 'subscriptions'>,
+  tenantId: string,
+  sub: Pick<Stripe.Subscription, 'id' | 'status' | 'trial_end'>,
+  now: Date = new Date(),
+): Promise<'deferred' | 'not_pending' | 'not_due'> {
+  if (sub.status !== 'trialing' || typeof sub.trial_end !== 'number') return 'not_due';
+  if (sub.trial_end * 1000 - now.getTime() > PENDING_CHARGE_WINDOW_MS) return 'not_due';
+  const tenant = await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first(['approvalStatus', 'displayName', 'slug']);
+  if (tenant?.approvalStatus !== 'pending') return 'not_pending';
+  const next = new Date(now.getTime() + PENDING_CHARGE_EXTENSION_MS);
+  await stripe.subscriptions.update(sub.id, { trial_end: Math.floor(next.getTime() / 1000), proration_behavior: 'none' });
+  await sendOpsEmail(
+    privilegedDb,
+    opsPendingBrandChargeDeferredEmail(tenant.displayName ?? tenantId, tenant.slug ?? tenantId, next),
+    'ops_pending_brand_charge_deferred',
+  );
+  return 'deferred';
+}
+
+/**
+ * A rejected brand must not be billed: cancel its plan subscription now. A
+ * trialing one (subscribed during review) has taken no money. Best effort:
+ * a Stripe failure must not undo the rejection, so it alerts ops instead.
+ */
+export async function cancelSubscriptionOnReject(
+  db: Knex,
+  tenant: Pick<TenantRow, 'id' | 'displayName' | 'slug' | 'stripeSubscriptionId'>,
+  stripeClient?: Pick<Stripe, 'subscriptions'> | null,
+): Promise<'none' | 'cancelled' | 'failed'> {
+  const subscriptionId = tenant.stripeSubscriptionId;
+  if (!subscriptionId) return 'none';
+  const stripe = stripeClient ?? platformStripe;
+  try {
+    if (!stripe) throw new Error('Stripe is not configured');
+    await stripe.subscriptions.cancel(subscriptionId);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error(`[billing] ALERT: rejected brand ${tenant.slug} still has subscription ${subscriptionId}`, detail);
+    await sendOpsEmail(
+      privilegedDb,
+      opsRejectedBrandCancelFailedEmail(tenant.displayName ?? tenant.id, tenant.slug ?? tenant.id, stripeSubscriptionUrl(subscriptionId), detail),
+      'ops_rejected_brand_cancel_failed',
+    );
+    return 'failed';
+  }
+  // Same transition the customer.subscription.deleted webhook runs; whichever
+  // comes second matches no row and does nothing.
+  await handleTenantSubscriptionEnded(db, tenant.id, 'webhook', subscriptionId);
+  return 'cancelled';
 }
 
 /**
@@ -287,14 +361,17 @@ export interface ReconcileResult {
   /** Slugs with a pay-by-invoice invoice past due that ops hadn't been
    *  told about yet (no webhook said so, or the mail failed). */
   invoiceOverdue: string[];
+  /** Slugs still in review whose first charge was moved out. */
+  chargeDeferred: string[];
   errors: string[];
 }
 
 /**
  * Nightly poll: for every tenant that locally claims an active plan
  * subscription, ask Stripe what's actually true and heal the drift a
- * missed webhook left behind. Verifies + clears state and alerts ops;
- * never touches Stripe-side state.
+ * missed webhook left behind. Verifies + clears state and alerts ops. The
+ * one thing it changes in Stripe: a still-pending brand's first charge is
+ * moved out (deferChargeWhilePendingReview).
  */
 export async function reconcileTenantSubscriptions(
   db: Knex,
@@ -308,7 +385,7 @@ export async function reconcileTenantSubscriptions(
     .whereNotNull('stripeSubscriptionId')
     .select(['id', 'slug', 'stripeSubscriptionId']);
 
-  const result: ReconcileResult = { checked: tenants.length, ended: [], cancelScheduled: [], invoiceOverdue: [], errors: [] };
+  const result: ReconcileResult = { checked: tenants.length, ended: [], cancelScheduled: [], invoiceOverdue: [], chargeDeferred: [], errors: [] };
   for (const tenant of tenants) {
     try {
       let sub: Stripe.Subscription;
@@ -333,6 +410,9 @@ export async function reconcileTenantSubscriptions(
       // Live subscription — refresh the status mirror (webhooks normally
       // keep this current; the poll catches drift from missed deliveries).
       await mirrorHostedBillingState(db, tenant.id, sub.status as MirroredSubscriptionStatus, sub.collection_method);
+      if ((await deferChargeWhilePendingReview(db, stripe, tenant.id, sub)) === 'deferred') {
+        result.chargeDeferred.push(tenant.slug);
+      }
       // Pay-by-invoice: an invoice going past its due date fires no event of
       // its own, so the nightly pass is what notices it. The ops notice is
       // sent here, outside any transaction (db is the privileged pool).

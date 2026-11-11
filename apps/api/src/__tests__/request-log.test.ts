@@ -3,13 +3,21 @@
  * in the query, and a page that calls /api before taking them out of the
  * address bar sends the whole landing URL as the Referer. The log keeps
  * the page, never its query. No DB needed: /health answers without one.
+ *
+ * The Network's offering-invitation token, a path segment: the creator
+ * portal resolves and consumes an invitation through the proxy at
+ * /creator-api/invitations/<token>[/consume]. Neither the request log nor
+ * the proxy's own error lines keep it. A local HTTP server plays the
+ * Network, so these need no DB either.
  */
 
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { Writable } from 'node:stream';
-import { describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../app.js';
-import { redactReferer, redactRequest } from '../request-log.js';
+import { redactPath, redactReferer, redactRequest, redactUrl } from '../request-log.js';
 
 const ORIGIN = 'https://app.example.com';
 
@@ -109,6 +117,136 @@ describe('the request log', () => {
     for (const { path, secrets } of LANDINGS) {
       expect(log).toContain(`"referer":"${ORIGIN}${path}?[REDACTED]"`);
       for (const secret of secrets) expect(log).not.toContain(secret);
+    }
+  });
+});
+
+// Network invitation tokens are randomBytes(24) in hex.
+const INVITE = '3f9c0e7a1b5d24c8e6f0a9b3d7c1e5f2a4b8c0d6e2f4a1b3';
+const INVITE_UNKNOWN = '8d2e4f6a0c1b3e5d7f9a2c4e6b8d0f1a3c5e7b9d1f2a4c6e';
+
+describe('redactUrl and redactPath: the invitation token in the path', () => {
+  it('replaces the token behind any prefix, keeping the rest of the URL', () => {
+    const cases: Array<[string, string]> = [
+      [`/creator-api/invitations/${INVITE}`, '/creator-api/invitations/[REDACTED]'],
+      [`/creator-api/invitations/${INVITE}/consume`, '/creator-api/invitations/[REDACTED]/consume'],
+      [`/api/creator-api/invitations/${INVITE}`, '/api/creator-api/invitations/[REDACTED]'],
+      [`/t/acme/creator-api/invitations/${INVITE}/consume`, '/t/acme/creator-api/invitations/[REDACTED]/consume'],
+      [`/api/t/acme/creator-api/invitations/${INVITE}`, '/api/t/acme/creator-api/invitations/[REDACTED]'],
+      [`/Creator-API/Invitations/${INVITE}`, '/Creator-API/Invitations/[REDACTED]'],
+      [
+        `/creator-api/invitations/${INVITE}?token=pb_q&page=2`,
+        '/creator-api/invitations/[REDACTED]?token=[REDACTED]&page=2',
+      ],
+      [`/creator-api/invitations/${INVITE}#top`, '/creator-api/invitations/[REDACTED]#top'],
+      // As the proxy sees it, with /creator-api already cut off.
+      [`/invitations/${INVITE}/consume`, '/invitations/[REDACTED]/consume'],
+    ];
+    for (const [url, expected] of cases) {
+      expect(redactUrl(url)).toBe(expected);
+      if (!url.includes('?')) expect(redactPath(url)).toBe(expected);
+    }
+  });
+
+  it('leaves every other path alone', () => {
+    for (const url of [
+      '/creator-api/offerings/off_1/apply',
+      '/creator-api/invitations',
+      '/creator-api/invitations/',
+      '/creator-api/creators/me/invitations/inv_1',
+      '/creator-api/offerings?next=/invitations/inv_1',
+      '/network/offerings/off_1/invitations',
+    ]) {
+      expect(redactUrl(url)).toBe(url);
+    }
+  });
+
+  it('redacts the proxy route params without touching the live request', () => {
+    const params = { 0: `/invitations/${INVITE}/consume`, n: 3 };
+    const out = redactRequest({ url: `/creator-api/invitations/${INVITE}/consume`, params });
+    expect(out.url).toBe('/creator-api/invitations/[REDACTED]/consume');
+    expect(out.params).toEqual({ 0: '/invitations/[REDACTED]/consume', n: 3 });
+    expect(params[0]).toBe(`/invitations/${INVITE}/consume`);
+  });
+});
+
+describe('the request log, for invitation calls through the creator proxy', () => {
+  let network: Server;
+  const received: string[] = [];
+  let previousNetworkUrl: string | undefined;
+
+  beforeAll(async () => {
+    previousNetworkUrl = process.env.NETWORK_URL;
+    network = createServer((req, res) => {
+      received.push(`${req.method} ${req.url}`);
+      req.resume();
+      req.on('end', () => {
+        res.setHeader('content-type', 'application/json');
+        if (req.method === 'GET' && req.url === `/invitations/${INVITE}`) {
+          res.writeHead(200);
+          return res.end(JSON.stringify({ id: 'inv_1', offeringId: 'off_1', status: 'pending' }));
+        }
+        if (req.method === 'POST' && req.url === `/invitations/${INVITE}/consume`) {
+          res.writeHead(409);
+          return res.end(JSON.stringify({ error: 'already_resolved' }));
+        }
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: 'not_found' }));
+      });
+    });
+    await new Promise<void>((resolve) => network.listen(0, '127.0.0.1', resolve));
+    process.env.NETWORK_URL = `http://127.0.0.1:${(network.address() as AddressInfo).port}`;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  afterAll(async () => {
+    if (previousNetworkUrl === undefined) delete process.env.NETWORK_URL;
+    else process.env.NETWORK_URL = previousNetworkUrl;
+    await new Promise<void>((resolve) => network.close(() => resolve()));
+  });
+
+  it('never holds the token, while the Network still gets it', async () => {
+    const lines: string[] = [];
+    const logged = createApp({
+      logDestination: new Writable({
+        write(chunk, _enc, cb) {
+          lines.push(String(chunk));
+          cb();
+        },
+      }),
+    });
+    const proxyErrors: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      proxyErrors.push(JSON.stringify(args));
+    });
+
+    expect((await request(logged).get(`/creator-api/invitations/${INVITE}`)).status).toBe(200);
+    expect((await request(logged).post(`/creator-api/invitations/${INVITE}/consume`)).status).toBe(409);
+    expect((await request(logged).get(`/creator-api/invitations/${INVITE_UNKNOWN}`)).status).toBe(404);
+    await new Promise((r) => setImmediate(r));
+
+    expect(received).toEqual([
+      `GET /invitations/${INVITE}`,
+      `POST /invitations/${INVITE}/consume`,
+      `GET /invitations/${INVITE_UNKNOWN}`,
+    ]);
+
+    const log = lines.join('');
+    expect(lines).toHaveLength(3);
+    expect(log).toContain('"url":"/creator-api/invitations/[REDACTED]"');
+    expect(log).toContain('"url":"/creator-api/invitations/[REDACTED]/consume"');
+
+    // The two Network refusals log the path they were for.
+    expect(proxyErrors).toHaveLength(2);
+    expect(proxyErrors.join('\n')).toContain('"subpath":"/invitations/[REDACTED]/consume"');
+    expect(proxyErrors.join('\n')).toContain('"subpath":"/invitations/[REDACTED]"');
+
+    for (const token of [INVITE, INVITE_UNKNOWN]) {
+      expect(log).not.toContain(token);
+      expect(proxyErrors.join('\n')).not.toContain(token);
     }
   });
 });

@@ -19,6 +19,7 @@ import { clickUserId } from '../conversion-ingest.js';
 import { ingestCurrency } from '../currency.js';
 import { inferPlanFromPriceIds, persistMerchantSubscription, updateTenantPlanFromStripeSub } from './billing.js';
 import {
+  deferChargeWhilePendingReview,
   handleCancellationScheduleChanged,
   handleTenantSubscriptionEnded,
   notifyTenantInvoiceOverdue,
@@ -635,6 +636,7 @@ async function resolveTenantForEvent(event: Stripe.Event, family: SecretFamily):
     case 'customer.subscription.created':
     case 'customer.subscription.updated':
     case 'customer.subscription.deleted':
+    case 'customer.subscription.trial_will_end':
     case 'invoice.paid':
     case 'invoice.payment_failed':
     case 'invoice.finalized':
@@ -836,9 +838,10 @@ async function handleConnectEvent(
       if (session.client_reference_id) return null;
       if (session.mode === 'subscription' && typeof session.customer === 'string' && typeof session.subscription === 'string') {
         // trialEndsAt + firstTrialActivatedAt are owned by signup — don't
-        // touch them here. Stripe's sub.trial_end is always null now (we
-        // stopped passing trial_period_days to Checkout) and overwriting
-        // would clobber the signup-set in-product evaluation deadline.
+        // touch them here. A subscription started during that trial carries
+        // its remainder as sub.trial_end (billing-plan.ts checkoutTrialEnd),
+        // which is never later than the sign-up deadline, so there is
+        // nothing to copy back.
         await persistMerchantSubscription(trx, tenantId, {
           stripeCustomerId: session.customer,
           stripeSubscriptionId: session.subscription,
@@ -948,6 +951,15 @@ async function handleConnectEvent(
       const wl = await handleTenantSubscriptionEnded(trx, tenantId, 'webhook', sub.id);
       if (wl === null) return 'subscription_deleted_stale_ignored';
       return `subscription_deleted_${sub.status}${wl !== 'unchanged' ? `+white_label_${wl}` : ''}`;
+    }
+    case 'customer.subscription.trial_will_end': {
+      // The tenant's own plan, three days from its first charge. A brand
+      // still in review is not charged yet (billing-lifecycle.ts).
+      const sub = event.data.object as Stripe.Subscription;
+      const ids = await tenantBillingIds(trx, tenantId);
+      if (!isOwnBilling(ids, extractCustomerId(sub), sub.id)) return null;
+      if (ids.stripeSubscriptionId !== sub.id) return 'trial_will_end_stale_ignored';
+      return `trial_will_end_${await deferChargeWhilePendingReview(trx, ctx.stripe, tenantId, sub)}`;
     }
     case 'customer.subscription.created': {
       // A pay-by-invoice subscription the brand started (invoice-billing.ts

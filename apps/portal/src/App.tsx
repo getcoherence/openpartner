@@ -37,6 +37,7 @@ import {
   Route as RouteIcon,
   Lock,
   History,
+  Handshake,
 } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { clearApiKey, api, ApiError, TWO_FACTOR_REQUIRED, type Principal } from './api.js';
@@ -68,6 +69,7 @@ import { AdminTrackingHealth } from './pages/admin/TrackingHealth.js';
 import { AdminJourney } from './pages/admin/Journey.js';
 import { AdminSettings } from './pages/admin/Settings.js';
 import { AdminBilling } from './pages/admin/Billing.js';
+import { SetupWizardGate, SetupWizardPage } from './pages/admin/SetupWizard.js';
 import { AdminWhiteLabel } from './pages/admin/WhiteLabel.js';
 import { AdminAdmins } from './pages/admin/Admins.js';
 import { AdminAuditLog } from './pages/admin/AuditLog.js';
@@ -82,6 +84,7 @@ import { AdminNetworkBookingReport } from './pages/admin/NetworkBookingReport.js
 import { AdminNetworkClaim, AdminNetworkMessages, AdminNetworkThread, useBrandUnreadMessages } from './pages/admin/NetworkMessages.js';
 import { UnreadDot } from './pages/creator/conversation-shared.js';
 import { AdminNetworkBilling } from './pages/admin/NetworkBilling.js';
+import { AdminNetworkPromote, fetchPromoteState, PROMOTE_STATE_KEY } from './pages/admin/NetworkPromote.js';
 import { BrandLocationPrompt, useBrandLocationMissing } from './pages/admin/BrandLocation.js';
 import { DiscoverPage } from './pages/partner/Discover.js';
 import { OfferingDetailPage } from './pages/partner/OfferingDetail.js';
@@ -359,6 +362,17 @@ function Shell() {
     approvalStatus !== 'pending' &&
     shellPath.startsWith('/admin/network/');
 
+  // The first-run setup wizard is a page of its own, without the menu: an
+  // admin who can edit, on the path the dashboard sends new brands to.
+  const canSetUp = auth.principal.role === 'admin' && !isViewOnly(auth.principal);
+  if (canSetUp && shellPath.replace(/\/$/, '') === '/setup') {
+    return (
+      <ViewOnlyProvider principal={auth.principal}>
+        <SetupWizardPage />
+      </ViewOnlyProvider>
+    );
+  }
+
   const shell = (
     <div style={{ display: 'flex', minHeight: '100vh', background: theme.bg }}>
       {isMobile ? (
@@ -384,7 +398,14 @@ function Shell() {
         {showNetworkProfileBanner && <NetworkProfileBanner isMobile={isMobile} />}
         {showNetworkListingNotice && <NetworkListingNotice isMobile={isMobile} />}
         <Routes>
-          <Route index element={<Dashboard principal={auth.principal} />} />
+          <Route
+            index
+            element={
+              <SetupWizardGate enabled={canSetUp}>
+                <Dashboard principal={auth.principal} />
+              </SetupWizardGate>
+            }
+          />
 
           <Route path="links" element={<LinksPage principal={auth.principal} />} />
           <Route path="commissions" element={<CommissionsPage principal={auth.principal} />} />
@@ -458,6 +479,7 @@ function Shell() {
                   <Route path="admin/network/messages/:id" element={<AdminNetworkThread />} />
                   <Route path="admin/network/claim" element={<AdminNetworkClaim />} />
                   <Route path="admin/network/billing" element={<AdminNetworkBilling />} />
+                  <Route path="admin/network/promote/*" element={<AdminNetworkPromote />} />
                 </>
               )}
             </>
@@ -1468,7 +1490,12 @@ function NetworkNav({ locked }: { locked: string | null }) {
   });
   const connected = !!(data?.enabled && data.hasVendorToken);
   const unread = useBrandUnreadMessages(connected);
+  // Once the brand has set itself up as a promoter, its promoter pages get
+  // a section of their own; until then Promote is one link, to the setup.
+  const promote = useQuery({ queryKey: PROMOTE_STATE_KEY, queryFn: fetchPromoteState, enabled: connected, staleTime: 60_000, retry: false });
+  const promoting = connected && !!promote.data?.profile?.active;
   return (
+    <>
     <NavSection title="Network" collapsible storageKey="admin-network">
       {connected ? (
         <>
@@ -1480,6 +1507,9 @@ function NetworkNav({ locked }: { locked: string | null }) {
             </span>
           </NavItem>
           <NavItem to="/admin/network/bookings" icon={<CalendarCheck size={16} />} locked={locked}>Bookings</NavItem>
+          {!promoting && (
+            <NavItem to="/admin/network/promote" icon={<Handshake size={16} />} locked={locked}>Promote</NavItem>
+          )}
           {data?.tier !== 'hosted' && (
             <NavItem to="/admin/network/billing" icon={<CreditCard size={16} />}>Billing</NavItem>
           )}
@@ -1488,6 +1518,16 @@ function NetworkNav({ locked }: { locked: string | null }) {
         <NavItem to="/admin/network" icon={<Globe size={16} />} exact>Get connected</NavItem>
       )}
     </NavSection>
+    {promoting && (
+      <NavSection title="Promote" collapsible storageKey="admin-promote">
+        <NavItem to="/admin/network/promote/discover" icon={<Globe size={16} />} locked={locked}>Programs</NavItem>
+        <NavItem to="/admin/network/promote/affiliations" icon={<Handshake size={16} />} locked={locked}>Partnerships</NavItem>
+        <NavItem to="/admin/network/promote/links" icon={<Link2 size={16} />} locked={locked}>Links and codes</NavItem>
+        <NavItem to="/admin/network/promote/requests" icon={<Inbox size={16} />} locked={locked}>Applications</NavItem>
+        <NavItem to="/admin/network/promote/profile" icon={<UserCog size={16} />} locked={locked}>Profile</NavItem>
+      </NavSection>
+    )}
+    </>
   );
 }
 

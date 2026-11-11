@@ -39,6 +39,7 @@ const stripeApi = vi.hoisted(() => ({
   invoicePaymentsList: vi.fn(),
   invoicesListLineItems: vi.fn(),
   checkoutSessionsListLineItems: vi.fn(),
+  subscriptionsUpdate: vi.fn(),
 }));
 
 /** A Stripe list call's return: a promise-like with autoPagingToArray, as
@@ -50,6 +51,7 @@ function stripeList<T>(items: T[]) {
 function resetStripeApi() {
   stripeApi.customersRetrieve.mockReset().mockResolvedValue({ id: 'cus_test_mocked', metadata: {}, deleted: false });
   stripeApi.customersUpdate.mockReset().mockResolvedValue({ id: 'cus_test_mocked' });
+  stripeApi.subscriptionsUpdate.mockReset().mockRejectedValue(new Error('unexpected subscriptions.update'));
   stripeApi.checkoutSessionsList.mockReset().mockResolvedValue({ object: 'list', data: [], has_more: false });
   stripeApi.invoicesRetrieve.mockReset().mockRejectedValue(new Error('unexpected invoices.retrieve'));
   stripeApi.invoicesList.mockReset().mockRejectedValue(new Error('unexpected invoices.list'));
@@ -96,6 +98,7 @@ vi.mock('stripe', async () => {
     };
     (instance as unknown as { coupons: unknown }).coupons = { retrieve: stripeApi.couponsRetrieve };
     (instance as unknown as { charges: unknown }).charges = { retrieve: stripeApi.chargesRetrieve };
+    (instance as unknown as { subscriptions: unknown }).subscriptions = { update: stripeApi.subscriptionsUpdate };
     (instance as unknown as { invoicePayments: unknown }).invoicePayments = { list: stripeApi.invoicePaymentsList };
     return instance;
   }
@@ -2665,6 +2668,46 @@ describe.skipIf(skipIntegration)('stripe webhook — tenant billing lifecycle', 
     const mirror = await db(TABLES.HostedBillingState).where({ tenantId: DEFAULT_TENANT_ID }).first();
     expect(mirror!.subscriptionStatus).toBe('canceled');
     expect(sentMail.some((m) => m.tag === 'ops_tenant_subscription_ended')).toBe(true);
+  });
+
+  it('trial_will_end: a brand still in review has its first charge moved out; an approved one is left to be charged', async () => {
+    const trialWillEnd = () =>
+      postWebhook({
+        id: `evt_${ulid()}`,
+        type: 'customer.subscription.trial_will_end',
+        created: Math.floor(Date.now() / 1000),
+        data: {
+          object: {
+            id: TENANT_SUB,
+            object: 'subscription',
+            customer: TENANT_CUS,
+            status: 'trialing',
+            trial_end: Math.floor(Date.now() / 1000) + 3 * 86_400,
+            items: { data: [] },
+          },
+        },
+      });
+
+    const approved = await trialWillEnd();
+    expect(approved.status).toBe(200);
+    expect(approved.body.connect).toBe('trial_will_end_not_pending');
+    expect(stripeApi.subscriptionsUpdate).not.toHaveBeenCalled();
+
+    stripeApi.subscriptionsUpdate.mockResolvedValue({ id: TENANT_SUB });
+    await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ approvalStatus: 'pending' });
+    try {
+      const pending = await trialWillEnd();
+      expect(pending.status).toBe(200);
+      expect(pending.body.connect).toBe('trial_will_end_deferred');
+      expect(stripeApi.subscriptionsUpdate).toHaveBeenCalledTimes(1);
+      const [id, args] = stripeApi.subscriptionsUpdate.mock.calls[0] as [string, { trial_end: number; proration_behavior: string }];
+      expect(id).toBe(TENANT_SUB);
+      expect(args.proration_behavior).toBe('none');
+      expect(args.trial_end).toBeGreaterThan(Math.floor(Date.now() / 1000) + 6 * 86_400);
+      expect(sentMail.some((m) => m.tag === 'ops_pending_brand_charge_deferred')).toBe(true);
+    } finally {
+      await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ approvalStatus: 'approved' });
+    }
   });
 
   it("subscription.deleted for a merchant END-customer's sub must NOT touch tenant billing state", async () => {

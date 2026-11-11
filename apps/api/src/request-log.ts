@@ -1,9 +1,15 @@
 /**
- * Request-log hygiene. pino-http records every request's URL, query and
- * headers, and log stores keep them. Credentials riding in those are
- * replaced before a line is written:
+ * Request-log hygiene. pino-http records every request's URL, query, route
+ * params and headers, and log stores keep them. Credentials riding in those
+ * are replaced before a line is written:
  *   - the `token` query parameter: the conversion postback token on
  *     GET /postback is a URL credential by design
+ *   - the Network's offering-invitation token, a path segment: the creator
+ *     portal resolves and consumes an invitation through the proxy at
+ *     /creator-api/invitations/<token>[/consume] (routes/creator-portal.ts).
+ *     Anyone holding it can read the invitation, the brand's note included,
+ *     without signing in. The Network keeps it out of its own log the same
+ *     way (its src/request-log.ts).
  *   - the `code` query parameter: the OAuth authorization code Google and
  *     Stripe redirect back with (/auth/google/callback,
  *     /stripe-app/oauth/callback)
@@ -26,13 +32,23 @@
 const REDACTED = '[REDACTED]';
 const SECRET_QUERY_PARAMS = new Set(['token', 'code']);
 const SECRET_HEADERS = ['authorization', 'cookie'];
+// The invitation token's segment, behind whatever came before /creator-api
+// (/api from a proxy that keeps it, /t/<slug>), or with /creator-api already
+// cut off, as the proxy itself sees the path.
+const SECRET_PATH = /^((?:[^?#]*\/creator-api)?\/invitations\/)[^/?#]+/i;
 
-/** The URL with every secret query parameter's value replaced. */
+/** The path (or URL) with the invitation token replaced. */
+export function redactPath(path: string): string {
+  return path.replace(SECRET_PATH, `$1${REDACTED}`);
+}
+
+/** The URL with the invitation token and every secret query parameter's value replaced. */
 export function redactUrl(url: string): string {
-  const q = url.indexOf('?');
-  if (q === -1) return url;
-  const hash = url.indexOf('#', q);
-  const query = url.slice(q + 1, hash === -1 ? undefined : hash);
+  const path = redactPath(url);
+  const q = path.indexOf('?');
+  if (q === -1) return path;
+  const hash = path.indexOf('#', q);
+  const query = path.slice(q + 1, hash === -1 ? undefined : hash);
   const redacted = query
     .split('&')
     .map((pair) => {
@@ -41,7 +57,7 @@ export function redactUrl(url: string): string {
       return SECRET_QUERY_PARAMS.has(decodeName(rawName).toLowerCase()) ? `${rawName}=${REDACTED}` : pair;
     })
     .join('&');
-  return `${url.slice(0, q + 1)}${redacted}${hash === -1 ? '' : url.slice(hash)}`;
+  return `${path.slice(0, q + 1)}${redacted}${hash === -1 ? '' : path.slice(hash)}`;
 }
 
 /**
@@ -68,6 +84,7 @@ function decodeName(name: string): string {
 interface SerializedRequest {
   url?: string;
   query?: Record<string, unknown>;
+  params?: Record<string, unknown>;
   headers?: Record<string, unknown>;
   [key: string]: unknown;
 }
@@ -83,6 +100,14 @@ export function redactRequest(req: SerializedRequest): SerializedRequest {
   if (req.query && typeof req.query === 'object') {
     out.query = Object.fromEntries(
       Object.entries(req.query).map(([k, v]) => [k, SECRET_QUERY_PARAMS.has(k.toLowerCase()) ? REDACTED : v]),
+    );
+  }
+  // pino-http serializes the request before routing, so params is {} today.
+  // Once the proxy's route has matched, its params[0] is the path it
+  // forwards: /invitations/<token>.
+  if (req.params && typeof req.params === 'object') {
+    out.params = Object.fromEntries(
+      Object.entries(req.params).map(([k, v]) => [k, typeof v === 'string' ? redactPath(v) : v]),
     );
   }
   if (req.headers && typeof req.headers === 'object') {

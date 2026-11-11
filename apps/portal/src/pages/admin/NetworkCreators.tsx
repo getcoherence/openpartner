@@ -27,6 +27,7 @@ import { useSearchParams } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, Users, X } from 'lucide-react';
 import { api } from '../../api.js';
+import { BrandBadge } from '../../lib/BrandBadge.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Textarea } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
 import { countryOptions } from '../../lib/CountryField.js';
@@ -65,6 +66,8 @@ interface PlatformRow {
 interface DirectoryRow {
   id: string;
   name: string;
+  /** 'brand': another brand's promoter profile. Absent on an older Network. */
+  kind?: 'person' | 'brand';
   handle: string;
   avatarUrl: string | null;
   bio: string | null;
@@ -715,7 +718,12 @@ function MemberRow({ creator, selected, onSelect }: { creator: DirectoryRow; sel
           </div>
         )
       }
-      meta={<span style={{ color: theme.textMuted, fontSize: 12, fontFamily: theme.fontMono }}>@{creator.handle}</span>}
+      meta={
+        <>
+          <span style={{ color: theme.textMuted, fontSize: 12, fontFamily: theme.fontMono }}>@{creator.handle}</span>
+          {creator.kind === 'brand' && <BrandBadge />}
+        </>
+      }
       line={creator.bio}
       channels={
         creator.platforms.length > 0
