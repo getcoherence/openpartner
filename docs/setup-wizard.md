@@ -40,7 +40,7 @@ The 14-day trial starts at sign-up (`Tenant.trialEndsAt`). Checkout, from the wi
 
 This is not a second trial. It is never later than `trialEndsAt`, and with under 48 hours left (Stripe's minimum for a Checkout trial) or after the trial, Checkout charges at once as it always did. `trialEndsAt` stays owned by sign-up; the webhooks never write it.
 
-Stripe does not bill metered usage recorded while a subscription is trialing, so the platform fee on partner-attributed sales made before `trialEndsAt` is not charged to a brand that subscribed during its trial.
+Partner-attributed sales made during the trial are still billed. Stripe does not bill metered usage recorded while a subscription is trialing, so the usage reporter (`reportUsageToStripe` in `usage-billing.ts`) sends nothing and leaves its mark where it is until the trial is over. Its first report afterwards covers everything since the mark and lands in the first paid period.
 
 ### A brand that subscribes while in review
 
