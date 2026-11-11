@@ -19,7 +19,8 @@ export const NETWORK_PORTAL_URL = (
   (import.meta.env.VITE_NETWORK_PORTAL_URL as string | undefined) ?? 'https://app.openpartner.dev'
 ).replace(/\/$/, '');
 
-export type NetworkPortalPage = 'affiliations' | 'requests';
+/** A signed-out creator lands on the portal's sign-in from any of them. */
+export type NetworkPortalPage = 'affiliations' | 'requests' | 'profile' | `offerings/${string}`;
 
 export const networkPortalUrl = (page: NetworkPortalPage) => `${NETWORK_PORTAL_URL}/creator/${page}`;
 

@@ -7,6 +7,7 @@ import { theme } from '../../theme.js';
 import { ConfirmAction } from '../../lib/ConfirmAction.js';
 import { useBrand } from '../../lib/useBrand.js';
 import { NetworkPortalLink } from '../../lib/network-portal.js';
+import { OwnNetworkAccountNotice } from './OwnNetworkAccount.js';
 
 interface RequestRow {
   id: string;
@@ -30,13 +31,23 @@ export function MyRequestsPage() {
   const qc = useQueryClient();
   const { data, isLoading, error } = useQuery({
     queryKey: ['network-my-requests'],
-    queryFn: () => api<{ requests: RequestRow[] }>(`/network/me/requests`),
+    queryFn: () => api<{ requests: RequestRow[]; ownNetworkAccount?: boolean }>(`/network/me/requests`),
     retry: false,
   });
   const cancel = useMutation({
     mutationFn: (id: string) => api(`/network/me/requests/${id}/cancel`, { method: 'POST' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['network-my-requests'] }),
   });
+
+  // Their own Network account holds their applications; the brand can't
+  // list them for a partner it may not act for.
+  if (data?.ownNetworkAccount) {
+    return (
+      <Page title="My applications" subtitle={`Your applications to ${programName} on the OpenPartner Network.`}>
+        <OwnNetworkAccountNotice page="requests">Your applications are in your own Network account.</OwnNetworkAccountNotice>
+      </Page>
+    );
+  }
 
   return (
     <Page title="My applications" subtitle={`Your applications to ${programName} on the OpenPartner Network.`}>

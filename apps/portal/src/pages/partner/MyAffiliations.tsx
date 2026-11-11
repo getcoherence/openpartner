@@ -6,6 +6,7 @@ import { Card, EmptyState, ErrorBanner, Page, Stat, StatusPill, formatDate, mone
 import { theme } from '../../theme.js';
 import { useBrand } from '../../lib/useBrand.js';
 import { NetworkPortalLink } from '../../lib/network-portal.js';
+import { OwnNetworkAccountNotice } from './OwnNetworkAccount.js';
 
 interface Affiliation {
   id: string;
@@ -69,9 +70,21 @@ export function MyAffiliationsPage() {
   const { programName } = useBrand();
   const { data, isLoading, error } = useQuery({
     queryKey: ['network-my-affiliations'],
-    queryFn: () => api<{ affiliations: Affiliation[] }>(`/network/me/affiliations`),
+    queryFn: () => api<{ affiliations: Affiliation[]; ownNetworkAccount?: boolean }>(`/network/me/affiliations`),
     retry: false,
   });
+
+  // Their own Network account holds their partnerships; the brand can't
+  // list them for a partner it may not act for.
+  if (data?.ownNetworkAccount) {
+    return (
+      <Page title="My partnership" subtitle={`Your ${programName} partnership on the OpenPartner Network.`}>
+        <OwnNetworkAccountNotice page="affiliations">
+          Your partnerships are in your own Network account.
+        </OwnNetworkAccountNotice>
+      </Page>
+    );
+  }
 
   return (
     <Page title="My partnership" subtitle={`Your ${programName} partnership on the OpenPartner Network.`}>

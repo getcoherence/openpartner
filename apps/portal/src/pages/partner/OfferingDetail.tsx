@@ -75,7 +75,10 @@ export function OfferingDetailPage({ principal }: { principal: Principal }) {
   // apply, so say so before they write a pitch.
   const { data: myProfile } = useQuery({
     queryKey: ['network-my-profile'],
-    queryFn: () => api<ProfileCompleteness & { notFederated?: boolean; consentRequired?: boolean }>(`/network/me/profile`),
+    queryFn: () =>
+      api<ProfileCompleteness & { notFederated?: boolean; ownNetworkAccount?: boolean; consentRequired?: boolean }>(
+        `/network/me/profile`,
+      ),
     enabled: canApply,
     retry: false,
   });
@@ -83,6 +86,10 @@ export function OfferingDetailPage({ principal }: { principal: Principal }) {
   // opted in to (the API answers 403 network_consent_required otherwise).
   const needsConsent =
     !!myProfile?.consentRequired || (apply.error instanceof ApiError && apply.error.message === 'network_consent_required');
+  // A partner with their own Network account applies from it: the Network
+  // refuses the brand applying in their name (403 network_own_account).
+  const ownAccount =
+    !!myProfile?.ownNetworkAccount || (apply.error instanceof ApiError && apply.error.message === 'network_own_account');
   const profileMissing = myProfile?.notFederated ? null : missingFromProfile(myProfile);
   const refusedMissing = profileIncompleteFrom(apply.error);
   const missing = refusedMissing ?? profileMissing;
@@ -142,6 +149,11 @@ export function OfferingDetailPage({ principal }: { principal: Principal }) {
                     <TenantLink to="/network/profile" style={{ color: theme.accentText, fontWeight: 500 }}>
                       See what&rsquo;s shared and join →
                     </TenantLink>
+                  </p>
+                ) : ownAccount ? (
+                  <p style={{ color: theme.textMuted, fontSize: 14 }}>
+                    Apply from your own Network account.{' '}
+                    <NetworkPortalLink page={`offerings/${offering.id}`}>Open this program there ↗</NetworkPortalLink>
                   </p>
                 ) : (
                   <>
