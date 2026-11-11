@@ -27,21 +27,66 @@ export const ONBOARDING_CONFIG_KEY = 'onboarding';
 export interface OnboardingSettings {
   /** The brand said "Not now" to listing on the OpenPartner Network. */
   networkListingSkipped: boolean;
+  /**
+   * The first-run setup wizard (hosted, apps/portal SetupWizard). Started
+   * when the brand first opens it; that, not "has no program", is what
+   * keeps a half-finished wizard resumable after its first step creates
+   * the program. Finished or left ("Finish later"), the portal stops
+   * sending the brand there; the dashboard still offers it until finished.
+   */
+  wizardStartedAt: string | null;
+  wizardCompletedAt: string | null;
+  wizardExitedAt: string | null;
+  /** The furthest step saved (0 = none yet), so a reload resumes there. */
+  wizardStep: number;
+}
+
+export const WIZARD_LAST_STEP = 5;
+
+/** What `POST /config/onboarding` accepts: flags, stamped here. */
+export interface OnboardingPatch {
+  networkListingSkipped?: boolean;
+  wizardStarted?: boolean;
+  wizardCompleted?: boolean;
+  /** true: left for later. false: came back to it. */
+  wizardExited?: boolean;
+  /** Only ever moves forward. */
+  wizardStep?: number;
+}
+
+function stepOf(v: unknown): number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= WIZARD_LAST_STEP ? v : 0;
+}
+
+function isoOrNull(v: unknown): string | null {
+  return typeof v === 'string' && !Number.isNaN(Date.parse(v)) ? v : null;
 }
 
 export async function readOnboardingSettings(db: Knex, tenantId: string): Promise<OnboardingSettings> {
   const value = await getConfig<Partial<OnboardingSettings>>(db, tenantId, ONBOARDING_CONFIG_KEY);
-  return { networkListingSkipped: value?.networkListingSkipped === true };
+  return {
+    networkListingSkipped: value?.networkListingSkipped === true,
+    wizardStartedAt: isoOrNull(value?.wizardStartedAt),
+    wizardCompletedAt: isoOrNull(value?.wizardCompletedAt),
+    wizardExitedAt: isoOrNull(value?.wizardExitedAt),
+    wizardStep: stepOf(value?.wizardStep),
+  };
 }
 
 export async function saveOnboardingSettings(
   db: Knex,
   tenantId: string,
-  patch: Partial<OnboardingSettings>,
+  patch: OnboardingPatch,
 ): Promise<OnboardingSettings> {
   const current = await readOnboardingSettings(db, tenantId);
+  const now = new Date().toISOString();
   const next: OnboardingSettings = {
     networkListingSkipped: patch.networkListingSkipped ?? current.networkListingSkipped,
+    wizardStartedAt: current.wizardStartedAt ?? (patch.wizardStarted ? now : null),
+    wizardCompletedAt: current.wizardCompletedAt ?? (patch.wizardCompleted ? now : null),
+    wizardExitedAt:
+      patch.wizardExited === undefined ? current.wizardExitedAt : patch.wizardExited ? (current.wizardExitedAt ?? now) : null,
+    wizardStep: Math.max(current.wizardStep, stepOf(patch.wizardStep)),
   };
   await setConfig(db, tenantId, ONBOARDING_CONFIG_KEY, next);
   return next;

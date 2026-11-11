@@ -128,6 +128,7 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, string>> = {
   'POST /config/tracking-alerts': 'Changed tracking alerts',
   'POST /config/mail': 'Changed email settings',
   'POST /config/onboarding': 'Changed onboarding',
+  'POST /admin/tracking-health/send-to-developer': 'Emailed the tracking install to a developer',
   'POST /config/domain': 'Added a custom domain',
   'POST /config/domain/:id/verify': 'Verified a custom domain',
   'DELETE /config/domain/:id': 'Removed a custom domain',

@@ -216,6 +216,26 @@ export function newTrialEnd(): Date {
   return d;
 }
 
+/** Stripe refuses a Checkout trial that ends less than 48 hours out. The
+ *  margin covers the time between building the session and Stripe reading it. */
+const CHECKOUT_TRIAL_MIN_MS = 48 * 60 * 60 * 1000 + 5 * 60 * 1000;
+
+/**
+ * When a subscription started now should first charge: the end of the
+ * tenant's sign-up trial, as Unix seconds, or null to charge at once.
+ *
+ * The trial belongs to sign-up (`trialEndsAt`), and a brand that subscribes
+ * during it must not pay for days it was promised free. So Checkout carries
+ * the REMAINDER of that one trial, never a new or longer one: with less than
+ * Stripe's 48-hour minimum left, or after it has lapsed, there is nothing to
+ * carry and the subscription charges immediately.
+ */
+export function checkoutTrialEnd(state: Pick<TenantBillingState, 'trialEndsAt'>, now: Date = new Date()): number | null {
+  if (!state.trialEndsAt) return null;
+  if (state.trialEndsAt.getTime() - now.getTime() < CHECKOUT_TRIAL_MIN_MS) return null;
+  return Math.floor(state.trialEndsAt.getTime() / 1000);
+}
+
 /** Hard gate: refuse value-creating writes (partner approvals, etc.)
  *  when the brand's evaluation window has closed and they haven't
  *  subscribed. Conservative — only fires when trialEndsAt is set and

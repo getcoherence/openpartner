@@ -953,6 +953,67 @@ export function opsTenantSubscriptionEndedEmail(
   return { subject, text, html: plainHtml(text) };
 }
 
+/** Platform ops: a brand still in review was about to be charged, so its
+ *  first charge was pushed out (billing-lifecycle.ts). */
+export function opsPendingBrandChargeDeferredEmail(brandName: string, slug: string, firstChargeAt: Date): EmailTemplate {
+  const subject = `[Billing] ${brandName} (${slug}) is still in review: first charge moved`;
+  const text = [
+    `${brandName} (${slug}) subscribed during its trial and is still waiting for review.`,
+    ``,
+    `Its first charge was about to fall due, so it has been moved to ${firstChargeAt.toISOString().slice(0, 10)}. It moves again each time it comes due while the brand is pending.`,
+    `Approve or reject the brand from the ops console. Rejecting cancels the subscription.`,
+  ].join('\n');
+  return { subject, text, html: plainHtml(text) };
+}
+
+/** Platform ops: a rejected brand's subscription could not be cancelled. */
+export function opsRejectedBrandCancelFailedEmail(brandName: string, slug: string, subscriptionUrl: string, error: string): EmailTemplate {
+  const subject = `[Billing] ACTION NEEDED: cancel ${brandName} (${slug}) in Stripe`;
+  const text = [
+    `${brandName} (${slug}) was rejected, but cancelling its OpenPartner subscription failed: ${error}`,
+    ``,
+    `Cancel it by hand so the brand is not charged:`,
+    ``,
+    subscriptionUrl,
+  ].join('\n');
+  return { subject, text, html: linkedHtml(text, [subscriptionUrl]) };
+}
+
+/**
+ * A brand admin sends the tracking install to whoever edits their site
+ * (routes/tracking-health.ts). Sent in the brand's voice; the recipient may
+ * have never heard of OpenPartner, so it says who asked and what to do.
+ */
+export function trackingInstallForDeveloperEmail(opts: {
+  brandName: string;
+  /** The admin who asked, shown so the recipient knows it is expected. */
+  senderEmail: string | null;
+  scriptTag: string;
+  guideUrl: string;
+}): EmailTemplate {
+  const subject = `${opts.brandName}: add the partner tracking script`;
+  const text = [
+    `Hi,`,
+    ``,
+    `${opts.senderEmail ?? `Someone at ${opts.brandName}`} asked us to send you this. ${opts.brandName} is setting up a partner program on OpenPartner and needs one script on its site so partners are credited for the customers they send.`,
+    ``,
+    `1. Add this tag to every page, before </body>:`,
+    ``,
+    opts.scriptTag,
+    ``,
+    `2. When a visitor signs up or logs in, tell OpenPartner who they are:`,
+    ``,
+    `openpartner.identify('<your user id>');`,
+    ``,
+    `The install guide covers Stripe checkouts, consent banners and server-side options:`,
+    ``,
+    opts.guideUrl,
+    ``,
+    `Once it is live, ${opts.brandName} can confirm it with "Send a test click" in their OpenPartner portal.`,
+  ].join('\n');
+  return { subject, text, html: linkedHtml(text, [opts.guideUrl]) };
+}
+
 /** Platform ops: a brand's Stripe App connection stopped refreshing, so
  *  its Stripe events are skipped until the brand reconnects. */
 export function opsStripeAppReconnectEmail(

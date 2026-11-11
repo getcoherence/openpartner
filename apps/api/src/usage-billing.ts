@@ -299,6 +299,28 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
     };
   }
 
+  // Sales made during the free trial are billed, after it. Stripe does not
+  // bill usage recorded while a subscription is trialing, and a brand that
+  // subscribes during its sign-up trial gets the rest of that trial on the
+  // subscription (billing-plan.ts checkoutTrialEnd). So nothing is sent, and
+  // the mark stays, until the trial is over: the first report after it
+  // covers everything since the mark and lands in the first paid period.
+  // `inTrial` is the sign-up trial; the mirrored status covers a Stripe
+  // trial that outlasts it (a first charge moved out while the brand is in
+  // review, billing-lifecycle.ts).
+  if (state.inTrial || (state.stripeSubscriptionId && state.subscriptionStatus === 'trialing')) {
+    return {
+      mode,
+      meterEventName,
+      customerId,
+      amount: 0,
+      rangeStart: null,
+      rangeEnd: new Date(),
+      reported: false,
+      reason: 'held until the free trial ends',
+    };
+  }
+
   const stripe = requireStripe();
 
   // Serialise runs for this tenant (scheduler + a manual trigger, or two

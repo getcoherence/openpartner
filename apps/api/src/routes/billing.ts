@@ -4,9 +4,13 @@
  * Each tenant on a hosted multi-tenant deployment picks one of:
  *
  *   flex        $49/mo + 1.5% metered. Stripe subscription with two
- *               line items (base + usage), 14-day trial.
+ *               line items (base + usage).
  *   revshare    3% metered, no monthly. Stripe subscription with the
- *               metered line item only, 14-day trial.
+ *               metered line item only.
+ *
+ * The 14-day trial starts at sign-up, not at Checkout. A subscription
+ * started while it is still running first charges when it ends
+ * (billing-plan.ts checkoutTrialEnd).
  *   enterprise  Custom — no Stripe sub, billed out of band.
  *
  * Flex and Revshare are charged to a card by default (Checkout). A tenant
@@ -33,7 +37,13 @@ import { TABLES, type AdminRow, type BillingPlan, type TenantRow } from '@openpa
 import { requireAdmin, requireAuth, type ApiKeyPrincipal } from '../auth.js';
 import { REVSHARE_FEE_BPS, requireStripe } from '../stripe.js';
 import { describeTenantFee } from '../fee-terms.js';
-import { BILLING_CUSTOMER_ROLE, getTenantBillingState, priceIdsForPlan, type TenantBillingState } from '../billing-plan.js';
+import {
+  BILLING_CUSTOMER_ROLE,
+  checkoutTrialEnd,
+  getTenantBillingState,
+  priceIdsForPlan,
+  type TenantBillingState,
+} from '../billing-plan.js';
 import {
   applyCustomerTaxDetails,
   InvoiceSubscribeError,
@@ -160,11 +170,11 @@ billingRouter.get('/billing/status', requireAuth, requireAdmin, async (req, res)
 });
 
 /**
- * Set the tenant's plan in-place when none was picked at signup
- * (legacy tenants + anyone who signed up before the marketing
- * pricing CTAs). Refuses to overwrite an existing plan — those go
- * through the Stripe Customer Portal so the subscription's price
- * IDs change in lockstep with our local mirror.
+ * Set the tenant's plan in-place. Until a subscription exists the plan is
+ * only a choice, so it can be changed freely (the setup wizard lets a brand
+ * that backed out of Checkout switch). Once subscribed it refuses: changes
+ * go through the Stripe Customer Portal so the subscription's price IDs
+ * change in lockstep with our local mirror.
  */
 const setPlanSchema = z.object({
   // Enterprise is sales-led and billed out of band: it counts as "active"
@@ -179,7 +189,7 @@ billingRouter.post('/billing/plan', requireAuth, requireAdmin, async (req, res) 
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
   const state = await getTenantBillingState(db, tenantId);
-  if (state.plan) {
+  if (state.plan === 'enterprise' || (state.plan && state.stripeSubscriptionId)) {
     return res.status(409).json({
       error: 'plan_already_set',
       detail: 'Use the Stripe Customer Portal to switch plans on an active subscription.',
@@ -408,11 +418,12 @@ billingRouter.post('/billing/checkout', requireAuth, requireAdmin, async (req, r
   // Checkout's first invoice is finalized.
   await applyCustomerTaxDetails(stripe, customerId, { country: terms.country, gstin: terms.gstin });
 
-  // The 14-day trial runs from signup, not from Stripe Checkout — by
-  // the time a brand reaches Checkout the evaluation window is the
-  // pressure to subscribe. Always require a payment method up front;
-  // never set trial_period_days (Stripe would otherwise add a *second*
-  // trial on top of the one they just spent in-product).
+  // The 14-day trial runs from signup, not from Stripe Checkout. Always
+  // require a payment method up front, and never set trial_period_days
+  // (Stripe would add a *second* trial on top of the one spent in-product).
+  // A brand that subscribes while that trial is still running gets its
+  // remainder: the first charge lands on trialEndsAt (checkoutTrialEnd).
+  const trialEnd = checkoutTrialEnd(state);
   const session = await stripe.checkout.sessions.create({
     mode: 'subscription',
     customer: customerId,
@@ -423,12 +434,13 @@ billingRouter.post('/billing/checkout', requireAuth, requireAdmin, async (req, r
     allow_promotion_codes: true,
     success_url: body.data.successUrl,
     cancel_url: body.data.cancelUrl,
+    ...(trialEnd ? { subscription_data: { trial_end: trialEnd } } : {}),
     metadata: {
       openpartner_tenant_id: tenantId,
       openpartner_plan: state.plan,
     },
   });
-  res.json({ url: session.url });
+  res.json({ url: session.url, firstChargeAt: trialEnd ? new Date(trialEnd * 1000).toISOString() : null });
 });
 
 const invoiceSubscriptionSchema = z.object({

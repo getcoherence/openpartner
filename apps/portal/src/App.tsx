@@ -69,6 +69,7 @@ import { AdminTrackingHealth } from './pages/admin/TrackingHealth.js';
 import { AdminJourney } from './pages/admin/Journey.js';
 import { AdminSettings } from './pages/admin/Settings.js';
 import { AdminBilling } from './pages/admin/Billing.js';
+import { SetupWizardGate, SetupWizardPage } from './pages/admin/SetupWizard.js';
 import { AdminWhiteLabel } from './pages/admin/WhiteLabel.js';
 import { AdminAdmins } from './pages/admin/Admins.js';
 import { AdminAuditLog } from './pages/admin/AuditLog.js';
@@ -361,6 +362,17 @@ function Shell() {
     approvalStatus !== 'pending' &&
     shellPath.startsWith('/admin/network/');
 
+  // The first-run setup wizard is a page of its own, without the menu: an
+  // admin who can edit, on the path the dashboard sends new brands to.
+  const canSetUp = auth.principal.role === 'admin' && !isViewOnly(auth.principal);
+  if (canSetUp && shellPath.replace(/\/$/, '') === '/setup') {
+    return (
+      <ViewOnlyProvider principal={auth.principal}>
+        <SetupWizardPage />
+      </ViewOnlyProvider>
+    );
+  }
+
   const shell = (
     <div style={{ display: 'flex', minHeight: '100vh', background: theme.bg }}>
       {isMobile ? (
@@ -386,7 +398,14 @@ function Shell() {
         {showNetworkProfileBanner && <NetworkProfileBanner isMobile={isMobile} />}
         {showNetworkListingNotice && <NetworkListingNotice isMobile={isMobile} />}
         <Routes>
-          <Route index element={<Dashboard principal={auth.principal} />} />
+          <Route
+            index
+            element={
+              <SetupWizardGate enabled={canSetUp}>
+                <Dashboard principal={auth.principal} />
+              </SetupWizardGate>
+            }
+          />
 
           <Route path="links" element={<LinksPage principal={auth.principal} />} />
           <Route path="commissions" element={<CommissionsPage principal={auth.principal} />} />

@@ -140,6 +140,9 @@ import {
   setInvoiceBillingSettings,
   setNotificationSettings,
   setTrackingGateSettings,
+  getSetupWizardSettings,
+  setSetupWizardSettings,
+  SETUP_WIZARD_HINT_MAX,
 } from '../platform-settings.js';
 import { trackingGateEnforced, trackingVerifiedFor } from '../tracking-verification.js';
 import { sendTrackingGateNotices, trackingGateAffected } from '../tracking-gate-notice.js';
@@ -1472,6 +1475,42 @@ platformAdminRouter.post(
     const result = await sendTrackingGateNotices(db, new Date(enforceFrom), actor.email);
     await writeAudit(db, { actor, action: 'tracking_gate.notices', targetType: 'platform', detail: { ...result, enforceFrom } });
     res.json(result);
+  },
+);
+
+// --------------------------------------------------------------------------
+// Setup wizard (platform-settings.ts): the first-run walk-through for new
+// hosted brands, and the hint lines its commission step shows.
+// --------------------------------------------------------------------------
+
+platformAdminRouter.get('/platform-admin/setup-wizard', requirePlatformAdmin, async (_req, res) => {
+  res.json({ settings: await getSetupWizardSettings(db) });
+});
+
+const setupWizardSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    hints: z
+      .object({
+        percent: z.string().trim().max(SETUP_WIZARD_HINT_MAX).optional(),
+        fixed: z.string().trim().max(SETUP_WIZARD_HINT_MAX).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+platformAdminRouter.put(
+  '/platform-admin/setup-wizard',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = setupWizardSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const actor = req.platformAdminActor!;
+    const settings = await setSetupWizardSettings(db, body.data, actor.email);
+    await writeAudit(db, { actor, action: 'setup_wizard.settings', targetType: 'platform', detail: { ...settings } });
+    res.json({ settings });
   },
 );
 

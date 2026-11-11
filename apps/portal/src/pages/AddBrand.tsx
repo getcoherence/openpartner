@@ -119,7 +119,16 @@ export function AddBrandPage() {
       } catch {
         /* storage blocked */
       }
-      nav(`${entered.home}admin/billing`, { replace: true });
+      // A brand the setup wizard takes (API setupWizardStatus) picks its
+      // plan there, and the dashboard sends it in.
+      let wizard = false;
+      try {
+        const r = await fetch(`/api/t/${data.tenant.slug}/admin/onboarding-status`, { credentials: 'include' });
+        wizard = r.ok && ((await r.json()) as { wizard?: { redirect?: boolean } }).wizard?.redirect === true;
+      } catch {
+        /* Billing it is. */
+      }
+      nav(wizard ? entered.home : `${entered.home}admin/billing`, { replace: true });
     } catch (e) {
       setErr(friendlyError(e instanceof Error ? e.message : 'unknown_error'));
       setBusy(false);
