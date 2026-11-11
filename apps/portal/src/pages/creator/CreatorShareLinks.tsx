@@ -4,7 +4,7 @@ import { Link } from 'react-router';
 import { Copy, Megaphone } from 'lucide-react';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, formatDate, money } from '../../ui.js';
 import { theme } from '../../theme.js';
-import { creatorApi } from './creator-api.js';
+import { creatorApi, creatorPath, inPromoteArea } from './creator-api.js';
 
 interface TimeseriesBucket {
   bucket: string;
@@ -67,7 +67,10 @@ export function CreatorShareLinksPage() {
       subtitle={
         customDomain
           ? `Branded with your domain ${customDomain}. Edit the slug per program below.`
-          : 'Default openpartner.dev URLs. Add a custom domain in Domains to brand them.'
+          : // A brand's Promote area has no Domains page.
+            inPromoteArea()
+            ? 'Your link and codes for each program.'
+            : 'Default openpartner.dev URLs. Add a custom domain in Domains to brand them.'
       }
     >
       <ErrorBanner error={list.error} />
@@ -146,10 +149,10 @@ function PartnershipRow({ partnership }: { partnership: Partnership }) {
     <Card>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 4 }}>
         <h3 style={{ marginTop: 0, marginBottom: 0, flex: 1 }}>
-          <Link to={`/creator/vendors/${partnership.vendorId}`}>{partnership.vendorName}</Link>
+          <Link to={creatorPath(`/vendors/${partnership.vendorId}`)}>{partnership.vendorName}</Link>
         </h3>
         <Link
-          to={`/creator/programs/${partnership.id}`}
+          to={creatorPath(`/programs/${partnership.id}`)}
           style={{
             fontSize: 12,
             color: theme.accentText,

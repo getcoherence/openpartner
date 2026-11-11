@@ -23,7 +23,7 @@ import { Link, NavLink, Outlet, Route, Routes, useNavigate, useOutletContext, us
 import { ArrowLeft, ArrowUpRight } from 'lucide-react';
 import { Button, Card, EmptyState, ErrorBanner, Page, formatDate, money } from '../../ui.js';
 import { theme } from '../../theme.js';
-import { ApiError, creatorApi } from './creator-api.js';
+import { ApiError, creatorApi, creatorPath } from './creator-api.js';
 import {
   commissionSourceLabel,
   eventTypeLabel,
@@ -210,7 +210,7 @@ function ProgramShell() {
       <Page title="Program">
         <Card>
           <p style={{ color: theme.textMuted, fontSize: 13 }}>
-            Partnership not found, or you don&rsquo;t have access. <button onClick={() => nav('/creator/affiliations')} style={{ background: 'transparent', border: 'none', color: theme.accentText, cursor: 'pointer', padding: 0, fontSize: 13 }}>Back to partnerships</button>
+            Partnership not found, or you don&rsquo;t have access. <button onClick={() => nav(creatorPath('/affiliations'))} style={{ background: 'transparent', border: 'none', color: theme.accentText, cursor: 'pointer', padding: 0, fontSize: 13 }}>Back to partnerships</button>
           </p>
         </Card>
       </Page>
@@ -220,7 +220,7 @@ function ProgramShell() {
   return (
     <Page title={partnership.vendorName} subtitle={partnership.offeringTitle ?? undefined}>
       <div style={{ marginBottom: 14 }}>
-        <Link to="/creator/affiliations" style={{ color: theme.textMuted, fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        <Link to={creatorPath('/affiliations')} style={{ color: theme.textMuted, fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <ArrowLeft size={14} /> All partnerships
         </Link>
       </div>
@@ -322,7 +322,7 @@ function ProgramHeader({ partnership }: { partnership: Partnership }) {
           )}
         </div>
         <Link
-          to="/creator/links"
+          to={creatorPath('/links')}
           style={{
             display: 'inline-flex',
             alignItems: 'center',
@@ -341,12 +341,12 @@ function ProgramHeader({ partnership }: { partnership: Partnership }) {
 
 function TabStrip({ partnershipId }: { partnershipId: string }) {
   const tabs: Array<{ to: string; label: string; end?: boolean }> = [
-    { to: `/creator/programs/${partnershipId}`, label: 'Overview', end: true },
-    { to: `/creator/programs/${partnershipId}/earnings`, label: 'Earnings' },
-    { to: `/creator/programs/${partnershipId}/analytics`, label: 'Analytics' },
-    { to: `/creator/programs/${partnershipId}/events`, label: 'Events' },
-    { to: `/creator/programs/${partnershipId}/customers`, label: 'Customers' },
-    { to: `/creator/programs/${partnershipId}/resources`, label: 'Resources' },
+    { to: creatorPath(`/programs/${partnershipId}`), label: 'Overview', end: true },
+    { to: creatorPath(`/programs/${partnershipId}/earnings`), label: 'Earnings' },
+    { to: creatorPath(`/programs/${partnershipId}/analytics`), label: 'Analytics' },
+    { to: creatorPath(`/programs/${partnershipId}/events`), label: 'Events' },
+    { to: creatorPath(`/programs/${partnershipId}/customers`), label: 'Customers' },
+    { to: creatorPath(`/programs/${partnershipId}/resources`), label: 'Resources' },
   ];
   return (
     <div style={{ display: 'flex', gap: 4, borderBottom: `1px solid ${theme.borderSubtle}`, marginBottom: 14 }}>

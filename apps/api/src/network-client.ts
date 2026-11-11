@@ -665,6 +665,59 @@ async function callNetwork<T>(
   return text ? (JSON.parse(text) as T) : (null as unknown as T);
 }
 
+/** The header that makes a vendor-token call act as the vendor's own
+ *  promoter profile (the Network's creator-auth.ts). */
+export const ACTING_BRAND_PROFILE_HEADER = 'x-act-as-brand-profile';
+
+/**
+ * One call to a creator route on the Network as this brand's own promoter
+ * profile (brand-profile.ts): the brand's token plus
+ * ACTING_BRAND_PROFILE_HEADER. A brand profile has no sign-in of its own,
+ * so this is how the brand's team works it, from the brand's portal.
+ *
+ * Unlike callNetwork, the Network's answer comes back as it is, refusals
+ * included: the portal pages on top were written against the Network's own
+ * replies. Only "can't reach it at all" throws.
+ */
+export async function callNetworkAsBrandProfile(
+  db: Knex,
+  tenantId: string,
+  method: string,
+  pathAndQuery: string,
+  body?: unknown,
+  rawContentType?: string,
+): Promise<{ status: number; contentType: string; body: string }> {
+  const m = await getNetworkMembership(db, tenantId);
+  if (!m || !m.enabled || !m.vendorTokenCiphertext) throw new NetworkProxyError(503, 'network_not_configured');
+  const networkUrl = m.networkUrl || process.env.NETWORK_URL;
+  if (!networkUrl) throw new NetworkProxyError(503, 'network_url_unresolvable');
+  let token: string;
+  try {
+    token = decryptSecret(m.vendorTokenCiphertext);
+  } catch (err) {
+    throw new NetworkProxyError(500, `vendor_token_undecryptable: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const raw = rawContentType !== undefined && Buffer.isBuffer(body);
+  const sendsBody = method !== 'GET' && method !== 'HEAD';
+  let res: Response;
+  try {
+    res = await fetch(`${networkUrl.replace(/\/$/, '')}${pathAndQuery}`, {
+      method,
+      headers: {
+        'content-type': raw ? rawContentType! : 'application/json',
+        authorization: `Bearer ${token}`,
+        'user-agent': 'OpenPartner-Vendor/1',
+        [ACTING_BRAND_PROFILE_HEADER]: '1',
+      },
+      body: !sendsBody ? undefined : raw ? new Uint8Array(body as Buffer) : body !== undefined ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(PROXY_TIMEOUT_MS),
+    });
+  } catch (err) {
+    throw new NetworkProxyError(503, `network_unreachable: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return { status: res.status, contentType: res.headers.get('content-type') ?? '', body: await res.text() };
+}
+
 export class NetworkProxyError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -719,6 +772,20 @@ export interface NetworkVendorExport {
 
 // Thin wrappers — they're a 1:1 with Network endpoints. Kept here so
 // the route handlers stay declarative.
+/** The Network's view of a brand's promoter profile (its
+ *  src/brand-profile.ts BrandProfileView). */
+export interface NetworkBrandProfile {
+  creatorId: string;
+  email: string;
+  name: string;
+  handle: string | null;
+  avatarUrl: string | null;
+  profileComplete: boolean;
+  profileMissing: Array<{ field: string; label: string }>;
+  active: boolean;
+  createdAt: string;
+}
+
 export const networkProxy = {
   listOfferings: (db: Knex, tenantId: string) =>
     callNetwork<{ offerings: unknown[] }>(db, tenantId, 'GET', '/vendors/me/offerings'),
@@ -741,6 +808,17 @@ export const networkProxy = {
       'GET',
       '/vendors/me',
     ),
+
+  /** The brand's own promoter profile (brand-profile.ts): read it and
+   *  create it. Working it goes through callNetworkAsBrandProfile. */
+  getBrandProfile: (db: Knex, tenantId: string) =>
+    callNetwork<{ profile: NetworkBrandProfile | null }>(db, tenantId, 'GET', '/vendors/me/brand-profile'),
+  createBrandProfile: (
+    db: Knex,
+    tenantId: string,
+    body: { email: string; websiteUrl?: string; country?: string; outsideOccupiedRegions?: boolean },
+  ) =>
+    callNetwork<{ profile: NetworkBrandProfile; created: boolean }>(db, tenantId, 'PUT', '/vendors/me/brand-profile', body),
 
   /** Brand-side creator discovery — search the Network's creator
    *  directory with full-text + filter params. The querystring is

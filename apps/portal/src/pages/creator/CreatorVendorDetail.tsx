@@ -4,7 +4,7 @@ import { Link, useParams } from 'react-router';
 import { Button, Card, EmptyState, ErrorBanner, Input, Page } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { formatCustomerReward } from '../../lib/commission-summary.js';
-import { creatorApi } from './creator-api.js';
+import { creatorApi, creatorPath } from './creator-api.js';
 import { commissionLineOf } from './brand-summary.js';
 import { OfferingChips, ctaForStatus, type MyStatus, type OfferingTerms } from './CreatorDiscover.js';
 
@@ -103,7 +103,7 @@ export function CreatorVendorDetailPage() {
                 return (
                   <Card key={o.id} style={{ display: 'flex', flexDirection: 'column' }}>
                     <h4 style={{ marginTop: 0, marginBottom: 6 }}>
-                      <Link to={`/creator/offerings/${o.id}`}>{o.title}</Link>
+                      <Link to={creatorPath(`/offerings/${o.id}`)}>{o.title}</Link>
                     </h4>
                     {o.description && (
                       <p
@@ -129,7 +129,7 @@ export function CreatorVendorDetailPage() {
                       customerRewardLine={o.terms.customerReward ? formatCustomerReward(o.terms.customerReward) : null}
                     />
                     <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <Link to={`/creator/offerings/${o.id}`}>
+                      <Link to={creatorPath(`/offerings/${o.id}`)}>
                         <Button variant={status === 'approved' || status === 'pending' ? 'secondary' : 'primary'}>
                           {ctaForStatus(status)}
                         </Button>
