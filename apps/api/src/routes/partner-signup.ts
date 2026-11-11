@@ -19,7 +19,7 @@
  * sent to the Network as `creatorProfile` to fill blanks in the creator's
  * Network profile.
  *
- * GET /partner-signup/status ({ open, reviewRequired }) lets the join page
+ * GET /partner-signup/status ({ open, notReady?, reviewRequired }) lets the join page
  * show "closed" before anyone fills in the form; POST checks closed first
  * too, so a closed program answers signup_disabled whatever the body.
  *
@@ -75,6 +75,7 @@ import {
 import { getPortalBaseUrl, linkTenantOf } from '../portal-url.js';
 import type { PartnerReview } from '../partner-review.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
+import { partnerSignupBlock } from '../middleware/approval-gate.js';
 import { afterCommit, getTenancyMode, tenantOf } from '../tenancy.js';
 import { db as platformDb } from '../db.js';
 import {
@@ -226,8 +227,14 @@ partnerSignupRouter.get('/partner-signup/status', statusLimit, async (req, res) 
   const settings = await readSignupSettings(db, tenantId);
   const ref = typeof req.query.ref === 'string' ? req.query.ref : null;
   const recruiter = ref ? await findRecruiterByCode(db, tenantId, ref) : undefined;
+  // A brand still in review, or one whose tracking isn't verified, can't
+  // take applicants: the approval gate refuses the submit. Say so here, so
+  // the page never shows a form that can't be sent.
+  const notReady = !settings.disabled && (await partnerSignupBlock(db, tenantId)) !== null;
   res.json({
-    open: !settings.disabled,
+    open: !settings.disabled && !notReady,
+    // Closed by the platform rather than by the brand: "not open yet".
+    ...(notReady ? { notReady: true } : {}),
     reviewRequired: settings.policy === 'require_review',
     // Shows the optional Network checkbox. Never true for white-label.
     networkOffered: await isNetworkOfferedToPartners(db, tenantId),
