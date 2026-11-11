@@ -21,7 +21,17 @@ import { CreatorMessagesCard } from './CreatorReview.js';
 export const creatorProfileAdapter: NetworkProfileAdapter = {
   profileKey: ['creator-my-profile'],
   platformsKey: ['creator-my-platforms'],
-  updateProfile: (body) => creatorApi('/creators/me', { method: 'PATCH', body }),
+  updateProfile: async (body) => {
+    try {
+      return await creatorApi('/creators/me', { method: 'PATCH', body });
+    } catch (e) {
+      // A brand's promoter profile carries the brand's own name.
+      if (creatorErrorCode(e).message === 'brand_name_fixed') {
+        throw new Error("This profile uses your brand's name. Rename the brand under Brand info and it follows.");
+      }
+      throw e;
+    }
+  },
   uploadAvatar: (file) => creatorApi<{ avatarUrl: string }>('/creators/me/uploads/avatar', { method: 'POST', body: file }),
   uploadCover: (file) => creatorApi<{ coverImageUrl: string }>('/creators/me/uploads/cover', { method: 'POST', body: file }),
   copyYouTubeBanner: () =>
