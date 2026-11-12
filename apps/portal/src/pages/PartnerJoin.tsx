@@ -44,7 +44,7 @@ import { usePublicBrand } from '../lib/useBrand.js';
 type Phase =
   | { kind: 'form' }
   | { kind: 'sent'; review: boolean }
-  | { kind: 'closed' };
+  | { kind: 'closed'; notReady?: boolean };
 
 export interface JoinFormValues {
   name: string;
@@ -155,6 +155,8 @@ export function PartnerJoinPage() {
     queryFn: () =>
       api<{
         open: boolean;
+        /** Closed because the brand isn't approved or its tracking isn't verified. */
+        notReady?: boolean;
         reviewRequired: boolean;
         networkOffered?: boolean;
         countryRequired?: boolean;
@@ -200,6 +202,10 @@ export function PartnerJoinPage() {
         // Either the brand closed signups or its billing is inactive —
         // the partner-facing message is the same.
         setPhase({ kind: 'closed' });
+      } else if (code.includes('brand_pending_review') || code.includes('tracking_not_verified')) {
+        // The brand isn't approved, or its tracking isn't verified. The
+        // status check normally says so before the form is shown.
+        setPhase({ kind: 'closed', notReady: true });
       } else if (countryErrorMessage(code)) {
         setErr(countryErrorMessage(code));
       } else if (e instanceof ApiError && e.status === 400 && code.includes('invalid_body')) {
@@ -213,6 +219,14 @@ export function PartnerJoinPage() {
   }
 
   const program = brand.isLoading ? '' : brand.programName;
+
+  if ((phase.kind === 'closed' && phase.notReady) || (status.data?.open === false && status.data.notReady)) {
+    return (
+      <AuthFrame title="Not open yet" subtitle={`${program} isn't taking partner applications yet.`}>
+        <div style={{ fontSize: 13, color: theme.textMuted, lineHeight: 1.6 }}>Check back soon.</div>
+      </AuthFrame>
+    );
+  }
 
   if (phase.kind === 'closed' || status.data?.open === false) {
     return (
