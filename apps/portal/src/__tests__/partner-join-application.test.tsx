@@ -78,7 +78,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 function renderJoin(
-  status: { open: boolean; reviewRequired: boolean; countryRequired?: boolean } | null = { open: true, reviewRequired: false },
+  status: { open: boolean; notReady?: boolean; reviewRequired: boolean; countryRequired?: boolean } | null = { open: true, reviewRequired: false },
 ) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   // GET /partner-signup/status; null = let the page fetch it.
@@ -188,6 +188,32 @@ describe('PartnerJoinPage signup status', () => {
     expect(page.queryByLabelText('Website or main channel')).toBeNull();
     expect(sent.map((c) => c.url)).toEqual(['/api/partner-signup/status']);
   });
+
+  it('shows "Not open yet" instead of the form while the brand is not ready for partners', async () => {
+    respond = () => json(200, { open: false, notReady: true, reviewRequired: false });
+    const page = renderJoin(null);
+    await waitFor(() => expect(page.getByText('Not open yet')).toBeTruthy());
+    expect(page.getByText("Acme isn't taking partner applications yet.")).toBeTruthy();
+    expect(page.queryByText('Signups are closed')).toBeNull();
+    expect(page.queryByLabelText('Website or main channel')).toBeNull();
+  });
+
+  it.each(['brand_pending_review', 'tracking_not_verified'])(
+    'a submit refused with %s shows "Not open yet", not a generic error',
+    async (error) => {
+      const page = renderJoin();
+      fireEvent.change(page.getByPlaceholderText('Your name'), { target: { value: 'Ada' } });
+      fireEvent.change(page.getByPlaceholderText('you@example.com'), { target: { value: 'ada@example.com' } });
+      fireEvent.change(page.getByLabelText('Website or main channel'), { target: { value: 'https://ada.example' } });
+      fireEvent.change(page.getByLabelText('Social profile 1'), { target: { value: 'https://youtube.com/@ada' } });
+      fireEvent.change(page.getByLabelText('Audience size'), { target: { value: '10k_50k' } });
+      fireEvent.change(page.getByLabelText('How would you promote Acme?'), { target: { value: PITCH } });
+      respond = () => json(403, { error });
+      fireEvent.click(page.getByRole('button', { name: 'Apply to join' }));
+      await waitFor(() => expect(page.getByText('Not open yet')).toBeTruthy());
+      expect(page.queryByText(/Something went wrong/)).toBeNull();
+    },
+  );
 
   it('says up front that applications are reviewed', () => {
     const page = renderJoin({ open: true, reviewRequired: true });

@@ -1,6 +1,6 @@
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router';
 import { theme } from '../../theme.js';
-import { AuthFrame } from '../auth/Shared.js';
+import { AuthFrame, AuthPanel } from '../auth/Shared.js';
 import {
   AuthNotice,
   EmailPasswordForm,
@@ -57,7 +57,7 @@ export function CreatorSigninPage() {
   const providers = useAuthProviders();
 
   return (
-    <AuthFrame title="Creator sign in" subtitle="Sign in to your OpenPartner Network creator account.">
+    <AuthFrame title="Creator sign in" subtitle="Sign in to your OpenPartner Network creator account." panel={<AuthPanel variant="signin" />}>
       <AuthNotice error={params.get('error')} reset={state.reset} />
       <EmailPasswordForm
         initialEmail={state.email}
