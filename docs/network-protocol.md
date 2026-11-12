@@ -142,6 +142,13 @@ it (platform rows from the URLs, `audienceSize`), never overwriting what
 the creator set. A Network that predates the field strips it, so vendors
 always send it on public signup.
 
+For an **existing creator the brand may not act for** (see "Acting as a
+partner" below), the Network records the affiliation and ignores `profile`
+and `creatorProfile`: no keys merged into the creator's profile, no
+platforms or audience size filled in. The response is the same 200; the
+vendor learns of it from that partner's acting calls, which answer
+`reason: "creator_account"`.
+
 Idempotency: `(vendorId, vendorPartnerId)` is unique on the Network
 side. Re-posting the same `vendorPartnerId` updates status and bumps
 `updatedAt`.
@@ -205,6 +212,33 @@ that predates this endpoint, vendors keep unlink calls queued in
 `NetworkOutbox` and retry them every 12h. They never mark them dead, so every withdrawal
 made in the meantime is delivered once the endpoint exists. Any other
 failure follows the normal outbox limit (8 attempts, about 24h).
+
+### Acting as a partner (`x-act-as-vendor-partner`)
+
+A vendor's server calls the Network's creator routes (`/creators/me…`,
+`POST /offerings/:id/apply`) for one of its partners with its vendor token
+plus `x-act-as-vendor-partner: <vendorPartnerId>`. The brand portal's
+partner Network pages are built on this (`partnerProxy` in
+`apps/api/src/network-client.ts`).
+
+The Network refuses with:
+
+```
+Response 403
+  {
+    "error":  "invalid_acting_context",
+    "reason": "creator_account"          // optional
+  }
+```
+
+| `reason` | Meaning | Vendor behaviour (`/network/me…`) |
+| --- | --- | --- |
+| absent | No affiliation for `(vendorId, vendorPartnerId)`: never pushed, still queued in the outbox, or unlinked. | Reads answer their empty shape (the profile `{ "notFederated": true }`); writes answer the Network's status with `network_call_failed`. |
+| `creator_account` | The creator signed in to the Network themselves and has no active partnership with this brand that they applied for on their own. The profile is theirs to manage in their Network account. | Reads answer the empty shape plus `"ownNetworkAccount": true`; writes answer 403 `network_own_account`. The portal points the partner to their Network portal. |
+
+A vendor treats an unknown `reason` as absent. A Network that predates the
+field never sends it. The rule itself is the Network's:
+`docs/creator-auth.md` there, "Whom a brand may act for".
 
 ### `POST /vendors/backfill-partners`
 

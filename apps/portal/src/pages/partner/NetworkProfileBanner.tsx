@@ -9,18 +9,21 @@ import type { ProfileCompleteness } from '../../lib/profile-incomplete.js';
  * the brand's Network pages. GET /network/me/profile proxies the Network's
  * GET /creators/me (checklist included) and shares its cache entry with the
  * Network profile page, whose save invalidates it. A partner the brand
- * hasn't pushed to the Network yet (notFederated) has no profile to finish.
+ * hasn't pushed to the Network yet (notFederated) has no profile to finish,
+ * and one with their own Network account (ownNetworkAccount) finishes it
+ * there, not here.
  */
 export function NetworkProfileBanner({ isMobile }: { isMobile: boolean }) {
   const { data } = useQuery({
     queryKey: ['network-my-profile'],
-    queryFn: () => api<ProfileCompleteness & { notFederated?: boolean }>('/network/me/profile'),
+    queryFn: () =>
+      api<ProfileCompleteness & { notFederated?: boolean; ownNetworkAccount?: boolean }>('/network/me/profile'),
     retry: false,
     staleTime: 60_000,
   });
   return (
     <ProfileCompletionBanner
-      profile={data?.notFederated ? null : data}
+      profile={data?.notFederated || data?.ownNetworkAccount ? null : data}
       isMobile={isMobile}
       dismissKey="op:network-profile-banner-dismissed"
       renderLink={(style, children) => <TenantLink to="/network/profile" style={style}>{children}</TenantLink>}

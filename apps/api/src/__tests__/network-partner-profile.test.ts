@@ -362,6 +362,100 @@ describe.skipIf(skipIntegration)('auth', () => {
   });
 });
 
+// The Network lets a brand act only for a creator who never signed in to it
+// themselves, or who applied to that brand on their own. Everyone else gets
+// 403 invalid_acting_context with reason creator_account
+// (docs/network-protocol.md, "Acting as a partner").
+describe.skipIf(skipIntegration)('a partner with their own Network account', () => {
+  const OWN_ACCOUNT = { status: 403, body: { error: 'invalid_acting_context', reason: 'creator_account' } };
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+
+  it('answers reads with the empty state, flagged ownNetworkAccount', async () => {
+    nextResponse = OWN_ACCOUNT;
+    const profile = await request(app).get('/network/me/profile').set('Cookie', cookie);
+    expect(profile.status).toBe(200);
+    expect(profile.body).toEqual({ notFederated: true, ownNetworkAccount: true });
+    for (const [path, empty] of [
+      ['/network/me/platforms', { platforms: [] }],
+      ['/network/me/affiliations', { affiliations: [] }],
+      ['/network/me/requests', { requests: [] }],
+    ] as const) {
+      const res = await request(app).get(path).set('Cookie', cookie);
+      expect(res.status, path).toBe(200);
+      expect(res.body, path).toEqual({ ...empty, ownNetworkAccount: true });
+    }
+    // Each one asked the Network, as the partner.
+    expect(calls).toHaveLength(4);
+    expectActingCall(calls[0], 'GET', '/creators/me');
+  });
+
+  it('refuses every write with 403 network_own_account, not network_call_failed', async () => {
+    nextResponse = OWN_ACCOUNT;
+    const asPartner = (r: request.Test) => r.set('Cookie', cookie);
+    const writes: Array<[string, () => request.Test]> = [
+      ['profile', () => asPartner(request(app).patch('/network/me/profile')).send({ bio: 'hello' })],
+      ['platform put', () => asPartner(request(app).put('/network/me/platforms/youtube')).send({ handle: 'pat' })],
+      ['platform delete', () => asPartner(request(app).delete('/network/me/platforms/youtube'))],
+      ['verify start', () => asPartner(request(app).post('/network/me/platforms/youtube/verify/start')).send({})],
+      ['verify', () => asPartner(request(app).post('/network/me/platforms/youtube/verify')).send({})],
+      ['avatar', () => asPartner(request(app).post('/network/me/uploads/avatar')).set('content-type', 'image/png').send(PNG)],
+      ['cover', () => asPartner(request(app).post('/network/me/uploads/cover')).set('content-type', 'image/png').send(PNG)],
+      ['youtube cover', () => asPartner(request(app).post('/network/me/cover/youtube')).send({})],
+      ['apply', () => asPartner(request(app).post('/network/offerings/off_1/apply')).send({ message: 'hi' })],
+      ['cancel', () => asPartner(request(app).post('/network/me/requests/req_1/cancel')).send({})],
+    ];
+    for (const [label, write] of writes) {
+      const res = await write();
+      expect(res.status, label).toBe(403);
+      expect(res.body, label).toEqual({ error: 'network_own_account' });
+    }
+    expect(calls).toHaveLength(writes.length);
+  });
+
+  it('a read with no empty state is refused the same way', async () => {
+    nextResponse = OWN_ACCOUNT;
+    const res = await request(app).get('/network/me/affiliations/aff_1/earnings').set('Cookie', cookie);
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: 'network_own_account' });
+  });
+
+  it.each([
+    ['no reason', { error: 'invalid_acting_context' }],
+    ['a reason this version does not know', { error: 'invalid_acting_context', reason: 'something_new' }],
+    ['a reason that is not a string', { error: 'invalid_acting_context', reason: { creator_account: true } }],
+  ])('invalid_acting_context with %s is still "not on the Network yet"', async (_label, body) => {
+    nextResponse = { status: 403, body };
+    const profile = await request(app).get('/network/me/profile').set('Cookie', cookie);
+    expect(profile.status).toBe(200);
+    expect(profile.body).toEqual({ notFederated: true });
+    const requests = await request(app).get('/network/me/requests').set('Cookie', cookie);
+    expect(requests.body).toEqual({ requests: [] });
+
+    const save = await request(app).patch('/network/me/profile').set('Cookie', cookie).send({ bio: 'hello' });
+    expect(save.status).toBe(403);
+    expect(save.body.error).toBe('network_call_failed');
+    const apply = await request(app).post('/network/offerings/off_1/apply').set('Cookie', cookie).send({});
+    expect(apply.status).toBe(403);
+    expect(apply.body.error).toBe('network_call_failed');
+  });
+
+  it('only an invalid_acting_context refusal counts, whatever else carries the reason', async () => {
+    nextResponse = { status: 403, body: { error: 'vendor_suspended', reason: 'creator_account' } };
+    const profile = await request(app).get('/network/me/profile').set('Cookie', cookie);
+    expect(profile.status).toBe(403);
+    expect(profile.body.error).toBe('network_call_failed');
+
+    // The words in another field are not the refusal either.
+    nextResponse = {
+      status: 403,
+      body: { error: 'forbidden', detail: 'invalid_acting_context', reason: 'creator_account' },
+    };
+    const save = await request(app).patch('/network/me/profile').set('Cookie', cookie).send({ bio: 'hello' });
+    expect(save.status).toBe(403);
+    expect(save.body.error).toBe('network_call_failed');
+  });
+});
+
 describe.skipIf(skipIntegration)('acting as a partner needs their Network consent', () => {
   beforeEach(async () => {
     await db(TABLES.PartnerNetworkConsent).where({ partnerId }).del();

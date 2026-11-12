@@ -10,9 +10,13 @@ import {
 } from '../../lib/NetworkProfileEditor.js';
 import type { CoverSource } from '../../lib/PlatformMark.js';
 import { NetworkMembershipCard, useNetworkConsent } from './NetworkConsent.js';
+import { OwnNetworkAccountNotice } from './OwnNetworkAccount.js';
 
 interface ProfileResponse extends Partial<NetworkProfile> {
   notFederated?: boolean;
+  /** The partner has their own Network account, so the brand can't act
+   *  for them: no editor here (comes with notFederated). */
+  ownNetworkAccount?: boolean;
   /** The partner hasn't opted in to the Network (or has left it). */
   consentRequired?: boolean;
 }
@@ -61,7 +65,11 @@ export function MyProfilePage() {
       )}
       {isLoading ? (
         <Card>Loading…</Card>
-      ) : data?.consentRequired ? null : data?.notFederated ? (
+      ) : data?.consentRequired ? null : data?.ownNetworkAccount ? (
+        <OwnNetworkAccountNotice page="profile">
+          Your Network profile is managed in your own Network account.
+        </OwnNetworkAccountNotice>
+      ) : data?.notFederated ? (
         <Card>
           <div style={{ fontSize: 14 }}>
             Your Network profile is being set up. It usually appears within a few minutes of joining — check back

@@ -54,16 +54,50 @@ function requirePartnerPrincipal(req: Request, res: Response): string | null {
   return p.partnerId;
 }
 
+/**
+ * Why the Network won't let this brand act for the partner, from its
+ * invalid_acting_context refusal (docs/network-protocol.md, "Acting as a
+ * partner"):
+ *
+ *   not_federated  the Network has no such partner for this brand: they
+ *                  consented but the push is still queued in the outbox.
+ *   own_account    `reason: "creator_account"`: the partner signed in to
+ *                  the Network themselves, so the profile is theirs to
+ *                  manage there, not this brand's to act on.
+ *
+ * null for any other failure. A refusal with no reason, an unknown one, or
+ * a body that doesn't parse is not_federated, as it was before `reason`.
+ */
+function actingRefusal(err: NetworkProxyError): 'not_federated' | 'own_account' | null {
+  if (err.status !== 403 && err.status !== 404) return null;
+  // The message is the first 500 characters of the Network's body.
+  if (!err.message.includes('invalid_acting_context')) return null;
+  try {
+    const body: unknown = JSON.parse(err.message);
+    if (
+      body !== null &&
+      typeof body === 'object' &&
+      (body as { error?: unknown }).error === 'invalid_acting_context' &&
+      (body as { reason?: unknown }).reason === 'creator_account'
+    ) {
+      return 'own_account';
+    }
+  } catch {
+    // Not JSON (or cut short): the plain refusal.
+  }
+  return 'not_federated';
+}
+
 async function proxy(
   req: Request,
   res: Response,
   fn: (db: Knex, tenantId: string) => Promise<unknown>,
   successStatus = 200,
-  /** Shape returned when the partner has no Network identity yet
-   *  (Network 403 invalid_acting_context). Lets the SPA show an empty
-   *  state instead of an error banner when the partner consented but the
-   *  push hasn't landed yet (still queued in the outbox). */
-  notFederatedFallback?: () => unknown,
+  /** Shape returned when the Network won't let the brand act for the
+   *  partner (see actingRefusal). Lets the SPA show an empty state instead
+   *  of an error banner. For a partner with their own Network account it
+   *  carries `ownNetworkAccount: true`, so the SPA can point them there. */
+  notFederatedFallback?: () => object,
 ): Promise<void> {
   const { db, tenantId } = tenantOf(req);
   try {
@@ -71,7 +105,15 @@ async function proxy(
     res.status(successStatus).json(out);
   } catch (err) {
     if (err instanceof NetworkProxyError) {
-      if (notFederatedFallback && (err.status === 403 || err.status === 404) && err.message.includes('invalid_acting_context')) {
+      const refusal = actingRefusal(err);
+      if (refusal === 'own_account') {
+        // Nothing here can work for them, so a write says why instead of
+        // network_call_failed.
+        if (notFederatedFallback) res.json({ ...notFederatedFallback(), ownNetworkAccount: true });
+        else res.status(403).json({ error: 'network_own_account' });
+        return;
+      }
+      if (refusal && notFederatedFallback) {
         res.json(notFederatedFallback());
         return;
       }
