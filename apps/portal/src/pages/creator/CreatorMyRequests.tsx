@@ -4,7 +4,7 @@ import { Link } from 'react-router';
 import { Button, Card, EmptyState, ErrorBanner, Page, StatusPill, formatDate } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { ConfirmAction } from '../../lib/ConfirmAction.js';
-import { creatorApi } from './creator-api.js';
+import { creatorApi, creatorPath } from './creator-api.js';
 
 interface RequestRow {
   id: string;
@@ -44,7 +44,7 @@ export function CreatorMyRequestsPage() {
           <Card key={r.id} style={{ marginBottom: 12 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
               <h3 style={{ marginTop: 0, marginBottom: 4, flex: 1 }}>
-                <Link to={`/creator/offerings/${r.offeringId}`}>{r.offeringTitle}</Link>{' '}
+                <Link to={creatorPath(`/offerings/${r.offeringId}`)}>{r.offeringTitle}</Link>{' '}
                 <span style={{ color: theme.textMuted, fontWeight: 'normal', fontSize: 14 }}>· {r.vendorName}</span>
               </h3>
               <StatusPill status={r.status} />

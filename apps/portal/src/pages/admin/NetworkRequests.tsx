@@ -6,6 +6,7 @@ import { theme } from '../../theme.js';
 import { useViewOnly } from '../../lib/viewOnly.js';
 import { TenantLink } from '../../tenant-link.js';
 import { networkErrorCode } from './BookCreatorDialog.js';
+import { BrandBadge } from '../../lib/BrandBadge.js';
 
 interface PartnershipRequest {
   id: string;
@@ -18,6 +19,9 @@ interface PartnershipRequest {
   creatorName: string;
   creatorHandle: string | null;
   creatorBio: string | null;
+  /** 'brand' when the applicant is another brand's promoter profile.
+   *  Absent on a Network that predates them. */
+  creatorKind?: 'person' | 'brand';
   offeringId: string;
   offeringTitle: string;
 }
@@ -131,6 +135,7 @@ function RequestRow({
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
         <h3 style={{ marginTop: 0, marginBottom: 4, flex: 1 }}>
           {request.creatorName} {request.creatorHandle && <span style={{ color: theme.textMuted, fontWeight: 400 }}>@{request.creatorHandle}</span>}
+          {request.creatorKind === 'brand' && <> <BrandBadge /></>}
         </h3>
         <span style={{ fontSize: 12, color: theme.textMuted }}>
           {new Date(request.createdAt).toLocaleDateString()}

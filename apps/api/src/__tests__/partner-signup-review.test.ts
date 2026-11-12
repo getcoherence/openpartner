@@ -330,6 +330,33 @@ describe.skipIf(skipIntegration)('signup status is public and checked first', ()
     });
   });
 
+  it('GET /partner-signup/status reports a brand still in review as not open, matching the 403 the submit gets', async () => {
+    await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ approvalStatus: 'pending' });
+    try {
+      const status = await request(app).get('/partner-signup/status');
+      expect(status.status).toBe(200);
+      expect(status.body).toEqual({
+        open: false,
+        notReady: true,
+        reviewRequired: false,
+        networkOffered: false,
+        countryRequired: false,
+      });
+
+      const submit = await request(app)
+        .post('/partner-signup')
+        .send({ email: 'creator@x.test', name: 'Creator', application: APPLICATION });
+      expect(submit.status).toBe(403);
+      expect(submit.body.error).toBe('brand_pending_review');
+
+      // A program the brand closed itself reads as closed, not "not yet".
+      await setSettings({ policy: 'auto_approve', disabled: true });
+      expect((await request(app).get('/partner-signup/status')).body.notReady).toBeUndefined();
+    } finally {
+      await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ approvalStatus: 'approved' });
+    }
+  });
+
   it('a closed program answers 403 signup_disabled whatever the body', async () => {
     await setSettings({ policy: 'auto_approve', disabled: true });
     for (const body of [{}, { email: 'not-an-email' }, { email: 'creator@x.test', name: 'Creator', application: APPLICATION }]) {

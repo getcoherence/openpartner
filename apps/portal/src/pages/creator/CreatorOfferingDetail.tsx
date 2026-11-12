@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { Button, Card, ErrorBanner, Input, Label, Page, Textarea } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
 import { countryErrorMessage } from '../../lib/CountryField.js';
-import { creatorApi, ApiError } from './creator-api.js';
+import { creatorApi, ApiError, creatorPath, inPromoteArea } from './creator-api.js';
 import { categoryLabel } from '@openpartner/db';
 import { formatRecruiterShare, type RecruiterShareLike } from '../../lib/commission-summary.js';
 import { ListingBanner, ListingVideo, type OfferingVideo } from './ListingBanner.js';
@@ -201,7 +201,7 @@ export function CreatorOfferingDetailPage() {
         }
       }
       qc.invalidateQueries({ queryKey: ['creator-my-requests'] });
-      navigate('/creator/requests');
+      navigate(creatorPath('/requests'));
     },
   });
 
@@ -282,7 +282,7 @@ function OfferingDetailBody({
         <BrandMark logoUrl={offering.vendorLogoUrl ?? null} name={offering.vendorName} size={56} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <Link
-            to={`/creator/vendors/${offering.vendorId}`}
+            to={creatorPath(`/vendors/${offering.vendorId}`)}
             style={{
               fontSize: 26,
               fontWeight: 700,
@@ -748,9 +748,13 @@ function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlu
     const inner = (
       <>
         {!embedded && <h3 style={{ marginTop: 0 }}>Apply to promote</h3>}
-        <p style={{ color: theme.textMuted, margin: 0 }}>
-          <Link to="/creator/signup" style={{ color: theme.accentText }}>Sign up</Link> or <Link to="/creator/login" style={{ color: theme.accentText }}>sign in</Link> to apply.
-        </p>
+        {inPromoteArea() ? (
+          <p style={{ color: theme.textMuted, margin: 0 }}>Applying isn&rsquo;t available for your brand right now.</p>
+        ) : (
+          <p style={{ color: theme.textMuted, margin: 0 }}>
+            <Link to="/creator/signup" style={{ color: theme.accentText }}>Sign up</Link> or <Link to="/creator/login" style={{ color: theme.accentText }}>sign in</Link> to apply.
+          </p>
+        )}
       </>
     );
     return embedded ? inner : <Card>{inner}</Card>;
@@ -767,7 +771,7 @@ function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlu
         <p style={{ color: theme.textMuted, fontSize: 13, margin: 0 }}>
           {embedded && <strong style={{ color: theme.text }}>Application pending. </strong>}
           You&rsquo;ve applied to {offering.vendorName}. They&rsquo;ll review and you&rsquo;ll get an email when they decide.
-          Track it on <Link to="/creator/requests" style={{ color: theme.accentText }}>My applications</Link>.
+          Track it on <Link to={creatorPath('/requests')} style={{ color: theme.accentText }}>My applications</Link>.
         </p>
       </>
     );
@@ -793,7 +797,7 @@ function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlu
       {missing && (
         <ProfileIncompleteNotice
           missing={missing}
-          link={<Link to="/creator/profile" style={{ color: theme.accentText, fontWeight: 500 }}>Go to your profile →</Link>}
+          link={<Link to={creatorPath('/profile')} style={{ color: theme.accentText, fontWeight: 500 }}>Go to your profile →</Link>}
         />
       )}
       {showReview && <ProfileReviewNotice />}
@@ -902,7 +906,7 @@ function ApprovedCard({ offering, embedded }: { offering: Offering; embedded?: b
         <p style={{ color: theme.textDim, fontSize: 13, marginTop: 12 }}>Loading share link…</p>
       )}
       <p style={{ marginTop: 12, fontSize: 12 }}>
-        <Link to="/creator/links" style={{ color: theme.accentText }}>Edit slug or copy from My share links →</Link>
+        <Link to={creatorPath('/links')} style={{ color: theme.accentText }}>Edit slug or copy from My share links →</Link>
       </p>
     </Wrap>
   );

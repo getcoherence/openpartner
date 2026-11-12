@@ -296,6 +296,71 @@ Response 204
 `bookingFeeBps` is the storefront booking fee the brand's plan gives it
 (see Storefront bookings below), honoured from hosted vendors only.
 
+### The brand's own promoter profile (`/vendors/me/brand-profile`)
+
+A brand can join another brand's program the way a creator does, and does
+it entirely inside its own portal: Network → Promote. Its promoter
+identity is a Creator of kind `brand` that the Network keeps for it (the
+Network's `docs/brand-profiles.md` has the rules). There is no creator
+account to register, no creator portal to visit and no sign-in to the
+profile. Nothing is stored on this side.
+
+```
+Headers
+  Authorization: Bearer <vendorToken>
+
+GET  /vendors/me/brand-profile
+  → { "profile": null | { "creatorId", "email", "name", "handle", "avatarUrl",
+                          "profileComplete", "profileMissing": [...], "active", "createdAt" } }
+
+PUT  /vendors/me/brand-profile                       (approved vendors)
+  { "email": "partnerships@example.com", "websiteUrl"?: "https://example.com",
+    "country"?: "US", "outsideOccupiedRegions"?: true }
+  → 201 { "profile": {...}, "created": true }   |   200 same address again
+  409 email_taken | email_fixed   403 country_not_supported
+
+Any creator route                                    (approved vendors)
+  + x-act-as-brand-profile: 1
+  → answered as the vendor's own profile; 403 invalid_acting_context
+```
+
+Our routes over these (`routes/settings.ts`):
+
+| Route | Does |
+|---|---|
+| `GET /admin/network/brand-profile` | the profile, or the setup form's choices: this brand's activated full admins and a website guessed from its oldest program |
+| `PUT /admin/network/brand-profile` `{ email, websiteUrl? }` | creates it; a signed-in full admin only; `email` must be one of those admins' (`400 email_not_admin`), and the brand's declared country is sent along |
+| `GET\|POST\|PUT\|PATCH\|DELETE /admin/network/promoter-api/*` | one creator route on the Network, as the profile (`callNetworkAsBrandProfile`). Admins only; a view-only seat reads. The Network's own status and body come back |
+
+`promoter-api` forwards only what a promoter needs (`promoterPathAllowed`):
+programs and brands, applying, applications, partnerships with their
+links, codes and numbers, invitations, and the profile with its platforms
+and pictures. Whole paths are matched, never prefixes: the brand's token
+also opens the Network's vendor routes, which must not be reachable from
+here. Nothing of a creator's account, storefront, bookings or messages.
+
+The portal's Promote area (`pages/admin/NetworkPromote.tsx`) is the
+creator portal's own pages. `pages/creator/creator-api.ts` sends their
+calls to `promoter-api` and keeps their links inside the area whenever
+they are mounted under `[/t/<slug>]/admin/network/promote`; under
+`/creator` they behave as before.
+
+The address is the partner email on every brand the profile joins, which
+is why it must be a mailbox this brand has proven it reads, and it can't
+be changed afterwards. The setup and every write made as the profile are
+in the audit log.
+
+The Network refuses another brand acting for the profile, and `POST
+/partners/upsert` of its address from a brand it has no application or
+partnership with (`409 brand_profile`, which our outbox retries and then
+drops, like any refused push).
+
+When another brand's promoter profile is approved for one of our
+programs, the Network's `POST /partners` carries
+`metadata.creatorKind: "brand"`, and its request list and creator
+directory mark the row (`creatorKind`, `kind`), which the portal shows as
+a "Brand" badge.
+
 ### Storefront bookings and conversations (`/vendors/me/bookings`, `/vendors/me/conversations`)
 
 Creators on the Network list priced packages on their public profile.

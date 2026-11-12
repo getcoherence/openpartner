@@ -133,6 +133,57 @@ describe.skipIf(skipIntegration)('reportUsageToStripe on the enterprise plan', (
   });
 });
 
+describe.skipIf(skipIntegration)('reportUsageToStripe during the free trial', () => {
+  const DAY = 86_400_000;
+  const trial = (patch: Record<string, unknown>) => db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update(patch);
+  afterEach(async () => {
+    await trial({ trialEndsAt: null, stripeSubscriptionId: null });
+    await db(TABLES.HostedBillingState).where({ tenantId: DEFAULT_TENANT_ID }).del();
+  });
+
+  it('holds trial sales back, then bills them in the first report after the trial', async () => {
+    // Subscribed during the sign-up trial: Stripe is trialing until trialEndsAt
+    // and would not bill usage recorded now.
+    await trial({ trialEndsAt: new Date(Date.now() + 10 * DAY), stripeSubscriptionId: 'sub_usage_trial' });
+    await seedGmv(80);
+
+    const held = await reportUsageToStripe(db, DEFAULT_TENANT_ID);
+    expect(held).toMatchObject({ reported: false, amount: 0, reason: 'held until the free trial ends' });
+    expect(h.calls).toHaveLength(0);
+    // The mark hasn't moved and nothing was recorded as billed.
+    expect(await getConfig(db, DEFAULT_TENANT_ID, CONFIG_KEYS.LastUsageReportedAt)).toBeNull();
+    expect(await db(TABLES.UsageLedger).where({ tenantId: DEFAULT_TENANT_ID })).toHaveLength(0);
+
+    // The trial ends; a sale after it joins the ones made during it.
+    await trial({ trialEndsAt: new Date(Date.now() - DAY) });
+    await seedGmv(20);
+    const billed = await reportUsageToStripe(db, DEFAULT_TENANT_ID);
+    expect(billed.reported).toBe(true);
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]!.value).toBe('100.00');
+  });
+
+  it('holds for a brand that has not subscribed yet, too', async () => {
+    await trial({ trialEndsAt: new Date(Date.now() + 3 * DAY) });
+    await seedGmv(30);
+    expect((await reportUsageToStripe(db, DEFAULT_TENANT_ID)).reason).toBe('held until the free trial ends');
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it('keeps holding while Stripe is still trialing past the sign-up trial (a brand in review)', async () => {
+    await trial({ trialEndsAt: new Date(Date.now() - DAY), stripeSubscriptionId: 'sub_usage_trial' });
+    await db(TABLES.HostedBillingState).insert({ tenantId: DEFAULT_TENANT_ID, subscriptionStatus: 'trialing' });
+    await seedGmv(60);
+    expect((await reportUsageToStripe(db, DEFAULT_TENANT_ID)).reason).toBe('held until the free trial ends');
+    expect(h.calls).toHaveLength(0);
+
+    await db(TABLES.HostedBillingState).where({ tenantId: DEFAULT_TENANT_ID }).update({ subscriptionStatus: 'active' });
+    const billed = await reportUsageToStripe(db, DEFAULT_TENANT_ID);
+    expect(billed.reported).toBe(true);
+    expect(h.calls[0]!.value).toBe('60.00');
+  });
+});
+
 describe.skipIf(skipIntegration)('reportUsageToStripe exactly-once', () => {
   it('freezes then clears the pending report on a clean run', async () => {
     await seedGmv(50);

@@ -50,6 +50,7 @@
  */
 
 import type { NextFunction, Request, Response } from 'express';
+import type { Knex } from 'knex';
 import { TABLES, type TenantRow } from '@openpartner/db';
 import { db as platformDb } from '../db.js';
 import { tenantOf } from '../tenancy.js';
@@ -134,6 +135,26 @@ export function isPartnerJoinRoute(method: string, path: string, body: unknown =
   const m = method.toUpperCase();
   const b = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
   return PARTNER_JOIN_ROUTES.some((g) => g.method === m && g.test(p) && (g.when ? g.when(b) : true));
+}
+
+/**
+ * What would refuse POST /partner-signup for this brand right now, or null.
+ * The same two checks approvalGate makes for that route, for the public
+ * join page: GET /partner-signup/status reports it, so nobody fills in a
+ * form the gate is going to refuse. `db` is the tenant-scoped connection.
+ */
+export async function partnerSignupBlock(
+  db: Knex,
+  tenantId: string,
+): Promise<'brand_pending_review' | 'tracking_not_verified' | null> {
+  const tenant = await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first('approvalStatus');
+  // Same posture as the gate: a missing row doesn't close the form.
+  if (!tenant) return null;
+  if (tenant.approvalStatus !== 'approved') return 'brand_pending_review';
+  if ((await trackingGateEnforced(platformDb)) && !(await isTrackingVerified(db, tenantId))) {
+    return 'tracking_not_verified';
+  }
+  return null;
 }
 
 export async function approvalGate(req: Request, res: Response, next: NextFunction): Promise<void> {

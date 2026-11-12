@@ -380,7 +380,7 @@ Only these keys are exported, and only these are imported:
 | `program_settings` | program name, support email, router URL, whether partners see the Network |
 | `partner_signup` | the join page: auto-approve or review, or closed |
 | `partner_access` | whether partners created without an invite may sign in to the partner portal (a headless program turns it off) |
-| `onboarding` | whether the brand said "Not now" to listing on the OpenPartner Network (the dashboard's Getting started card) |
+| `onboarding` | whether the brand said "Not now" to listing on the OpenPartner Network (the dashboard's Getting started card), and how far it got in the hosted [setup wizard](setup-wizard.md) (`wizardStartedAt`, `wizardStep`, `wizardExitedAt`, `wizardCompletedAt`; added Nov 2026 without a version bump, and ignored by an instance without the wizard) |
 | `payout_statements` | what payout statements print: legal name, address, footer, statement-number prefix, and the tax-lines placeholder (docs/payout-statements.md) |
 | `paypal_payouts` | whether Pay with PayPal sends INR balances in USD (`sendUnsupportedAs`), [paypal-payouts.md](paypal-payouts.md#balances-paypal-cant-send-inr) |
 | `stripe_connect` | Standard or Custom account setup, requested capabilities, verification collection, and activity description; no credentials |

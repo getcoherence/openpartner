@@ -133,8 +133,8 @@ describe.skipIf(skipIntegration)('Getting started card: the Network is optional'
 
     const saved = await setSkip(b.slug, true);
     expect(saved.status).toBe(200);
-    expect(saved.body).toEqual({ networkListingSkipped: true });
-    expect((await asAdmin(request(app).get(`/t/${b.slug}/config/onboarding`))).body).toEqual({ networkListingSkipped: true });
+    expect(saved.body).toMatchObject({ networkListingSkipped: true });
+    expect((await asAdmin(request(app).get(`/t/${b.slug}/config/onboarding`))).body).toMatchObject({ networkListingSkipped: true });
 
     res = await status(b.slug);
     expect(res.body).toMatchObject({ networkConnected: false, networkListingSkipped: true, complete: true });
@@ -163,7 +163,7 @@ describe.skipIf(skipIntegration)('Getting started card: the Network is optional'
     expect((await setSkip(b.slug, 'yes')).status).toBe(400);
     await setSkip(b.slug, true);
     const kept = await asAdmin(request(app).post(`/t/${b.slug}/config/onboarding`)).send({});
-    expect(kept.body).toEqual({ networkListingSkipped: true });
+    expect(kept.body).toMatchObject({ networkListingSkipped: true });
   });
 
   it('toggling "Offer the Network to your partners" neither clears the skip nor replaces it', async () => {

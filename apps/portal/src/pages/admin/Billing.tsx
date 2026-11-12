@@ -243,8 +243,12 @@ function PlanCard({ status }: { status: BillingStatus }) {
   // decide what an unsubscribed brand sees, on either plan.
   const trialOver = !!status.trialEndsAt && !status.inTrial;
   const trialDaysLeft = daysUntil(status.trialEndsAt ? Date.parse(status.trialEndsAt) : null);
-  // A Stripe-side trial on a live subscription (legacy: Checkout no longer
-  // grants one).
+  // Checkout carries the rest of the trial when 48 hours or more remain
+  // (API checkoutTrialEnd): the first charge waits for the trial's end.
+  const firstChargeDeferred =
+    !!status.trialEndsAt && Date.parse(status.trialEndsAt) - Date.now() > 48 * 60 * 60 * 1000 + 5 * 60 * 1000;
+  // A subscription started during the sign-up trial: its first charge
+  // waits for the trial's end.
   const stripeTrialDaysLeft = daysUntil(status.trialEnd ? status.trialEnd * 1000 : null);
 
   return (
@@ -336,7 +340,9 @@ function PlanCard({ status }: { status: BillingStatus }) {
                 Activate your plan to bring in partners. Stripe asks for a payment method.{' '}
                 {plan === 'revshare'
                   ? 'Nothing is charged now: each month you pay the platform fee on partner-attributed sales.'
-                  : 'Your first month is charged when you activate.'}
+                  : firstChargeDeferred
+                    ? `Your first month is charged on ${new Date(status.trialEndsAt!).toLocaleDateString()}, when the trial ends.`
+                    : 'Your first month is charged when you activate.'}
               </div>
               <Button onClick={() => startCheckout.mutate()} disabled={startCheckout.isPending}>
                 {startCheckout.isPending ? 'Opening Stripe…' : 'Activate plan'}
@@ -360,8 +366,8 @@ function PlanCard({ status }: { status: BillingStatus }) {
                 color: theme.text,
               }}
             >
-              Trial active — <strong>{stripeTrialDaysLeft} day{stripeTrialDaysLeft === 1 ? '' : 's'}</strong> left.
-              Stripe will email you ~3 days before it ends to add a payment method.
+              Free trial: <strong>{stripeTrialDaysLeft} day{stripeTrialDaysLeft === 1 ? '' : 's'}</strong> left. First
+              charge on {new Date(status.trialEnd! * 1000).toLocaleDateString()}.
             </div>
           )}
           {byInvoice && status.invoiceOverdue && <OverdueBanner overdue={status.invoiceOverdue} />}

@@ -913,7 +913,7 @@ const TEST_CLICK_ERRORS: Record<string, string> = {
   too_many_test_clicks: 'That’s as many test clicks as one day allows. Try again tomorrow.',
 };
 
-function testClickErrorMessage(err: unknown): string {
+export function testClickErrorMessage(err: unknown): string {
   const code = err instanceof ApiError ? (err.detail as { error?: string } | undefined)?.error : undefined;
   return (code && TEST_CLICK_ERRORS[code]) ?? (err instanceof Error ? err.message : String(err));
 }
@@ -946,7 +946,7 @@ function privacySignal(): string | null {
  * opened it can be opened here or copied (to try a phone, or a private
  * window); it works once.
  */
-function TestClickPanel({ test, onClose }: { test: { id: string; url: string }; onClose: () => void }) {
+export function TestClickPanel({ test, onClose }: { test: { id: string; url: string }; onClose: () => void }) {
   const [copied, setCopied] = useState(false);
   const [signal] = useState(privacySignal);
   const query = useQuery({

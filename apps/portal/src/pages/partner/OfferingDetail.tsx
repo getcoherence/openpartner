@@ -141,7 +141,8 @@ export function OfferingDetailPage({ principal }: { principal: Principal }) {
                 <h3 style={{ marginTop: 0 }}>Apply to promote</h3>
                 {!canApply ? (
                   <p style={{ color: theme.textMuted }}>
-                    Only partner accounts can apply. <TenantLink to="/login">Switch accounts</TenantLink>?
+                    {/* An admin applies as the brand, from its promoter profile. */}
+                    Apply as your brand from <TenantLink to="/admin/network/promote">Promote</TenantLink>.
                   </p>
                 ) : needsConsent ? (
                   <p style={{ color: theme.textMuted, fontSize: 14 }}>

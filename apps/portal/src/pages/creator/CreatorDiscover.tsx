@@ -4,7 +4,7 @@ import { Link, useNavigate } from 'react-router';
 import { Circle, Globe, HelpCircle } from 'lucide-react';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
 import { theme } from '../../theme.js';
-import { ApiError, creatorApi } from './creator-api.js';
+import { ApiError, creatorApi, creatorPath, inPromoteArea } from './creator-api.js';
 import {
   formatCustomerReward,
   formatPercent,
@@ -482,7 +482,7 @@ function OfferingDiscoverCard({ offering: o }: { offering: OfferingListItem }) {
         <BrandMark logoUrl={o.vendorLogoUrl} name={o.vendorName} />
         <div style={{ minWidth: 0, flex: 1 }}>
           <Link
-            to={`/creator/vendors/${o.vendorId}`}
+            to={creatorPath(`/vendors/${o.vendorId}`)}
             style={{
               color: theme.text,
               fontSize: 15,
@@ -506,7 +506,7 @@ function OfferingDiscoverCard({ offering: o }: { offering: OfferingListItem }) {
 
       {o.description && (
         <Link
-          to={`/creator/offerings/${o.id}`}
+          to={creatorPath(`/offerings/${o.id}`)}
           style={{
             color: theme.textMuted,
             fontSize: 13,
@@ -533,7 +533,7 @@ function OfferingDiscoverCard({ offering: o }: { offering: OfferingListItem }) {
       />
 
       <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
-        <Link to={`/creator/offerings/${o.id}`}>
+        <Link to={creatorPath(`/offerings/${o.id}`)}>
           <Button variant={o.myStatus === 'approved' || o.myStatus === 'pending' ? 'secondary' : 'primary'}>
             {ctaForStatus(o.myStatus)}
           </Button>
@@ -560,7 +560,7 @@ function BrandDiscoverCard({ brand, matching }: { brand: BrandListItem; matching
   const active = brand.offerings.filter((o) => o.myStatus === 'approved').length;
   const pending = brand.offerings.filter((o) => o.myStatus === 'pending').length;
   const cover = brand.offerings.find((o) => o.coverImageUrl)?.coverImageUrl ?? null;
-  const to = `/creator/vendors/${brand.vendorId}`;
+  const to = creatorPath(`/vendors/${brand.vendorId}`);
   const chips: Chip[] = [];
   if (s.commissionLine) chips.push({ label: s.commissionLine, tone: 'lead' });
   if (s.reward) chips.push({ label: s.reward, tone: 'accent' });
@@ -859,7 +859,7 @@ function RecommendedStrip() {
         {data.recommendations.map((r) => (
           <Link
             key={r.id}
-            to={`/creator/offerings/${r.id}`}
+            to={creatorPath(`/offerings/${r.id}`)}
             style={{
               textDecoration: 'none',
               padding: '12px 14px',
@@ -963,9 +963,12 @@ function CreatorOnboarding() {
     staleTime: 30_000,
     retry: false,
   });
+  // A brand's promoter profile has no storefront (pages/admin/NetworkPromote.tsx).
+  const promoting = inPromoteArea();
   const storefront = useQuery({
     queryKey: ['creator-storefront'],
     queryFn: () => creatorApi<StorefrontStatus>('/creators/me/storefront'),
+    enabled: !promoting,
     staleTime: 30_000,
     retry: false,
   });
@@ -977,7 +980,7 @@ function CreatorOnboarding() {
   });
 
   // Wait for everything, so a done card doesn't flash up while loading.
-  if (!profile.data || requests.isPending || affiliations.isPending || storefront.isPending) return null;
+  if (!profile.data || requests.isPending || affiliations.isPending || (!promoting && storefront.isPending)) return null;
   // Older Network without the completeness fields: fall back to the
   // handle + bio check this card used before.
   const profileDone =
@@ -1005,7 +1008,7 @@ function CreatorOnboarding() {
         ? `Still needed: ${missing.map((m) => m.label.toLowerCase()).join(', ')}.`
         : 'Add a handle, photo, bio, a category, and a social platform.',
       action: (
-        <Button size="sm" variant="secondary" onClick={() => navigate('/creator/profile')}>
+        <Button size="sm" variant="secondary" onClick={() => navigate(creatorPath('/profile'))}>
           Finish profile
         </Button>
       ),
@@ -1038,7 +1041,7 @@ function CreatorOnboarding() {
                 <Button size="sm" variant="ghost" onClick={() => dismiss.mutate('storefront')} disabled={dismiss.isPending}>
                   No thanks
                 </Button>
-                <Button size="sm" variant="secondary" onClick={() => navigate('/creator/storefront')}>
+                <Button size="sm" variant="secondary" onClick={() => navigate(creatorPath('/storefront'))}>
                   Set up
                 </Button>
               </>
