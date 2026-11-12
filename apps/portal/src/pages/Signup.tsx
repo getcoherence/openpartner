@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router';
 import { isFreeMailAddress } from '@openpartner/db';
 import { ApiError } from '../api.js';
 import { alpha, softText, theme } from '../theme.js';
-import { AuthFrame, ReviewNotice, SignupTabs } from './auth/Shared.js';
+import { AuthFrame, AuthPanel, ReviewNotice, SignupTabs } from './auth/Shared.js';
 import { CountryField, countryErrorMessage } from '../lib/CountryField.js';
 import {
   GoogleButton,
@@ -119,7 +119,7 @@ export function SignupPage() {
   }
 
   return (
-    <AuthFrame title="Sign up as a brand" subtitle="Create your brand account.">
+    <AuthFrame title="Sign up as a brand" subtitle="Create your brand account." panel={<AuthPanel variant="brand" />}>
       <SignupTabs active="brand" />
       {plan && (
         <div

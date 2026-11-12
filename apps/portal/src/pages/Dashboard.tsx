@@ -726,6 +726,8 @@ interface BrandOnboardingStatus {
   trackingInstalled?: boolean;
   approvalStatus?: 'pending' | 'approved' | 'rejected';
   complete: boolean;
+  /** The first-run setup wizard; absent on an older API. */
+  wizard?: { available: boolean };
 }
 
 /** Shown above the dashboard when creators have applied via the Network
@@ -884,7 +886,14 @@ function BrandOnboarding() {
   ];
   return (
     <Card style={{ marginBottom: 18 }}>
-      <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>Getting started</div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 4 }}>
+        <div style={{ fontSize: 15, fontWeight: 500 }}>Getting started</div>
+        {data.wizard?.available && (
+          <Link to={`${tenantBase}/setup`} style={{ textDecoration: 'none' }}>
+            <Button size="sm">Continue setup</Button>
+          </Link>
+        )}
+      </div>
       <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 14 }}>
         A few one-clicks to get your brand fully set up. The card disappears when you&rsquo;re done.
       </div>

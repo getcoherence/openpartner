@@ -29,6 +29,7 @@ import { createHmac } from 'node:crypto';
 import express, { Router, type Request, type Response } from 'express';
 import { realtimeSocketUrl } from '../network-client.js';
 import { CONVERSATION_IMAGE_MAX_BYTES, CONVERSATION_IMAGE_TYPES } from '../conversation-images.js';
+import { redactPath } from '../request-log.js';
 
 export const creatorPortalRouter = Router();
 
@@ -275,7 +276,7 @@ creatorPortalRouter.all(/^\/creator-api(\/.*)?$/, async (req: Request, res: Resp
     try {
       upstream = await fetch(upstreamUrl, init);
     } catch (err) {
-      console.error('[creator-portal] fetch failed', { subpath, err });
+      console.error('[creator-portal] fetch failed', { subpath: redactPath(subpath), err });
       return res.status(502).json({
         error: 'network_unreachable',
         detail: err instanceof Error ? err.message : String(err),
@@ -331,7 +332,7 @@ creatorPortalRouter.all(/^\/creator-api(\/.*)?$/, async (req: Request, res: Resp
     if (upstream.status >= 400) {
       console.error('[creator-portal] upstream error', {
         method: req.method,
-        subpath,
+        subpath: redactPath(subpath),
         status: upstream.status,
         body: body.length > 500 ? `${body.slice(0, 500)}…(truncated)` : body,
       });
@@ -359,7 +360,7 @@ creatorPortalRouter.all(/^\/creator-api(\/.*)?$/, async (req: Request, res: Resp
       res.type('application/json').send(JSON.stringify({ raw: body, contentType: upstreamCt || null }));
     }
   } catch (err) {
-    console.error('[creator-portal] proxy failed', { subpath, method: req.method, err });
+    console.error('[creator-portal] proxy failed', { subpath: redactPath(subpath), method: req.method, err });
     res.status(502).json({
       error: 'proxy_error',
       detail: err instanceof Error ? err.message : String(err),

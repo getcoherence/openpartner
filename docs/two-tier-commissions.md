@@ -3,7 +3,7 @@
 A program can pay a partner a share of what the partners they recruited earn. Partner A shares their recruit link, partner B joins through it, and in every program that turns this on, A earns a set percent of each commission B earns there.
 
 - **Two levels, never more.** A earns on B. If B recruits C, B earns on C, but A earns nothing on C. A recruiter commission never produces another one.
-- **Off by default, per program.** `Program.recruiterCommissionPercent` is null until a brand sets it (Programs → edit → "Pay partners for the partners they recruit").
+- **Per program. Off unless the brand sets it**, with one exception: the hosted [setup wizard](setup-wizard.md) starts a new brand's first program with it on at 10% and no time limit, and the brand can switch it off there. `Program.recruiterCommissionPercent` is null (off) for a program created on the Programs page or through the API until a brand sets it (Programs → edit → "Pay partners for the partners they recruit").
 - **A share of the recruit's commission, not of the sale.** At 10%, B's $50 commission earns A $5. The recruiter can never earn more than the recruit, and the share is paid on top of B's commission, never out of it.
 
 Code:

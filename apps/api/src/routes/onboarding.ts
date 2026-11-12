@@ -23,9 +23,9 @@ import { getNetworkMembership, networkProxy, NetworkProxyError } from '../networ
 import { getTenantBillingState } from '../billing-plan.js';
 import { brandSetupFor } from '../brand-setup.js';
 import { getWhiteLabelState } from '../white-label.js';
-import { readOnboardingSettings, saveOnboardingSettings } from '../onboarding-settings.js';
+import { WIZARD_LAST_STEP, readOnboardingSettings, saveOnboardingSettings } from '../onboarding-settings.js';
 import { db as platformDb } from '../db.js';
-import { getTrackingGateSettings } from '../platform-settings.js';
+import { getSetupWizardSettings, getTrackingGateSettings } from '../platform-settings.js';
 import { isTrackingVerified } from '../tracking-verification.js';
 
 export const onboardingRouter = Router();
@@ -59,6 +59,52 @@ interface BrandOnboardingStatus {
   approvalStatus: 'pending' | 'approved' | 'rejected';
   /** True once everything actionable is done — card hides. */
   complete: boolean;
+  /** The first-run setup wizard (hosted). `available`: this brand may use
+   *  it. `redirect`: the portal should open it instead of the dashboard. */
+  wizard: SetupWizardStatus;
+}
+
+export interface SetupWizardStatus {
+  available: boolean;
+  redirect: boolean;
+  completedAt: string | null;
+  exitedAt: string | null;
+  /** The furthest step saved; the wizard resumes after it. */
+  step: number;
+  /** The program the wizard edits: the brand's oldest. */
+  programId: string | null;
+  /** Hint lines for the commission step (platform-settings.ts). */
+  hints: { percent: string; fixed: string };
+}
+
+/**
+ * Who gets the wizard: a hosted (multi-tenant) brand, with the operator
+ * switch on, that either has no program yet or already started the wizard.
+ * A brand that set itself up before the wizard existed has programs and no
+ * start stamp, so it never sees it.
+ */
+export function setupWizardStatus(input: {
+  multiTenant: boolean;
+  enabled: boolean;
+  hints: { percent: string; fixed: string };
+  campaignCount: number;
+  firstProgramId: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  exitedAt: string | null;
+  step: number;
+}): SetupWizardStatus {
+  const eligible = input.multiTenant && input.enabled && (input.campaignCount === 0 || !!input.startedAt);
+  const available = eligible && !input.completedAt;
+  return {
+    available,
+    redirect: available && !input.exitedAt,
+    completedAt: input.completedAt,
+    exitedAt: input.exitedAt,
+    step: input.step,
+    programId: input.firstProgramId,
+    hints: input.hints,
+  };
 }
 
 onboardingRouter.get('/admin/onboarding-status', requireAuth, requireAdmin, async (req, res) => {
@@ -145,7 +191,8 @@ onboardingRouter.get('/admin/onboarding-status', requireAuth, requireAdmin, asyn
   // (the portal drops both Network steps for it), and any other brand can
   // skip it. "Offer the Network to your partners" (autoEnroll) says
   // nothing either way: it is about partners, not the brand's listing.
-  const { networkListingSkipped } = await readOnboardingSettings(db, tenantId);
+  const onboarding = await readOnboardingSettings(db, tenantId);
+  const { networkListingSkipped } = onboarding;
   const whiteLabel = (await getWhiteLabelState(db, tenantId)).effective;
   const networkSettled =
     whiteLabel || networkListingSkipped || (networkConnected && offeringPublishedCount > 0);
@@ -157,6 +204,20 @@ onboardingRouter.get('/admin/onboarding-status', requireAuth, requireAdmin, asyn
     networkSettled &&
     partnerCount > 0 &&
     billingReady;
+
+  const wizardSettings = await getSetupWizardSettings(platformDb);
+  const firstProgram = await db<ProgramRow>(TABLES.Program).where({ tenantId }).orderBy('createdAt', 'asc').first('id');
+  const wizard = setupWizardStatus({
+    multiTenant: getTenancyMode() === 'multi',
+    enabled: wizardSettings.enabled,
+    hints: wizardSettings.hints,
+    campaignCount,
+    firstProgramId: firstProgram?.id ?? null,
+    startedAt: onboarding.wizardStartedAt,
+    completedAt: onboarding.wizardCompletedAt,
+    exitedAt: onboarding.wizardExitedAt,
+    step: onboarding.wizardStep,
+  });
 
   const out: BrandOnboardingStatus = {
     brandInfoComplete,
@@ -172,6 +233,7 @@ onboardingRouter.get('/admin/onboarding-status', requireAuth, requireAdmin, asyn
     trackingInstalled,
     approvalStatus,
     complete,
+    wizard,
   };
   res.json(out);
 });
@@ -201,6 +263,12 @@ onboardingRouter.get('/admin/setup-lock', requireAuth, requireAdmin, async (req,
 
 export const onboardingSettingsSchema = z.object({
   networkListingSkipped: z.boolean().optional(),
+  /** Setup wizard progress (onboarding-settings.ts). Started and completed
+   *  are one-way; exited is "Finish later" and its undo. */
+  wizardStarted: z.literal(true).optional(),
+  wizardCompleted: z.literal(true).optional(),
+  wizardExited: z.boolean().optional(),
+  wizardStep: z.number().int().min(0).max(WIZARD_LAST_STEP).optional(),
 });
 
 onboardingRouter.get('/config/onboarding', requireAuth, requireAdmin, async (req, res) => {
@@ -208,8 +276,8 @@ onboardingRouter.get('/config/onboarding', requireAuth, requireAdmin, async (req
   res.json(await readOnboardingSettings(db, tenantId));
 });
 
-/** "Not now" (and its undo) on the Getting started card's Network step.
- *  Omitted fields keep their value. */
+/** "Not now" (and its undo) on the Getting started card's Network step,
+ *  and the setup wizard's progress. Omitted fields keep their value. */
 onboardingRouter.post('/config/onboarding', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const body = onboardingSettingsSchema.safeParse(req.body ?? {});
