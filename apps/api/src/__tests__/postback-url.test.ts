@@ -175,11 +175,14 @@ describe('maskPostbackUrl', () => {
 
 describe('sealing', () => {
   it('seals to an envelope that opens to the URL, and tells the two apart', () => {
-    const url = 'https://t.example/pb?secret=abc';
+    // Long enough that random base64 cannot spell it by chance. A three-letter
+    // value turned up in the envelope about once in a few thousand runs.
+    const secret = 'k7Qz2mXv9LpR4tWs8NbY3hJc';
+    const url = `https://t.example/pb?secret=${secret}`;
     const sealed = sealPostbackUrl(url);
     expect(isPlaintextPostbackUrl(url)).toBe(true);
     expect(isPlaintextPostbackUrl(sealed)).toBe(false);
-    expect(sealed).not.toContain('abc');
+    expect(sealed).not.toContain(secret);
     expect(openPostbackUrl(sealed)).toBe(url);
     expect(openPostbackUrl(url)).toBe(url);
     expect(openPostbackUrl('bm90IGFuIGVudmVsb3Bl')).toBeNull();
