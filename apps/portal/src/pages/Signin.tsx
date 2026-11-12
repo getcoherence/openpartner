@@ -1,7 +1,7 @@
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router';
 import { theme } from '../theme.js';
 import { useNextPath, withNext } from '../lib/signin-next.js';
-import { AuthFrame } from './auth/Shared.js';
+import { AuthFrame, AuthPanel } from './auth/Shared.js';
 import {
   AuthNotice,
   EmailPasswordForm,
@@ -74,6 +74,7 @@ export function SigninPage() {
     <AuthFrame
       title={addMode ? 'Add another account' : 'Sign in'}
       subtitle={addMode ? 'Sign in to the account you want to add to this browser.' : undefined}
+      panel={<AuthPanel variant="signin" />}
     >
       {addMode && (
         <div style={{ background: theme.accentA15, border: `1px solid ${theme.accentA55}`, padding: 12, borderRadius: theme.radiusSm, fontSize: 12, color: theme.textMuted, marginBottom: 14 }}>

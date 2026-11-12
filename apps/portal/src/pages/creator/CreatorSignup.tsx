@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { alpha, softText, theme } from '../../theme.js';
-import { AuthFrame, ReviewNotice, SignupTabs } from '../auth/Shared.js';
+import { AuthFrame, AuthPanel, ReviewNotice, SignupTabs } from '../auth/Shared.js';
 import { CountryField, countryErrorMessage } from '../../lib/CountryField.js';
 import { useIsMobile } from '../../lib/useMediaQuery.js';
 import {
@@ -177,7 +177,7 @@ export function CreatorSignupPage() {
   }
 
   return (
-    <AuthFrame title="Sign up as a creator" subtitle="Browse and apply to partner programs across the OpenPartner Network.">
+    <AuthFrame title="Sign up as a creator" subtitle="Browse and apply to partner programs across the OpenPartner Network." panel={<AuthPanel variant="creator" />}>
       <SignupTabs active="creator" />
       <ReviewNotice>New profiles are reviewed before brands can see them or you can apply to programs.</ReviewNotice>
       {!googleEmail && providers.googleStartUrl && (
