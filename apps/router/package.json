@@ -13,7 +13,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@hono/node-server": "^2.1.5",
+    "@hono/node-server": "^2.1.6",
     "@openpartner/db": "workspace:*",
     "dotenv": "^16.4.5",
     "hono": "^4.13.13",
