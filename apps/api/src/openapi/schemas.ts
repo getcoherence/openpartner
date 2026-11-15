@@ -97,7 +97,7 @@ export const PartnerPage = z
   })
   .openapi('PartnerPage');
 
-const commissionSubRule = z.object({
+export const commissionSubRule = z.object({
   trigger: z.enum(['every', 'first', 'subsequent']),
   eventType: z.string().optional(),
   type: z.enum(['percent', 'fixed']),

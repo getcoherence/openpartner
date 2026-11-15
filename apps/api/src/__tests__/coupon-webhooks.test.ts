@@ -9,6 +9,10 @@
  *     re-deactivating sends nothing
  *   - revoking a program grant retires the partner's codes on it and fires
  *     coupon.deactivated (grant_revoked) for each
+ *   - coupon.registered carries what the code is worth: the commission the
+ *     partner earns on the program, by the engine's precedence (their terms
+ *     on the program, then partner-wide, then the program's rule), read
+ *     after commit, and the customer's discount
  *
  * dispatchEvent is mocked so the assertions read exact payloads. The
  * delivered shapes are checked against the catalogue by
@@ -66,13 +70,17 @@ async function settle(): Promise<void> {
   await new Promise((r) => setTimeout(r, 50));
 }
 
-async function seedProgram(partnersMayCustomizeCode = true): Promise<string> {
+const PROGRAM_RULE = [{ trigger: 'every', type: 'percent', value: 10, recurring: true }];
+const PROGRAM_TERMS = { source: 'program', summary: expect.stringContaining('10%'), rules: PROGRAM_RULE };
+
+async function seedProgram(partnersMayCustomizeCode = true, extra: Record<string, unknown> = {}): Promise<string> {
   const id = ulid();
   await db(TABLES.Program).insert({
     id,
     tenantId: DEFAULT_TENANT_ID,
     name: 'Coupon webhooks',
-    commissionRule: JSON.stringify({ type: 'percent', value: 10, recurring: true }),
+    commissionRule: JSON.stringify(PROGRAM_RULE),
+    ...extra,
     destinationUrl: 'https://x.test/landing',
     attributionWindowDays: 60,
     attributionModel: 'last_click',
@@ -125,6 +133,8 @@ describe.skipIf(skipIntegration)('coupon webhooks', () => {
         code: 'BRAND15',
         brandChosen: true,
         source: 'admin',
+        commission: PROGRAM_TERMS,
+        customerReward: null,
       }),
     ]);
 
@@ -161,7 +171,7 @@ describe.skipIf(skipIntegration)('coupon webhooks', () => {
     await settle();
 
     expect(dispatched('coupon.registered')).toEqual([
-      shape({ couponId: minted.body.id, brandChosen: false, source: 'partner' }),
+      shape({ couponId: minted.body.id, brandChosen: false, source: 'partner', commission: PROGRAM_TERMS, customerReward: null }),
     ]);
     expect(dispatched('coupon.deactivated')).toEqual([
       shape({ couponId: minted.body.id, deactivatedAt: expect.any(String), source: 'partner' }),
@@ -188,6 +198,8 @@ describe.skipIf(skipIntegration)('coupon webhooks', () => {
         code: coupons[0].code,
         brandChosen: false,
         source: 'program_grant',
+        commission: PROGRAM_TERMS,
+        customerReward: null,
       }),
     ]);
 
@@ -225,5 +237,80 @@ describe.skipIf(skipIntegration)('coupon webhooks', () => {
         [c.body.id, 'grant_revoked'],
       ].sort(),
     );
+  });
+
+  it("reports the program's rule and customer discount", async () => {
+    const reward = { type: 'percent_off', value: 15, duration: 'once' };
+    const programId = await seedProgram(false, {
+      commissionRule: JSON.stringify([
+        { trigger: 'first', eventType: 'signup', type: 'fixed', value: 25, currency: 'USD' },
+        { trigger: 'every', eventType: 'invoice_paid', type: 'percent', value: 20, recurring: true, recurringMonths: 12 },
+      ]),
+      customerReward: JSON.stringify(reward),
+    });
+    const partner = await seedPartner();
+    expect((await request(app).post(`/partners/${partner.id}/coupons`).set(admin).send({ programId, code: 'WORTH20' })).status).toBe(201);
+    await settle();
+
+    const [payload] = dispatched('coupon.registered');
+    expect(payload!.customerReward).toEqual(reward);
+    expect(payload!.commission).toEqual({
+      source: 'program',
+      summary: expect.any(String),
+      rules: [
+        { trigger: 'first', eventType: 'signup', type: 'fixed', value: 25, currency: 'USD' },
+        { trigger: 'every', eventType: 'invoice_paid', type: 'percent', value: 20, recurring: true, recurringMonths: 12 },
+      ],
+    });
+    const summary = (payload!.commission as { summary: string }).summary;
+    expect(summary).toContain('$25');
+    expect(summary).toContain('20%');
+  });
+
+  it('a partner created with their own rate on the program reports that rate, not the program rule', async () => {
+    // POST /partners mints the default code before it writes the partner's
+    // terms, so this only holds because the terms are read after commit.
+    const programId = await seedProgram(false);
+    const created = await request(app)
+      .post('/partners')
+      .set(admin)
+      .send({
+        email: 'vip@x.test',
+        name: 'VIP',
+        programIds: [programId],
+        sendInvite: false,
+        programCommissions: [{ programId, commissionType: 'percent', commissionValue: 30, recurring: true }],
+      });
+    expect(created.status).toBe(201);
+    await settle();
+
+    expect(dispatched('coupon.registered').map((p) => p.commission)).toEqual([
+      {
+        source: 'partner_program',
+        summary: expect.stringContaining('30%'),
+        rules: [{ trigger: 'every', type: 'percent', value: 30, recurring: true }],
+      },
+    ]);
+  });
+
+  it("a partner-wide override applies when there are no terms for the program", async () => {
+    const programId = await seedProgram(false);
+    const partner = await seedPartner();
+    await db(TABLES.PartnerCommission).insert({
+      id: `pcm_${ulid()}`,
+      tenantId: DEFAULT_TENANT_ID,
+      partnerId: partner.id,
+      programId: null,
+      commissionType: 'fixed',
+      commissionValue: '40.00',
+      recurring: false,
+      source: 'amendment',
+    });
+    expect((await request(app).post(`/partners/${partner.id}/coupons`).set(admin).send({ programId, code: 'WIDE40' })).status).toBe(201);
+    await settle();
+
+    expect(dispatched('coupon.registered').map((p) => p.commission)).toEqual([
+      { source: 'partner', summary: expect.stringContaining('40'), rules: [{ trigger: 'every', type: 'fixed', value: 40, recurring: false }] },
+    ]);
   });
 });

@@ -254,7 +254,16 @@ const SYNTHETIC_PAYLOADS: Record<string, () => Record<string, unknown>> = {
     statementUrl: `https://partners.example.com/api/payouts/01J${'5'.repeat(23)}/statement`,
   }),
   // Coupon events share coupon-events.ts's payload shape.
-  'coupon.registered': () => sampleCouponPayload({ source: 'program_grant' }),
+  'coupon.registered': () =>
+    sampleCouponPayload({
+      source: 'program_grant',
+      commission: {
+        source: 'program',
+        summary: '20% recurring on every invoice',
+        rules: [{ trigger: 'every', eventType: 'invoice_paid', type: 'percent', value: 20, recurring: true }],
+      },
+      customerReward: { type: 'percent_off', value: 15, duration: 'once' },
+    }),
   'coupon.deactivated': () =>
     sampleCouponPayload({ deactivatedAt: new Date().toISOString(), source: 'partner' }),
 };

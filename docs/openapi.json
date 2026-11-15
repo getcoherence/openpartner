@@ -24384,7 +24384,7 @@
           "Webhook events"
         ],
         "summary": "coupon.registered",
-        "description": "A coupon code was minted for a partner: by an admin, the partner, or a Network creator (`POST /partners/{id}/coupons`), or automatically as the partner's default code when they are granted a program, including when the partner is created. A partner created with programs may send this before `partner.created`; deliveries are not ordered.\n\nSubscribe with `events: [\"coupon.registered\"]` (or `\"*\"`). Delivered as a signed JSON POST; see **Webhooks** in the introduction for verification.",
+        "description": "A coupon code was minted for a partner: by an admin, the partner, or a Network creator (`POST /partners/{id}/coupons`), or automatically as the partner's default code when they are granted a program, including when the partner is created. Carries what the code is worth: the commission the partner earns on its program (`commission`) and the customer's discount (`customerReward`). A partner created with programs may send this before `partner.created`; deliveries are not ordered.\n\nSubscribe with `events: [\"coupon.registered\"]` (or `\"*\"`). Delivered as a signed JSON POST; see **Webhooks** in the introduction for verification.",
         "parameters": [
           {
             "schema": {
@@ -24479,6 +24479,112 @@
                         "type": "string",
                         "format": "date-time",
                         "pattern": "Z$"
+                      },
+                      "commission": {
+                        "type": "object",
+                        "properties": {
+                          "source": {
+                            "type": "string",
+                            "enum": [
+                              "program",
+                              "partner_program",
+                              "partner"
+                            ],
+                            "description": "Whose terms these are. `program`: the program's own rule. `partner_program`: terms set for this partner on this program. `partner`: this partner's terms on every program. The first that exists applies, in the order `partner_program`, `partner`, `program`."
+                          },
+                          "summary": {
+                            "type": "string",
+                            "description": "The terms in words, as the portal shows them, e.g. `$25 on first signup + 20% recurring on every invoice for 12 months`. Fixed amounts with no currency of their own are shown in your default currency.",
+                            "example": "$25 on first signup + 20% recurring on every invoice for 12 months"
+                          },
+                          "rules": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "trigger": {
+                                  "type": "string",
+                                  "enum": [
+                                    "every",
+                                    "first",
+                                    "subsequent"
+                                  ]
+                                },
+                                "eventType": {
+                                  "type": "string"
+                                },
+                                "type": {
+                                  "type": "string",
+                                  "enum": [
+                                    "percent",
+                                    "fixed"
+                                  ]
+                                },
+                                "value": {
+                                  "type": "number"
+                                },
+                                "currency": {
+                                  "type": "string"
+                                },
+                                "recurring": {
+                                  "type": "boolean",
+                                  "description": "Keeps paying on renewals, including renewals past the attribution window that the program's `renewalsStayWithPartner` carries. A rule without it pays only while the click that earned the customer is inside the window."
+                                },
+                                "recurringMonths": {
+                                  "type": "integer",
+                                  "description": "Stop paying this many months after the customer's first attributed event of the rule's type for this partner. Omitted: no cap."
+                                },
+                                "bands": {
+                                  "$ref": "#/components/schemas/CommissionBands"
+                                },
+                                "tiers": {
+                                  "$ref": "#/components/schemas/CommissionTiers"
+                                },
+                                "products": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "id": {
+                                        "type": "string"
+                                      },
+                                      "name": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "id"
+                                    ]
+                                  },
+                                  "description": "Limits the rule to sales of these products: product or price ids, matched against the event's `products`. A percent rule pays on those products' share of the sale's value; a fixed amount pays once per sale that includes one; `first` and `subsequent` count only sales that include one. Omitted: every sale."
+                                }
+                              },
+                              "required": [
+                                "trigger",
+                                "type",
+                                "value"
+                              ]
+                            },
+                            "description": "The sub-rules the partner is paid on: `type` `percent` (`value` 20 = 20% of the event's value) or `fixed` (`value` in the rule's `currency`, else the event's). Every matching sub-rule pays, so one sale can earn several."
+                          }
+                        },
+                        "required": [
+                          "source",
+                          "summary",
+                          "rules"
+                        ],
+                        "description": "What the partner earns on sales this code brings in, as it stands when the event is sent. Later changes to the terms send no event. Omitted only if the lookup failed."
+                      },
+                      "customerReward": {
+                        "anyOf": [
+                          {
+                            "$ref": "#/components/schemas/CustomerReward"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "The discount the program gives customers who use a partner's code. Null: none. Omitted only if the lookup failed."
                       },
                       "source": {
                         "type": "string",

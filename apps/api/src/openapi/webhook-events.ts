@@ -15,7 +15,7 @@ import { z } from '../zod.js';
 import type { OpenAPIRegistry } from '@asteasolutions/zod-to-openapi';
 import { KNOWN_EVENTS } from '../routes/webhooks.js';
 import { ATTRIBUTION_MODELS, BONUS_SOURCES, PAYOUT_METHODS } from './enums.js';
-import { Decimal, orNull } from './schemas.js';
+import { CustomerReward, Decimal, commissionSubRule, orNull } from './schemas.js';
 
 const id = z.string();
 
@@ -237,6 +237,31 @@ export const WEBHOOK_PAYLOADS = {
   }),
   'coupon.registered': z.object({
     ...couponBase,
+    commission: z
+      .object({
+        source: z.enum(['program', 'partner_program', 'partner']).openapi({
+          description:
+            "Whose terms these are. `program`: the program's own rule. `partner_program`: terms set for this partner on this program. `partner`: this partner's terms on every program. The first that exists applies, in the order `partner_program`, `partner`, `program`.",
+        }),
+        summary: z.string().openapi({
+          description: 'The terms in words, as the portal shows them, e.g. `$25 on first signup + 20% recurring on every invoice for 12 months`. Fixed amounts with no currency of their own are shown in your default currency.',
+          example: '$25 on first signup + 20% recurring on every invoice for 12 months',
+        }),
+        rules: z.array(commissionSubRule).openapi({
+          description:
+            "The sub-rules the partner is paid on: `type` `percent` (`value` 20 = 20% of the event's value) or `fixed` (`value` in the rule's `currency`, else the event's). Every matching sub-rule pays, so one sale can earn several.",
+        }),
+      })
+      .optional()
+      .openapi({
+        description:
+          "What the partner earns on sales this code brings in, as it stands when the event is sent. Later changes to the terms send no event. Omitted only if the lookup failed.",
+      }),
+    customerReward: orNull(CustomerReward)
+      .optional()
+      .openapi({
+        description: "The discount the program gives customers who use a partner's code. Null: none. Omitted only if the lookup failed.",
+      }),
     source: z.enum(COUPON_REGISTERED_SOURCES).openapi({
       description:
         "Who minted it. `admin`: the brand's admin. `partner`: the partner, in their portal. `network`: an OpenPartner Network creator, through a `partners:write` key. `program_grant`: OpenPartner minted the partner's default code when they were granted the program, at creation (`POST /partners`, a Network approval) or later (`POST /partners/{id}/programs`). New values may be added.",
@@ -283,7 +308,7 @@ const WEBHOOK_DESCRIPTIONS: Record<WebhookEventName, string> = {
   'payout.created':
     'A payout was recorded: a Stripe Connect transfer that went out, or a `manual` payout you still have to send (it stays `pending` until confirmed).',
   'coupon.registered':
-    "A coupon code was minted for a partner: by an admin, the partner, or a Network creator (`POST /partners/{id}/coupons`), or automatically as the partner's default code when they are granted a program, including when the partner is created. A partner created with programs may send this before `partner.created`; deliveries are not ordered.",
+    "A coupon code was minted for a partner: by an admin, the partner, or a Network creator (`POST /partners/{id}/coupons`), or automatically as the partner's default code when they are granted a program, including when the partner is created. Carries what the code is worth: the commission the partner earns on its program (`commission`) and the customer's discount (`customerReward`). A partner created with programs may send this before `partner.created`; deliveries are not ordered.",
   'coupon.deactivated':
     'A coupon code was retired and no longer attributes: deactivated or deleted in the portal (`DELETE /partners/{id}/coupons/{couponId}`; codes are never hard-deleted, so both are this event), or retired because the partner lost access to its program. Fires once per code; deactivating an already-inactive code sends nothing.',
 };
