@@ -504,8 +504,11 @@ export function Button({
   type,
   style,
   icon,
+  'aria-label': ariaLabel,
 }: {
   children?: ReactNode;
+  /** Names an icon-only button for screen readers. */
+  'aria-label'?: string;
   onClick?: () => void;
   disabled?: boolean;
   variant?: 'primary' | 'secondary' | 'ghost' | 'danger';
@@ -530,6 +533,7 @@ export function Button({
       type={type ?? 'button'}
       onClick={onClick}
       disabled={disabled}
+      aria-label={ariaLabel}
       style={{
         display: 'inline-flex',
         alignItems: 'center',
@@ -650,6 +654,9 @@ export function StatusPill({ status }: { status: string }) {
     reversed: { bg: theme.dangerSoft, fg: theme.danger },
     pending: { bg: theme.surface2, fg: theme.textMuted },
     failed: { bg: theme.dangerSoft, fg: theme.danger },
+    // Webhook deliveries and endpoints.
+    delivered: { bg: theme.successSoft, fg: theme.success },
+    disabled: { bg: theme.surface2, fg: theme.textMuted },
     connected: { bg: theme.successSoft, fg: theme.success },
     invited: { bg: theme.warnSoft, fg: theme.warn },
     'pending review': { bg: theme.infoSoft, fg: theme.info },

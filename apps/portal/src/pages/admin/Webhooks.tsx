@@ -190,8 +190,10 @@ function EndpointCard({
     mutationFn: () => api(`/webhooks/${endpoint.id}`, { method: 'PATCH', body: { active: !endpoint.active } }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['webhooks'] }),
   });
+  // A plain DELETE only deactivates (the API's default, same as Disable),
+  // which left a "deleted" endpoint on this list. Delete removes it.
   const del = useMutation({
-    mutationFn: () => api(`/webhooks/${endpoint.id}`, { method: 'DELETE' }),
+    mutationFn: () => api(`/webhooks/${endpoint.id}?hard=1`, { method: 'DELETE' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['webhooks'] }),
   });
   // New signing secret, shown once. The old one stops working at once, so
@@ -226,7 +228,7 @@ function EndpointCard({
 
   return (
     <Card>
-      <ErrorBanner error={rotate.error} />
+      <ErrorBanner error={rotate.error ?? del.error} />
       <div
         style={{
           display: 'flex',
@@ -240,7 +242,7 @@ function EndpointCard({
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, flexWrap: 'wrap' }}>
             <WebhookIcon size={14} style={{ color: endpoint.active ? theme.accentText : theme.textDim }} />
             <code style={{ fontSize: 13, color: theme.text, fontWeight: 500, minWidth: 0, overflowWrap: 'anywhere', wordBreak: 'break-all' }}>{endpoint.url}</code>
-            <StatusPill status={endpoint.active ? 'connected' : 'pending'} />
+            <StatusPill status={endpoint.active ? 'connected' : 'disabled'} />
           </div>
           <div style={{ fontSize: 12, color: theme.textMuted }}>
             {endpoint.label ? <span>{endpoint.label} · </span> : null}
@@ -290,7 +292,16 @@ function EndpointCard({
               </Button>
             )}
           </ConfirmAction>
-          <Button size="sm" variant="danger" icon={<Trash2 size={12} />} onClick={() => del.mutate()} disabled={del.isPending} />
+          <ConfirmAction
+            prompt="Delete this endpoint?"
+            confirmLabel="Yes, delete"
+            title="It and its delivery log are removed for good. To stop deliveries but keep the log, disable it instead."
+            onConfirm={() => del.mutate()}
+          >
+            {(ask) => (
+              <Button size="sm" variant="danger" icon={<Trash2 size={12} />} onClick={ask} disabled={del.isPending} aria-label="Delete endpoint" />
+            )}
+          </ConfirmAction>
         </div>
       </div>
 
@@ -396,7 +407,7 @@ function DeliveryList({ endpointId }: { endpointId: string }) {
           columns={['Event', 'Status', { label: 'Attempts', align: 'right' }, 'HTTP', 'Created', 'Actions']}
           rows={rows.map((d) => [
             <code style={{ fontSize: 12, color: theme.accentText }}>{d.eventType}</code>,
-            <StatusPill status={d.status === 'pending' ? 'pending' : d.status === 'delivered' ? 'paid' : 'failed'} />,
+            <StatusPill status={d.status} />,
             d.attempts,
             d.httpStatus != null ? (
               <code

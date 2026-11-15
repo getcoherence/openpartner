@@ -194,6 +194,7 @@ export function AdminPartnerCoupons({ ownPartnerId }: { ownPartnerId?: string } 
               </div>
             )}
             {availableCampaigns.length > 0 ? (
+              <>
               <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8, alignItems: 'end' }}>
                 <div>
                   <Label>Program</Label>
@@ -205,7 +206,6 @@ export function AdminPartnerCoupons({ ownPartnerId }: { ownPartnerId?: string } 
                     <option value="">— pick a campaign —</option>
                     {availableCampaigns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
-                  {selectedProgram && <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 6 }}>Customer discount: {customerDiscount(selectedProgram.customerReward)}</div>}
                 </div>
                 <div>
                   <Label>Code (optional)</Label>
@@ -220,6 +220,8 @@ export function AdminPartnerCoupons({ ownPartnerId }: { ownPartnerId?: string } 
                   {mint.isPending ? 'Minting…' : 'Mint coupon'}
                 </Button>
               </div>
+              {selectedProgram && <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 6 }}>Customer discount: {customerDiscount(selectedProgram.customerReward)}</div>}
+              </>
             ) : (
               <p style={{ color: theme.textMuted, fontSize: 13, margin: 0 }}>
                 {(coupons.data?.coupons ?? []).length === 0
