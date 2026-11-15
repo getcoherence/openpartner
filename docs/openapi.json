@@ -7855,6 +7855,8 @@
                 "partner.activated",
                 "partnership.approved",
                 "payout.created",
+                "coupon.registered",
+                "coupon.deactivated",
                 "*"
               ]
             },
@@ -7895,6 +7897,8 @@
                 "partner.activated",
                 "partnership.approved",
                 "payout.created",
+                "coupon.registered",
+                "coupon.deactivated",
                 "*"
               ]
             },
@@ -19926,7 +19930,9 @@
                 "partner.created",
                 "partner.activated",
                 "partnership.approved",
-                "payout.created"
+                "payout.created",
+                "coupon.registered",
+                "coupon.deactivated"
               ]
             },
             "required": false,
@@ -24351,6 +24357,298 @@
                       "currency",
                       "method",
                       "commissionIds"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "event",
+                  "created",
+                  "data"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges. A non-2xx answer, a redirect, or no answer within 10 seconds marks the delivery failed. Failed deliveries are not retried automatically."
+          }
+        }
+      }
+    },
+    "coupon.registered": {
+      "post": {
+        "operationId": "webhook_coupon_registered",
+        "tags": [
+          "Webhook events"
+        ],
+        "summary": "coupon.registered",
+        "description": "A coupon code was minted for a partner: by an admin, the partner, or a Network creator (`POST /partners/{id}/coupons`), or automatically as the partner's default code when they are granted a program, including when the partner is created. A partner created with programs may send this before `partner.created`; deliveries are not ordered.\n\nSubscribe with `events: [\"coupon.registered\"]` (or `\"*\"`). Delivered as a signed JSON POST; see **Webhooks** in the introduction for verification.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret."
+            },
+            "required": true,
+            "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret.",
+            "name": "x-openpartner-signature",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off."
+            },
+            "required": true,
+            "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off.",
+            "name": "x-openpartner-timestamp",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The event type, e.g. `commission.accrued`."
+            },
+            "required": true,
+            "description": "The event type, e.g. `commission.accrued`.",
+            "name": "x-openpartner-event",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The envelope `id`."
+            },
+            "required": true,
+            "description": "The envelope `id`.",
+            "name": "x-openpartner-delivery",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Unique per event (`evt_…`). A manual redelivery reuses it, so dedupe on this.",
+                    "example": "evt_01JABCDEF0123456789ABCDEFG"
+                  },
+                  "event": {
+                    "type": "string",
+                    "enum": [
+                      "coupon.registered"
+                    ]
+                  },
+                  "created": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "Z$"
+                  },
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "couponId": {
+                        "type": "string"
+                      },
+                      "partnerId": {
+                        "type": "string",
+                        "description": "The partner the code credits."
+                      },
+                      "programId": {
+                        "type": "string"
+                      },
+                      "code": {
+                        "type": "string",
+                        "description": "What the customer types at checkout."
+                      },
+                      "customerDiscount": {
+                        "type": "boolean",
+                        "description": "A Stripe promotion code for this code is in the brand's Stripe, so the customer's discount applies at checkout. False: the program has no customer discount, or the promo isn't in the brand's Stripe yet."
+                      },
+                      "brandChosen": {
+                        "type": "boolean",
+                        "description": "The brand's admin typed this code, rather than it being generated or the partner's pick."
+                      },
+                      "createdAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "Z$"
+                      },
+                      "source": {
+                        "type": "string",
+                        "enum": [
+                          "admin",
+                          "partner",
+                          "network",
+                          "program_grant"
+                        ],
+                        "description": "Who minted it. `admin`: the brand's admin. `partner`: the partner, in their portal. `network`: an OpenPartner Network creator, through a `partners:write` key. `program_grant`: OpenPartner minted the partner's default code when they were granted the program, at creation (`POST /partners`, a Network approval) or later (`POST /partners/{id}/programs`). New values may be added."
+                      }
+                    },
+                    "required": [
+                      "couponId",
+                      "partnerId",
+                      "programId",
+                      "code",
+                      "customerDiscount",
+                      "brandChosen",
+                      "createdAt",
+                      "source"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "event",
+                  "created",
+                  "data"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges. A non-2xx answer, a redirect, or no answer within 10 seconds marks the delivery failed. Failed deliveries are not retried automatically."
+          }
+        }
+      }
+    },
+    "coupon.deactivated": {
+      "post": {
+        "operationId": "webhook_coupon_deactivated",
+        "tags": [
+          "Webhook events"
+        ],
+        "summary": "coupon.deactivated",
+        "description": "A coupon code was retired and no longer attributes: deactivated or deleted in the portal (`DELETE /partners/{id}/coupons/{couponId}`; codes are never hard-deleted, so both are this event), or retired because the partner lost access to its program. Fires once per code; deactivating an already-inactive code sends nothing.\n\nSubscribe with `events: [\"coupon.deactivated\"]` (or `\"*\"`). Delivered as a signed JSON POST; see **Webhooks** in the introduction for verification.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret."
+            },
+            "required": true,
+            "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret.",
+            "name": "x-openpartner-signature",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off."
+            },
+            "required": true,
+            "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off.",
+            "name": "x-openpartner-timestamp",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The event type, e.g. `commission.accrued`."
+            },
+            "required": true,
+            "description": "The event type, e.g. `commission.accrued`.",
+            "name": "x-openpartner-event",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The envelope `id`."
+            },
+            "required": true,
+            "description": "The envelope `id`.",
+            "name": "x-openpartner-delivery",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Unique per event (`evt_…`). A manual redelivery reuses it, so dedupe on this.",
+                    "example": "evt_01JABCDEF0123456789ABCDEFG"
+                  },
+                  "event": {
+                    "type": "string",
+                    "enum": [
+                      "coupon.deactivated"
+                    ]
+                  },
+                  "created": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "Z$"
+                  },
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "couponId": {
+                        "type": "string"
+                      },
+                      "partnerId": {
+                        "type": "string",
+                        "description": "The partner the code credits."
+                      },
+                      "programId": {
+                        "type": "string"
+                      },
+                      "code": {
+                        "type": "string",
+                        "description": "What the customer types at checkout."
+                      },
+                      "customerDiscount": {
+                        "type": "boolean",
+                        "description": "A Stripe promotion code for this code is in the brand's Stripe, so the customer's discount applies at checkout. False: the program has no customer discount, or the promo isn't in the brand's Stripe yet."
+                      },
+                      "brandChosen": {
+                        "type": "boolean",
+                        "description": "The brand's admin typed this code, rather than it being generated or the partner's pick."
+                      },
+                      "createdAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "Z$"
+                      },
+                      "deactivatedAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "Z$"
+                      },
+                      "source": {
+                        "type": "string",
+                        "enum": [
+                          "admin",
+                          "partner",
+                          "network",
+                          "grant_revoked"
+                        ],
+                        "description": "Who retired it. `admin`, `partner`, `network`: as on `coupon.registered`, through `DELETE /partners/{id}/coupons/{couponId}`. `grant_revoked`: the partner's access to the program was revoked (`DELETE /partners/{id}/programs/{programId}`), which retires every active code they hold on it. New values may be added."
+                      }
+                    },
+                    "required": [
+                      "couponId",
+                      "partnerId",
+                      "programId",
+                      "code",
+                      "customerDiscount",
+                      "brandChosen",
+                      "createdAt",
+                      "deactivatedAt",
+                      "source"
                     ]
                   }
                 },

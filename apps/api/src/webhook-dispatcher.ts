@@ -253,7 +253,24 @@ const SYNTHETIC_PAYLOADS: Record<string, () => Record<string, unknown>> = {
     commissionIds: [`01J${'0'.repeat(23)}`],
     statementUrl: `https://partners.example.com/api/payouts/01J${'5'.repeat(23)}/statement`,
   }),
+  // Coupon events share coupon-events.ts's payload shape.
+  'coupon.registered': () => sampleCouponPayload({ source: 'program_grant' }),
+  'coupon.deactivated': () =>
+    sampleCouponPayload({ deactivatedAt: new Date().toISOString(), source: 'partner' }),
 };
+
+function sampleCouponPayload(extra: Record<string, unknown>): Record<string, unknown> {
+  return {
+    couponId: `cpn_01J${'7'.repeat(23)}`,
+    partnerId: `01J${'1'.repeat(23)}`,
+    programId: 'cmp_default',
+    code: 'SAMPLE15',
+    customerDiscount: true,
+    brandChosen: false,
+    createdAt: new Date().toISOString(),
+    ...extra,
+  };
+}
 
 function sampleLifecyclePayload(extra: Record<string, unknown> = {}): Record<string, unknown> {
   return {

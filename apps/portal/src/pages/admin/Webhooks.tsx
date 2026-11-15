@@ -33,6 +33,8 @@ const KNOWN_EVENTS = [
   'partner.activated',
   'partnership.approved',
   'payout.created',
+  'coupon.registered',
+  'coupon.deactivated',
 ] as const;
 
 interface Endpoint {
@@ -76,7 +78,7 @@ export function WebhooksPage() {
     <Page
       edits
       title="Webhooks"
-      subtitle="Subscribe to attribution, commission, payout, and partnership events."
+      subtitle="Subscribe to attribution, commission, payout, partnership, and coupon events."
       actions={<Button icon={<Plus size={14} />} onClick={() => setShowCreate(true)}>New endpoint</Button>}
     >
       <ErrorBanner error={endpoints.error} />
