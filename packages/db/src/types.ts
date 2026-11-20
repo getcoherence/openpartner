@@ -1276,6 +1276,8 @@ export type WebhookEventType =
   | 'partner.activated'
   | 'partnership.approved'
   | 'payout.created'
+  | 'coupon.registered'
+  | 'coupon.deactivated'
   | (string & {});
 
 export interface WebhookEndpointRow {

@@ -28,6 +28,8 @@ export const KNOWN_EVENTS = [
   'partner.activated',
   'partnership.approved',
   'payout.created',
+  'coupon.registered',
+  'coupon.deactivated',
   '*',
 ] as const;
 

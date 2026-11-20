@@ -52,6 +52,7 @@ import { currencyInputSchema, ingestCurrency } from '../currency.js';
 import { codeExistsInStripe, deactivateCustomerReward, provisionCustomerReward } from '../customer-rewards.js';
 import { recordedFromStripe, recordedFromStripeDetail } from '../stripe-app.js';
 import { noteTrackingIssue } from '../tracking-issues.js';
+import { couponActor, emitCouponDeactivated, emitCouponRegistered } from '../coupon-events.js';
 
 export const couponsRouter = Router();
 
@@ -310,6 +311,7 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
       brandChosen: adminChosen,
     });
     const row = await db<CouponRow>(TABLES.Coupon).where({ id, tenantId }).first();
+    if (row) emitCouponRegistered(db, tenantId, row, couponActor(principal?.role));
     return res.status(201).json({ ...row, canEdit: program.partnersMayCustomizeCode });
   } catch (err) {
     // No row owns the promo we just provisioned — release it so the code
@@ -380,7 +382,10 @@ couponsRouter.delete('/partners/:id/coupons/:couponId', requireAuth, async (req,
     .where({ id: coupon.id, tenantId })
     .whereNull('deactivatedAt')
     .update({ deactivatedAt: new Date() })
-    .returning(['stripePromotionCodeId'])) as Array<Pick<CouponRow, 'stripePromotionCodeId'>>;
+    .returning('*')) as CouponRow[];
+  // Only the request that flipped it reports it: a concurrent retry finds
+  // nothing to update and sends no second event.
+  if (retired) emitCouponDeactivated(db, tenantId, retired, couponActor(principal?.role));
   const retiredPromo = retired?.stripePromotionCodeId;
   if (retiredPromo) {
     afterCommit(req, 'deactivate customer reward', () => deactivateCustomerReward(tenantId, retiredPromo));
@@ -709,7 +714,7 @@ export async function autoMintCouponsForGrants(
         ? await provisionCustomerReward(tenantId, campaign.customerReward, code, campaign.name)
         : null;
 
-      let inserted: Array<Pick<CouponRow, 'id'>>;
+      let inserted: CouponRow[];
       try {
         inserted = (await db<CouponRow>(TABLES.Coupon)
           .insert({
@@ -728,13 +733,18 @@ export async function autoMintCouponsForGrants(
           // transaction; an empty RETURNING is the collision signal.
           .onConflict(['tenantId', 'code'])
           .ignore()
-          .returning('id')) as Array<Pick<CouponRow, 'id'>>;
+          .returning('*')) as CouponRow[];
       } catch (err) {
         if (provisioned) await deactivateCustomerReward(tenantId, provisioned.stripePromotionCodeId);
         console.error('[coupons] auto-mint failed', { partnerId: partner.id, programId, err });
         break;
       }
-      if (inserted.length > 0) break;
+      if (inserted[0]) {
+        // The partner's default code: covers a partner created with
+        // programs, a Network approval, and a later grant alike.
+        emitCouponRegistered(db, tenantId, inserted[0], 'program_grant');
+        break;
+      }
       // Collided: no row owns the promo provisioned for this draw.
       if (provisioned) await deactivateCustomerReward(tenantId, provisioned.stripePromotionCodeId);
     }
