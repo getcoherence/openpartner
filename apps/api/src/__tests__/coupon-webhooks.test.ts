@@ -178,6 +178,25 @@ describe.skipIf(skipIntegration)('coupon webhooks', () => {
     ]);
   });
 
+  it('a scoped partners:write key carries source api_key, whoever holds it', async () => {
+    // The brand's own integration and the key it issued the Network look
+    // the same to the API (labels are free text), so neither is "network".
+    const programId = await seedProgram();
+    const partner = await seedPartner();
+    const scoped = await request(app).post('/api-keys/scoped').set(admin).send({ scopes: ['partners:write'], label: 'network_federation' });
+    expect(scoped.status).toBe(201);
+    const asKey = { Authorization: `Bearer ${scoped.body.plaintext as string}` };
+
+    const minted = await request(app).post(`/partners/${partner.id}/coupons`).set(asKey).send({ programId });
+    expect(minted.status).toBe(201);
+    const del = await request(app).delete(`/partners/${partner.id}/coupons/${minted.body.id}`).set(asKey);
+    expect(del.status).toBe(200);
+    await settle();
+
+    expect(dispatched('coupon.registered').map((p) => p.source)).toEqual(['api_key']);
+    expect(dispatched('coupon.deactivated').map((p) => p.source)).toEqual(['api_key']);
+  });
+
   it("a partner created with programs fires coupon.registered for each default code, as does a later grant", async () => {
     const first = await seedProgram(false);
     const second = await seedProgram(false);

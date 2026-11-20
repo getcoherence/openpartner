@@ -6,11 +6,11 @@
  * is set and the Stripe PromotionCode disabled. One event covers both.
  *
  * Every place a Coupon row is written or retired calls these:
- *   - POST   /partners/:id/coupons             registered (admin / partner / network)
+ *   - POST   /partners/:id/coupons             registered (admin / partner / api_key)
  *   - autoMintCouponsForGrants                  registered (program_grant): the
  *     default code minted when a partner is created with programs, approved
  *     from the Network, or granted a program later
- *   - DELETE /partners/:id/coupons/:couponId   deactivated (admin / partner / network)
+ *   - DELETE /partners/:id/coupons/:couponId   deactivated (admin / partner / api_key)
  *   - DELETE /partners/:id/programs/:programId deactivated (grant_revoked)
  *
  * Queued with onCommit, so a receiver that fetches the coupon finds it, and
@@ -134,9 +134,13 @@ export function emitCouponDeactivated(
   onCommit(db, 'coupon.deactivated webhook', () => dispatchEvent(tenantId, 'coupon.deactivated', payload));
 }
 
-/** The caller of a coupon route, as a webhook source. */
-export function couponActor(role: string | undefined): 'admin' | 'partner' | 'network' {
+/** The caller of a coupon route, as a webhook source. The routes admit
+ *  admins, the partner themselves, and scoped keys holding partners:write.
+ *  A scoped key is `api_key` whoever holds it: the brand's own integration
+ *  or the key it issued the OpenPartner Network. Key labels are free text,
+ *  so they can't tell the two apart. */
+export function couponActor(role: string | undefined): 'admin' | 'partner' | 'api_key' {
   if (role === 'admin') return 'admin';
   if (role === 'partner') return 'partner';
-  return 'network';
+  return 'api_key';
 }

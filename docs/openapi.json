@@ -24591,10 +24591,10 @@
                         "enum": [
                           "admin",
                           "partner",
-                          "network",
+                          "api_key",
                           "program_grant"
                         ],
-                        "description": "Who minted it. `admin`: the brand's admin. `partner`: the partner, in their portal. `network`: an OpenPartner Network creator, through a `partners:write` key. `program_grant`: OpenPartner minted the partner's default code when they were granted the program, at creation (`POST /partners`, a Network approval) or later (`POST /partners/{id}/programs`). New values may be added."
+                        "description": "Who minted it. `admin`: an admin, in the portal or with an admin API key. `partner`: the partner, in their portal or with their own key. `api_key`: a scoped key holding `partners:write`, which is your own integration or the key you issued the OpenPartner Network (minting for a creator); the two aren't told apart. `program_grant`: OpenPartner minted the partner's default code when they were granted the program, at creation (`POST /partners`, a Network approval) or later (`POST /partners/{id}/programs`). New values may be added."
                       }
                     },
                     "required": [
@@ -24739,10 +24739,10 @@
                         "enum": [
                           "admin",
                           "partner",
-                          "network",
+                          "api_key",
                           "grant_revoked"
                         ],
-                        "description": "Who retired it. `admin`, `partner`, `network`: as on `coupon.registered`, through `DELETE /partners/{id}/coupons/{couponId}`. `grant_revoked`: the partner's access to the program was revoked (`DELETE /partners/{id}/programs/{programId}`), which retires every active code they hold on it. New values may be added."
+                        "description": "Who retired it. `admin`, `partner`, `api_key`: as on `coupon.registered`, through `DELETE /partners/{id}/coupons/{couponId}`. `grant_revoked`: the partner's access to the program was revoked (`DELETE /partners/{id}/programs/{programId}`), which retires every active code they hold on it. New values may be added."
                       }
                     },
                     "required": [
