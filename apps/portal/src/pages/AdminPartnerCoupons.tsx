@@ -194,32 +194,34 @@ export function AdminPartnerCoupons({ ownPartnerId }: { ownPartnerId?: string } 
               </div>
             )}
             {availableCampaigns.length > 0 ? (
-              <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8, alignItems: 'end' }}>
-                <div>
-                  <Label>Program</Label>
-                  <select
-                    value={pickedProgram}
-                    onChange={(e) => setPickedProgram(e.target.value)}
-                    style={{ width: '100%', padding: '8px 10px', background: theme.surface2, border: `1px solid ${theme.border}`, borderRadius: theme.radiusSm, color: theme.text, fontSize: 13 }}
-                  >
-                    <option value="">— pick a campaign —</option>
-                    {availableCampaigns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  </select>
-                  {selectedProgram && <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 6 }}>Customer discount: {customerDiscount(selectedProgram.customerReward)}</div>}
+              <>
+                <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8, alignItems: 'end' }}>
+                  <div>
+                    <Label>Program</Label>
+                    <select
+                      value={pickedProgram}
+                      onChange={(e) => setPickedProgram(e.target.value)}
+                      style={{ width: '100%', padding: '8px 10px', background: theme.surface2, border: `1px solid ${theme.border}`, borderRadius: theme.radiusSm, color: theme.text, fontSize: 13 }}
+                    >
+                      <option value="">— pick a campaign —</option>
+                      {availableCampaigns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <Label>Code (optional)</Label>
+                    <Input
+                      value={customCode}
+                      onChange={(e) => setCustomCode(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, ''))}
+                      placeholder="auto-generates if blank"
+                      style={{ fontFamily: theme.fontMono }}
+                    />
+                  </div>
+                  <Button onClick={() => mint.mutate()} disabled={!pickedProgram || mint.isPending}>
+                    {mint.isPending ? 'Minting…' : 'Mint coupon'}
+                  </Button>
                 </div>
-                <div>
-                  <Label>Code (optional)</Label>
-                  <Input
-                    value={customCode}
-                    onChange={(e) => setCustomCode(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, ''))}
-                    placeholder="auto-generates if blank"
-                    style={{ fontFamily: theme.fontMono }}
-                  />
-                </div>
-                <Button onClick={() => mint.mutate()} disabled={!pickedProgram || mint.isPending}>
-                  {mint.isPending ? 'Minting…' : 'Mint coupon'}
-                </Button>
-              </div>
+                {selectedProgram && <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 6 }}>Customer discount: {customerDiscount(selectedProgram.customerReward)}</div>}
+              </>
             ) : (
               <p style={{ color: theme.textMuted, fontSize: 13, margin: 0 }}>
                 {(coupons.data?.coupons ?? []).length === 0

@@ -3,7 +3,7 @@
  * payloads the `dispatchEvent` call sites build (attribution.ts,
  * commission-events.ts, bonuses.ts, payouts.ts, payout-transfers.ts,
  * funding/executor.ts, routes/partners.ts, routes/partner-signup.ts,
- * routes/partner-auth.ts).
+ * routes/partner-auth.ts, coupon-events.ts).
  *
  * The test-fire samples in webhook-dispatcher.ts are parsed against these
  * by __tests__/openapi.test.ts, and real deliveries by
@@ -15,7 +15,7 @@ import { z } from '../zod.js';
 import type { OpenAPIRegistry } from '@asteasolutions/zod-to-openapi';
 import { KNOWN_EVENTS } from '../routes/webhooks.js';
 import { ATTRIBUTION_MODELS, BONUS_SOURCES, PAYOUT_METHODS } from './enums.js';
-import { Decimal, orNull } from './schemas.js';
+import { CustomerReward, Decimal, commissionSubRule, orNull } from './schemas.js';
 
 const id = z.string();
 
@@ -45,6 +45,24 @@ const partnerSource = z.enum(PARTNER_SOURCES).openapi({
   description:
     'How the partner was added. `api`: `POST /partners` (the admin portal, an integration, or a Network approval, which also fires `partnership.approved`). `join_page`: they applied on the public join page. New values may be added.',
 });
+
+/** Who minted a coupon, on coupon.registered. */
+export const COUPON_REGISTERED_SOURCES = ['admin', 'partner', 'api_key', 'program_grant'] as const;
+/** Who retired a coupon, on coupon.deactivated. */
+export const COUPON_DEACTIVATED_SOURCES = ['admin', 'partner', 'api_key', 'grant_revoked'] as const;
+
+const couponBase = {
+  couponId: id,
+  partnerId: id.openapi({ description: 'The partner the code credits.' }),
+  programId: id,
+  code: z.string().openapi({ description: 'What the customer types at checkout.' }),
+  customerDiscount: z.boolean().openapi({
+    description:
+      "A Stripe promotion code for this code is in the brand's Stripe, so the customer's discount applies at checkout. False: the program has no customer discount, or the promo isn't in the brand's Stripe yet.",
+  }),
+  brandChosen: z.boolean().openapi({ description: "The brand's admin typed this code, rather than it being generated or the partner's pick." }),
+  createdAt: z.string().datetime(),
+};
 
 /** On a recruiter commission (two-tier, docs/two-tier-commissions.md). */
 const recruiterFields = {
@@ -217,6 +235,46 @@ export const WEBHOOK_PAYLOADS = {
         "The payout's statement: `GET /payouts/{id}/statement` on your API address. Fetch it with an admin key or a key holding `payouts:read`; add `?format=json` for its data. Absent on deliveries of payouts made before statements existed.",
     }),
   }),
+  'coupon.registered': z.object({
+    ...couponBase,
+    commission: z
+      .object({
+        source: z.enum(['program', 'partner_program', 'partner']).openapi({
+          description:
+            "Whose terms these are. `program`: the program's own rule. `partner_program`: terms set for this partner on this program. `partner`: this partner's terms on every program. The first that exists applies, in the order `partner_program`, `partner`, `program`.",
+        }),
+        summary: z.string().openapi({
+          description: 'The terms in words, as the portal shows them, e.g. `$25 on first signup + 20% recurring on every invoice for 12 months`. Fixed amounts with no currency of their own are shown in your default currency.',
+          example: '$25 on first signup + 20% recurring on every invoice for 12 months',
+        }),
+        rules: z.array(commissionSubRule).openapi({
+          description:
+            "The sub-rules the partner is paid on: `type` `percent` (`value` 20 = 20% of the event's value) or `fixed` (`value` in the rule's `currency`, else the event's). Every matching sub-rule pays, so one sale can earn several.",
+        }),
+      })
+      .optional()
+      .openapi({
+        description:
+          "What the partner earns on sales this code brings in, as it stands when the event is sent. Later changes to the terms send no event. Omitted only if the lookup failed.",
+      }),
+    customerReward: orNull(CustomerReward)
+      .optional()
+      .openapi({
+        description: "The discount the program gives customers who use a partner's code. Null: none. Omitted only if the lookup failed.",
+      }),
+    source: z.enum(COUPON_REGISTERED_SOURCES).openapi({
+      description:
+        "Who minted it. `admin`: an admin, in the portal or with an admin API key. `partner`: the partner, in their portal or with their own key. `api_key`: a scoped key holding `partners:write`, which is your own integration or the key you issued the OpenPartner Network (minting for a creator); the two aren't told apart. `program_grant`: OpenPartner minted the partner's default code when they were granted the program, at creation (`POST /partners`, a Network approval) or later (`POST /partners/{id}/programs`). New values may be added.",
+    }),
+  }),
+  'coupon.deactivated': z.object({
+    ...couponBase,
+    deactivatedAt: z.string().datetime(),
+    source: z.enum(COUPON_DEACTIVATED_SOURCES).openapi({
+      description:
+        "Who retired it. `admin`, `partner`, `api_key`: as on `coupon.registered`, through `DELETE /partners/{id}/coupons/{couponId}`. `grant_revoked`: the partner's access to the program was revoked (`DELETE /partners/{id}/programs/{programId}`), which retires every active code they hold on it. New values may be added.",
+    }),
+  }),
 } satisfies Record<Exclude<(typeof KNOWN_EVENTS)[number], '*'>, z.ZodObject>;
 
 export type WebhookEventName = keyof typeof WEBHOOK_PAYLOADS;
@@ -249,6 +307,10 @@ const WEBHOOK_DESCRIPTIONS: Record<WebhookEventName, string> = {
   'partnership.approved': 'A partner was created from an approved OpenPartner Network application.',
   'payout.created':
     'A payout was recorded: a Stripe Connect transfer that went out, or a `manual` payout you still have to send (it stays `pending` until confirmed).',
+  'coupon.registered':
+    "A coupon code was minted for a partner: by an admin, the partner, or a Network creator (`POST /partners/{id}/coupons`), or automatically as the partner's default code when they are granted a program, including when the partner is created. Carries what the code is worth: the commission the partner earns on its program (`commission`) and the customer's discount (`customerReward`). A partner created with programs may send this before `partner.created`; deliveries are not ordered.",
+  'coupon.deactivated':
+    'A coupon code was retired and no longer attributes: deactivated or deleted in the portal (`DELETE /partners/{id}/coupons/{couponId}`; codes are never hard-deleted, so both are this event), or retired because the partner lost access to its program. Fires once per code; deactivating an already-inactive code sends nothing.',
 };
 
 export function envelopeSchema(event: string, data: z.ZodTypeAny) {

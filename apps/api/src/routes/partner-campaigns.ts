@@ -34,6 +34,7 @@ import { requireAdmin, requireAuth } from '../auth.js';
 import { afterCommit, tenantOf } from '../tenancy.js';
 import { deactivateCustomerReward } from '../customer-rewards.js';
 import { autoMintCouponsForGrants } from './coupons.js';
+import { emitCouponDeactivated } from '../coupon-events.js';
 import { PARTNER_COMMISSION_COLUMNS } from '../partner-commission.js';
 
 export const partnerCampaignsRouter = Router();
@@ -134,7 +135,8 @@ partnerCampaignsRouter.delete('/partners/:id/programs/:programId', requireAuth, 
     .where({ tenantId, partnerId: req.params.id, programId: req.params.programId })
     .whereNull('deactivatedAt')
     .update({ deactivatedAt: new Date() })
-    .returning(['id', 'code', 'stripePromotionCodeId'])) as Array<Pick<CouponRow, 'id' | 'code' | 'stripePromotionCodeId'>>;
+    .returning('*')) as CouponRow[];
+  for (const c of coupons) emitCouponDeactivated(db, tenantId, c, 'grant_revoked');
   const promos = coupons.map((c) => c.stripePromotionCodeId).filter((id): id is string => id != null);
   if (promos.length > 0) {
     afterCommit(req, 'deactivate customer rewards', async () => {
