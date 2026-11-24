@@ -128,7 +128,21 @@ export async function isNetworkFederationCall(
   metadata: Record<string, unknown> | undefined,
 ): Promise<boolean> {
   if (metadata?.source !== NETWORK_ORIGIN_SOURCE) return false;
+  return isNetworkKey(db, tenantId, principal);
+}
+
+/**
+ * Whether the call came in on the scoped key this brand registered with the
+ * Network (membership.scopedKeyId): the Network acting for a creator. Told
+ * apart by key id, because a key's label is free text and the brand's own
+ * integration could carry the same one.
+ *
+ * The key arrives as `scoped` on routes without grantScope, and as `admin`
+ * on routes where grantScope admitted it.
+ */
+export async function isNetworkKey(db: Knex, tenantId: string, principal: ApiKeyPrincipal | undefined): Promise<boolean> {
   if (!principal || principal.source !== 'db') return false;
+  if (principal.role !== 'admin' && principal.role !== 'scoped') return false;
   const m = await getNetworkMembership(db, tenantId);
   return !!m?.scopedKeyId && m.scopedKeyId === principal.apiKeyId;
 }

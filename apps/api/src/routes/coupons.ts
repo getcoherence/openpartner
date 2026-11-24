@@ -311,7 +311,7 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
       brandChosen: adminChosen,
     });
     const row = await db<CouponRow>(TABLES.Coupon).where({ id, tenantId }).first();
-    if (row) emitCouponRegistered(db, tenantId, row, couponActor(principal?.role));
+    if (row) emitCouponRegistered(db, tenantId, row, await couponActor(db, tenantId, principal));
     return res.status(201).json({ ...row, canEdit: program.partnersMayCustomizeCode });
   } catch (err) {
     // No row owns the promo we just provisioned — release it so the code
@@ -385,7 +385,7 @@ couponsRouter.delete('/partners/:id/coupons/:couponId', requireAuth, async (req,
     .returning('*')) as CouponRow[];
   // Only the request that flipped it reports it: a concurrent retry finds
   // nothing to update and sends no second event.
-  if (retired) emitCouponDeactivated(db, tenantId, retired, couponActor(principal?.role));
+  if (retired) emitCouponDeactivated(db, tenantId, retired, await couponActor(db, tenantId, principal));
   const retiredPromo = retired?.stripePromotionCodeId;
   if (retiredPromo) {
     afterCommit(req, 'deactivate customer reward', () => deactivateCustomerReward(tenantId, retiredPromo));

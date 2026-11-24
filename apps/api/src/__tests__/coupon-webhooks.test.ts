@@ -38,6 +38,7 @@ vi.mock('../webhook-dispatcher.js', async (importOriginal) => {
 const { db } = await import('../db.js');
 const { createApp } = await import('../app.js');
 const { dispatchEvent } = await import('../webhook-dispatcher.js');
+const { saveNetworkMembership } = await import('../network-client.js');
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 const app = createApp({ enableLogger: false });
@@ -54,6 +55,7 @@ const TABLES_TO_CLEAN = [
 ];
 
 async function clean(): Promise<void> {
+  await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID, key: 'network_membership' }).del();
   for (const t of TABLES_TO_CLEAN) await db(t).where({ tenantId: DEFAULT_TENANT_ID }).del();
 }
 
@@ -178,23 +180,34 @@ describe.skipIf(skipIntegration)('coupon webhooks', () => {
     ]);
   });
 
-  it('a scoped partners:write key carries source api_key, whoever holds it', async () => {
-    // The brand's own integration and the key it issued the Network look
-    // the same to the API (labels are free text), so neither is "network".
+  it("the key registered with the Network carries source network; any other scoped key api_key, whatever its label", async () => {
     const programId = await seedProgram();
     const partner = await seedPartner();
-    const scoped = await request(app).post('/api-keys/scoped').set(admin).send({ scopes: ['partners:write'], label: 'network_federation' });
-    expect(scoped.status).toBe(201);
-    const asKey = { Authorization: `Bearer ${scoped.body.plaintext as string}` };
+    const scopedKey = async (label: string) => {
+      const res = await request(app).post('/api-keys/scoped').set(admin).send({ scopes: ['partners:write'], label });
+      expect(res.status).toBe(201);
+      return { id: res.body.id as string, auth: { Authorization: `Bearer ${res.body.plaintext as string}` } };
+    };
+    const federation = await scopedKey('network_federation');
+    // The brand's own integration, labelled like the Network's key: the
+    // label is free text, so only the registered key id counts.
+    const integration = await scopedKey('network_federation');
+    await saveNetworkMembership(db, DEFAULT_TENANT_ID, {
+      enabled: true,
+      networkUrl: 'https://network.example.test',
+      scopedKeyId: federation.id,
+    });
 
-    const minted = await request(app).post(`/partners/${partner.id}/coupons`).set(asKey).send({ programId });
-    expect(minted.status).toBe(201);
-    const del = await request(app).delete(`/partners/${partner.id}/coupons/${minted.body.id}`).set(asKey);
-    expect(del.status).toBe(200);
+    for (const key of [federation, integration]) {
+      const minted = await request(app).post(`/partners/${partner.id}/coupons`).set(key.auth).send({ programId });
+      expect(minted.status).toBe(201);
+      const del = await request(app).delete(`/partners/${partner.id}/coupons/${minted.body.id}`).set(key.auth);
+      expect(del.status).toBe(200);
+    }
     await settle();
 
-    expect(dispatched('coupon.registered').map((p) => p.source)).toEqual(['api_key']);
-    expect(dispatched('coupon.deactivated').map((p) => p.source)).toEqual(['api_key']);
+    expect(dispatched('coupon.registered').map((p) => p.source)).toEqual(['network', 'api_key']);
+    expect(dispatched('coupon.deactivated').map((p) => p.source)).toEqual(['network', 'api_key']);
   });
 
   it("a partner created with programs fires coupon.registered for each default code, as does a later grant", async () => {
