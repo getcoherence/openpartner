@@ -29,7 +29,7 @@ import {
   type AwardBonusError,
 } from '../bonuses.js';
 import { currencyInputSchema } from '../currency.js';
-import { getNetworkMembership } from '../network-client.js';
+import { isNetworkKey } from '../network-consent.js';
 import { cursorTimestamp, decodeCursor, takePage, whereAfterCursor } from '../pagination.js';
 import { tenantOf } from '../tenancy.js';
 
@@ -87,7 +87,7 @@ bonusesRouter.post('/bonuses', requireAuth, grantScope('bonuses:write'), require
     return res.status(400).json({ error: 'invalid_amount', detail: 'amount must have at most two decimals.' });
   }
 
-  const source = (await isNetworkKey(db, tenantId, req)) ? 'network' : 'manual';
+  const source = (await isNetworkKey(db, tenantId, req.principal)) ? 'network' : 'manual';
   const result = await awardBonus(db, tenantId, { ...body.data, source, createdBy: actorOf(req) });
   if (!result.ok) {
     return res.status(result.status).json({
@@ -156,15 +156,6 @@ function withCommissionView(row: BonusListRow) {
     ...bonus,
     commission: { id: _commissionId, status: _status, payoutId: _payoutId, paidAt: _paidAt },
   };
-}
-
-/** The scoped key this brand registered with the OpenPartner Network
- *  (network-consent.ts isNetworkFederationCall, minus the metadata check). */
-async function isNetworkKey(db: Knex, tenantId: string, req: Request): Promise<boolean> {
-  const p = req.principal;
-  if (!p || p.role !== 'admin' || p.source !== 'db') return false;
-  const m = await getNetworkMembership(db, tenantId);
-  return !!m?.scopedKeyId && m.scopedKeyId === p.apiKeyId;
 }
 
 /** Who awarded it: the admin's id for a portal session, else the API key's. */

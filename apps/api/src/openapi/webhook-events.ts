@@ -47,9 +47,9 @@ const partnerSource = z.enum(PARTNER_SOURCES).openapi({
 });
 
 /** Who minted a coupon, on coupon.registered. */
-export const COUPON_REGISTERED_SOURCES = ['admin', 'partner', 'api_key', 'program_grant'] as const;
+export const COUPON_REGISTERED_SOURCES = ['admin', 'partner', 'network', 'api_key', 'program_grant'] as const;
 /** Who retired a coupon, on coupon.deactivated. */
-export const COUPON_DEACTIVATED_SOURCES = ['admin', 'partner', 'api_key', 'grant_revoked'] as const;
+export const COUPON_DEACTIVATED_SOURCES = ['admin', 'partner', 'network', 'api_key', 'grant_revoked'] as const;
 
 const couponBase = {
   couponId: id,
@@ -264,7 +264,7 @@ export const WEBHOOK_PAYLOADS = {
       }),
     source: z.enum(COUPON_REGISTERED_SOURCES).openapi({
       description:
-        "Who minted it. `admin`: an admin, in the portal or with an admin API key. `partner`: the partner, in their portal or with their own key. `api_key`: a scoped key holding `partners:write`, which is your own integration or the key you issued the OpenPartner Network (minting for a creator); the two aren't told apart. `program_grant`: OpenPartner minted the partner's default code when they were granted the program, at creation (`POST /partners`, a Network approval) or later (`POST /partners/{id}/programs`). New values may be added.",
+        "Who minted it. `admin`: an admin, in the portal or with an admin API key. `partner`: the partner, in their portal or with their own key. `network`: an OpenPartner Network creator, through the key you registered with the Network. `api_key`: any other scoped key holding `partners:write`, such as your own integration. `program_grant`: OpenPartner minted the partner's default code when they were granted the program, at creation (`POST /partners`, a Network approval) or later (`POST /partners/{id}/programs`). New values may be added.",
     }),
   }),
   'coupon.deactivated': z.object({
@@ -272,7 +272,7 @@ export const WEBHOOK_PAYLOADS = {
     deactivatedAt: z.string().datetime(),
     source: z.enum(COUPON_DEACTIVATED_SOURCES).openapi({
       description:
-        "Who retired it. `admin`, `partner`, `api_key`: as on `coupon.registered`, through `DELETE /partners/{id}/coupons/{couponId}`. `grant_revoked`: the partner's access to the program was revoked (`DELETE /partners/{id}/programs/{programId}`), which retires every active code they hold on it. New values may be added.",
+        "Who retired it. `admin`, `partner`, `network`, `api_key`: as on `coupon.registered`, through `DELETE /partners/{id}/coupons/{couponId}`. `grant_revoked`: the partner's access to the program was revoked (`DELETE /partners/{id}/programs/{programId}`), which retires every active code they hold on it. New values may be added.",
     }),
   }),
 } satisfies Record<Exclude<(typeof KNOWN_EVENTS)[number], '*'>, z.ZodObject>;
