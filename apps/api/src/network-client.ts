@@ -960,6 +960,10 @@ export const networkProxy = {
     callNetwork<{
       billingRequired: boolean;
       bundledWithMainPlan: boolean;
+      /** When this self-hosted vendor must be paying by (null = not yet
+       *  required), and whether it's on hold for not paying. */
+      requiredFrom?: string | null;
+      billingHold?: boolean;
       subscriptionStatus: string | null;
       stripeCustomerId: string | null;
       stripeSubscriptionId: string | null;
@@ -1095,6 +1099,29 @@ export async function setNetworkBookingFee(
   body: { defaultBps: number; updatedByEmail?: string },
 ): Promise<{ settings: { defaultBps: number } }> {
   return callNetworkAdmin(networkUrl, 'PUT', '/admin/booking-fee', body);
+}
+
+/** Ops console: when self-hosted brands must be paying for Network access
+ *  (openpartner-network selfhost-billing.ts). Null requiredFrom = gate off. */
+export interface SelfHostedNetworkBilling {
+  settings: { requiredFrom: string | null; graceDays: number };
+  updatedAt: string | null;
+  vendors: { listed: number; paying: number; held: number };
+}
+
+export async function getSelfHostedNetworkBilling(
+  networkUrl: string,
+): Promise<SelfHostedNetworkBilling & { maxGraceDays: number; updatedByEmail: string | null }> {
+  return callNetworkAdmin(networkUrl, 'GET', '/admin/self-hosted-billing');
+}
+
+/** Saving runs the Network's sweep at once: deadline notices go out, or
+ *  holds land, as the response's `sweep` counts. */
+export async function setSelfHostedNetworkBilling(
+  networkUrl: string,
+  body: { requiredFrom: string | null; graceDays: number; updatedByEmail?: string },
+): Promise<SelfHostedNetworkBilling & { sweep: { noticed: number; held: number; released: number } }> {
+  return callNetworkAdmin(networkUrl, 'PUT', '/admin/self-hosted-billing', body);
 }
 
 /** The platform-level Network origin. Creator moderation is cross-tenant, so
@@ -1245,6 +1272,10 @@ export interface NetworkVendorReviewEntry {
   reviewStatus: VendorReviewStatus;
   reviewedAt: string | null;
   reviewReason: string | null;
+  /** Self-hosted Network billing (openpartner-network selfhost-billing.ts).
+   *  Absent from a Network that predates it. */
+  subscriptionStatus?: string | null;
+  billingHoldAt?: string | null;
   createdAt: string;
   offeringCount: number;
   publishedOfferingCount: number;

@@ -489,7 +489,7 @@ export function AdminNetworkCreators() {
           )}
         </div>
       </div>
-      <ErrorBanner error={list.error} />
+      <ErrorBanner error={networkErrorCode(list.error) === 'billing_required' ? 'Subscribe under Network → Billing to use the Network.' : list.error} />
 
       {sideBySide ? (
         <div
@@ -877,6 +877,7 @@ const INVITE_ERROR_TEXT: Record<string, string> = {
   creator_not_found: 'This creator is no longer available (deleted account?).',
   already_invited: 'You already invited them to this offering.',
   plan_required: 'Activate your plan on Billing to invite creators.',
+  billing_required: 'Subscribe under Network → Billing to invite creators.',
 };
 
 function InviteDialog({ creator, onClose }: { creator: DirectoryRow; onClose: () => void }) {

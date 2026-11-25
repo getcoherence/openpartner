@@ -8,6 +8,10 @@ import { theme } from '../../theme.js';
 interface NetworkBilling {
   billingRequired: boolean;
   bundledWithMainPlan: boolean;
+  /** When a subscription is required from (null = not yet), and whether
+   *  the listing is on hold for not having one. Absent on an older Network. */
+  requiredFrom?: string | null;
+  billingHold?: boolean;
   subscriptionStatus: string | null;
   stripeCustomerId: string | null;
   stripeSubscriptionId: string | null;
@@ -60,6 +64,7 @@ function BillingPanel() {
   }
   return (
     <>
+      <HoldNotice data={data} />
       <StatusCard data={data} />
       {data.subscriptionStatus === 'active' || data.subscriptionStatus === 'trialing' ? (
         <ManagePanel />
@@ -67,6 +72,21 @@ function BillingPanel() {
         <SubscribePanel data={data} />
       )}
     </>
+  );
+}
+
+/** The Network's billing gate: on hold now, or a deadline coming up. */
+function HoldNotice({ data }: { data: NetworkBilling }) {
+  const paying = ['active', 'trialing', 'past_due'].includes(data.subscriptionStatus ?? '');
+  if (data.billingHold) {
+    return <ErrorBanner error="Your programs are off the marketplace and you can't approve new creators until you subscribe." />;
+  }
+  if (!data.requiredFrom || paying) return null;
+  const when = new Date(data.requiredFrom).toLocaleDateString(undefined, { timeZone: 'UTC', month: 'long', day: 'numeric', year: 'numeric' });
+  return (
+    <Card style={{ marginBottom: 16, borderColor: theme.warn }}>
+      <strong>Subscription required from {when}.</strong> Without one, your programs come off the marketplace then.
+    </Card>
   );
 }
 

@@ -184,6 +184,22 @@ describe('Requests → Approve', () => {
     expect(screen.queryByText(/Pick a plan/)).toBeNull();
   });
 
+  it('links to Network billing when a self-hosted brand needs a Network subscription', async () => {
+    gated = {
+      status: 402,
+      body: {
+        error: 'network_call_failed',
+        detail: '{"error":"billing_required","detail":"Network access needs a subscription. Subscribe under Network → Billing."}',
+      },
+    };
+    renderAt('/admin/network/requests', <AdminNetworkRequests />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve + provision' }));
+    const link = await screen.findByRole('link', { name: 'Subscribe to the Network to approve' });
+    expect(link.getAttribute('href')).toBe('/t/acme/admin/network/billing');
+    expect(screen.queryByText(/Network access needs a subscription/)).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Activate your plan to approve' })).toBeNull();
+  });
+
   it('still shows other approve errors as before', async () => {
     gated = { status: 409, body: { error: 'network_call_failed', detail: '{"error":"partner_revoked"}' } };
     renderAt('/admin/network/requests', <AdminNetworkRequests />);

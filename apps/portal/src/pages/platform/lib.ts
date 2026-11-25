@@ -251,6 +251,10 @@ export interface NetworkVendorReview {
   reviewStatus: ApprovalStatus;
   reviewedAt: string | null;
   reviewReason: string | null;
+  /** Self-hosted Network subscription (Stripe status) and billing hold;
+   *  absent from a Network that predates them. */
+  subscriptionStatus?: string | null;
+  billingHoldAt?: string | null;
   createdAt: string;
   offeringCount: number;
   publishedOfferingCount: number;
