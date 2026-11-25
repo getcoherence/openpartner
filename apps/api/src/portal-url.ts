@@ -58,6 +58,30 @@ export function getApiBaseUrl(tenant?: PortalLinkTenant | null): string {
   return `${env}/api`;
 }
 
+/**
+ * What an install registers with the Network when it connects, built from
+ * the admin's own request: `instanceUrl`, where the Network calls this
+ * tenant's API, and `portalCallbackUrl`, where its confirmation email sends
+ * the admin back. Both connect routes (start-connect, auto-enroll) take
+ * them from here so they agree. The Network can't change a vendor's
+ * instanceUrl once it is active, so it has to be right the first time.
+ *
+ * Same tenant rule as getApiBaseUrl. Single tenancy puts no slug in its
+ * URLs: its tenant is "default" in the database, but single-tenant
+ * tenantMiddleware never strips /t/default, so a registered
+ * <host>/api/t/default 404s on every federation call. In multi tenancy the
+ * slug goes after /api, so the DO App Platform ingress (/api → api
+ * component) still routes the call to us.
+ */
+export function networkConnectUrls(req: Request): { instanceUrl: string; portalCallbackUrl: string } {
+  const origin = `${req.protocol}://${req.get('host') ?? ''}`;
+  const slug = (process.env.OPENPARTNER_TENANCY ?? 'single') === 'single' ? null : (req.tenantSlug ?? null);
+  return {
+    instanceUrl: slug ? `${origin}/api/t/${slug}` : `${origin}/api`,
+    portalCallbackUrl: `${origin}${slug ? `/t/${slug}` : ''}/admin/network/complete`,
+  };
+}
+
 /** Where a payout's statement is (GET /payouts/:id/statement), for the
  *  payout.created webhook. Fetched with an API key, like any API call. */
 export function payoutStatementUrl(tenant: PortalLinkTenant | null | undefined, payoutId: string): string {
