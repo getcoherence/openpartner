@@ -61,6 +61,7 @@ const ERROR_TEXT: Record<string, string> = {
   email_fixed: 'Your profile already exists with another address.',
   country_not_supported: "The Network isn't available where your brand is based.",
   vendor_pending_review: 'Available once your brand is approved.',
+  billing_required: 'Available once you subscribe under Network → Billing.',
   admin_session_required: 'Sign in as an admin to do this.',
 };
 

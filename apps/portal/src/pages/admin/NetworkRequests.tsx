@@ -60,15 +60,18 @@ function RequestList({ statusFilter }: { statusFilter: string }) {
   const [actionError, setActionError] = useState<string | null>(null);
   // Approving makes the creator a partner, which needs an active plan.
   const [planNeeded, setPlanNeeded] = useState(false);
+  // A self-hosted brand needs a Network subscription to approve.
+  const [subscriptionNeeded, setSubscriptionNeeded] = useState(false);
 
   const approve = useMutation({
     mutationFn: ({ id, decisionNote }: { id: string; decisionNote?: string }) =>
       api(`/admin/network/requests/${id}/approve`, { method: 'POST', body: { decisionNote } }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['network-requests'] }),
     onError: (err) => {
-      const plan = networkErrorCode(err) === 'plan_required';
-      setPlanNeeded(plan);
-      setActionError(plan ? null : approveErrorMessage(err));
+      const code = networkErrorCode(err);
+      setPlanNeeded(code === 'plan_required');
+      setSubscriptionNeeded(code === 'billing_required');
+      setActionError(code === 'plan_required' || code === 'billing_required' ? null : approveErrorMessage(err));
     },
   });
   const reject = useMutation({
@@ -77,6 +80,7 @@ function RequestList({ statusFilter }: { statusFilter: string }) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['network-requests'] }),
     onError: (err) => {
       setPlanNeeded(false);
+      setSubscriptionNeeded(false);
       setActionError(err instanceof ApiError ? err.message : 'failed');
     },
   });
@@ -99,6 +103,13 @@ function RequestList({ statusFilter }: { statusFilter: string }) {
         <Card style={{ marginBottom: 16 }}>
           <TenantLink to="/admin/billing" style={{ fontSize: 13, color: theme.accentText }}>
             Activate your plan to approve
+          </TenantLink>
+        </Card>
+      )}
+      {subscriptionNeeded && (
+        <Card style={{ marginBottom: 16 }}>
+          <TenantLink to="/admin/network/billing" style={{ fontSize: 13, color: theme.accentText }}>
+            Subscribe to the Network to approve
           </TenantLink>
         </Card>
       )}

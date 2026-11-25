@@ -231,6 +231,7 @@ function VendorCard({
             {v.reviewReason ? ` · ${v.reviewReason}` : ''}
           </Field>
         )}
+        {v.tier === 'self_hosted' && <Field label="Network subscription">{subscriptionLabel(v)}</Field>}
         {v.suspensionReason && <Field label="Suspended">{v.suspensionReason}</Field>}
       </div>
 
@@ -353,6 +354,12 @@ function RejectForm({
       </div>
     </div>
   );
+}
+
+/** A self-hosted vendor's Network subscription, as the Network has it. */
+function subscriptionLabel(v: NetworkVendorReview): string {
+  const status = v.subscriptionStatus ?? 'none';
+  return v.billingHoldAt ? `${status} · on hold since ${formatDate(v.billingHoldAt)}` : status;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

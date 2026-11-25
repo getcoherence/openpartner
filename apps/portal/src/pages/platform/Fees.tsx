@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { theme } from '../../theme.js';
+import { SelfHostedNetworkBillingCard } from './SelfHostedNetworkBilling.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Table, Textarea, formatDate, money } from '../../ui.js';
 import {
   papi,
@@ -71,6 +72,7 @@ export function FeesPage({ operator }: { operator: PlatformOperator }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <SettingsCard state={state.data} canWrite={canWrite} />
           <BookingFeeCard state={state.data} canWrite={canWrite} />
+          <SelfHostedNetworkBillingCard canWrite={canWrite} />
           <TenantsCard state={state.data} canWrite={canWrite} />
           <EstimateCard tenants={state.data.tenants} />
           <NoticeCard state={state.data} canWrite={canWrite} />

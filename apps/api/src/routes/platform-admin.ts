@@ -114,7 +114,9 @@ import {
   NetworkAdminError,
   platformNetworkUrl,
   getNetworkBookingFee,
+  getSelfHostedNetworkBilling,
   setNetworkBookingFee,
+  setSelfHostedNetworkBilling,
 } from '../network-client.js';
 import { linkVendorsToTenants } from '../network-review-reconcile.js';
 import { platformOpsEmail } from '../platform-ops-mail.js';
@@ -1806,6 +1808,50 @@ platformAdminRouter.put('/platform-admin/fees/booking-fee', requirePlatformAdmin
     res.status(502).json({ error: 'network_unavailable' });
   }
 });
+
+// Self-hosted brands pay for Network access directly ($29/mo + 3%). The
+// date it's required from lives on the Network (selfhost-billing.ts) and is
+// set here; null turns the gate off. Saving runs the Network's sweep, so the
+// response says how many brands were emailed a deadline or put on hold.
+
+platformAdminRouter.get('/platform-admin/fees/self-hosted-network', requirePlatformAdmin, async (_req, res) => {
+  const networkUrl = platformNetworkUrl();
+  if (!networkUrl) return res.status(503).json({ error: 'network_not_configured' });
+  try {
+    res.json(await getSelfHostedNetworkBilling(networkUrl));
+  } catch (err) {
+    console.error('[platform-admin] self-hosted network billing read failed', err);
+    res.status(502).json({ error: 'network_unavailable' });
+  }
+});
+
+const selfHostedNetworkBillingSchema = z
+  .object({
+    requiredFrom: offsetDateTime().nullable(),
+    graceDays: z.number().int().min(0).max(90),
+  })
+  .strict();
+
+platformAdminRouter.put(
+  '/platform-admin/fees/self-hosted-network',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = selfHostedNetworkBillingSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const networkUrl = platformNetworkUrl();
+    if (!networkUrl) return res.status(503).json({ error: 'network_not_configured' });
+    const actor = req.platformAdminActor!;
+    try {
+      const out = await setSelfHostedNetworkBilling(networkUrl, { ...body.data, updatedByEmail: actor.email });
+      await writeAudit(db, { actor, action: 'fees.self_hosted_network', targetType: 'platform', detail: { ...body.data, sweep: out.sweep } });
+      res.json(out);
+    } catch (err) {
+      console.error('[platform-admin] self-hosted network billing write failed', err);
+      res.status(502).json({ error: 'network_unavailable' });
+    }
+  },
+);
 
 const feeEstimateSchema = z.object({ days: z.number().int().min(1).max(365).default(90) });
 
