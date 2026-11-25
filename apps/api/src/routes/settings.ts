@@ -54,6 +54,7 @@ import { clearNetworkListingSkip } from '../onboarding-settings.js';
 import { brandDeclaredLocation, brandProfileContacts, networkErrorCode, suggestedWebsite } from '../brand-profile.js';
 import { createApiKeyRow } from '../auth.js';
 import { afterCommit, getTenancyMode, tenantOf } from '../tenancy.js';
+import { networkConnectUrls } from '../portal-url.js';
 import { NETWORK_FEDERATION_SCOPES } from './api-keys.js';
 import { getTenantBillingState, hasActivePlan } from '../billing-plan.js';
 import { bookingFeeBpsFor } from '../booking-fee.js';
@@ -717,14 +718,7 @@ settingsRouter.post('/config/network/start-connect', requireAuth, requireAdmin, 
   }
 
   // Resolve defaults from the request + tenant context.
-  const protoHost = `${req.protocol}://${req.get('host') ?? ''}`;
-  const tenantPath = tenantSlug ? `/t/${tenantSlug}` : '';
-  // /api goes BEFORE /t/<slug> so the DO App Platform ingress
-  // (/api → api component) actually routes to us. The tenant middleware
-  // accepts both /t/<slug>/* and /api/t/<slug>/* in its regex, so the
-  // api still resolves the tenant correctly.
-  const inferredInstanceUrl = `${protoHost}${tenantSlug ? `/api/t/${tenantSlug}` : '/api'}`;
-  const inferredCallback = `${protoHost}${tenantPath}/admin/network/complete`;
+  const inferred = networkConnectUrls(req);
 
   // Mint a fresh scoped key with the federation scope set; store the
   // ApiKey id in network_membership so we can identify which key the
@@ -739,13 +733,13 @@ settingsRouter.post('/config/network/start-connect', requireAuth, requireAdmin, 
   try {
     signup = await signupWithNetwork({
       networkUrl,
-      instanceUrl: body.data.instanceUrl ?? inferredInstanceUrl,
+      instanceUrl: body.data.instanceUrl ?? inferred.instanceUrl,
       scopedKey: scoped.plaintext,
       displayName: body.data.displayName ?? (tenantSlug ? tenantSlug : 'OpenPartner instance'),
       contactEmail: body.data.contactEmail ?? '',
       contactName: body.data.contactName,
       tier: networkTier(),
-      portalCallbackUrl: body.data.portalCallbackUrl ?? inferredCallback,
+      portalCallbackUrl: body.data.portalCallbackUrl ?? inferred.portalCallbackUrl,
     });
   } catch (err) {
     return res.status(502).json({ error: 'network_signup_failed', detail: err instanceof Error ? err.message : String(err) });
@@ -774,10 +768,7 @@ settingsRouter.post('/config/network/start-connect', requireAuth, requireAdmin, 
 // Self-host deployments without NETWORK_ADMIN_API_KEY still use the
 // /start-connect email-verify path.
 settingsRouter.post('/config/network/auto-enroll', requireAuth, requireAdmin, async (req, res) => {
-  const { db, tenantId, tenantSlug } = (() => {
-    const t = tenantOf(req);
-    return { ...t, tenantSlug: req.tenantSlug ?? null };
-  })();
+  const { db, tenantId } = tenantOf(req);
 
   if (await blockNetworkForWhiteLabel(db, tenantId, res)) return;
   const networkUrl = process.env.NETWORK_URL;
@@ -798,14 +789,7 @@ settingsRouter.post('/config/network/auto-enroll', requireAuth, requireAdmin, as
   const adminEmail = adminRow?.email;
   if (!adminEmail) return res.status(400).json({ error: 'admin_email_unresolvable' });
 
-  const protoHost = `${req.protocol}://${req.get('host') ?? ''}`;
-  const tenantPath = tenantSlug ? `/t/${tenantSlug}` : '';
-  // /api goes BEFORE /t/<slug> so the DO App Platform ingress
-  // (/api → api component) actually routes to us. The tenant middleware
-  // accepts both /t/<slug>/* and /api/t/<slug>/* in its regex, so the
-  // api still resolves the tenant correctly.
-  const inferredInstanceUrl = `${protoHost}${tenantSlug ? `/api/t/${tenantSlug}` : '/api'}`;
-  const inferredCallback = `${protoHost}${tenantPath}/admin/network/complete`;
+  const { instanceUrl, portalCallbackUrl } = networkConnectUrls(req);
 
   const scoped = await createApiKeyRow(db, {
     tenantId,
@@ -817,12 +801,12 @@ settingsRouter.post('/config/network/auto-enroll', requireAuth, requireAdmin, as
   try {
     signup = await signupWithNetwork({
       networkUrl,
-      instanceUrl: inferredInstanceUrl,
+      instanceUrl,
       scopedKey: scoped.plaintext,
       displayName: tenantRow.displayName,
       contactEmail: adminEmail,
       tier: 'hosted',
-      portalCallbackUrl: inferredCallback,
+      portalCallbackUrl,
       adminAuthToken: adminToken,
       reviewStatus: await networkReviewFor(db, platformDb, tenantId, tenantRow.approvalStatus),
     });
